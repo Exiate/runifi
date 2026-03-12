@@ -63,6 +63,101 @@ header {
 .status.connected { color: var(--success); }
 .status.disconnected { color: var(--danger); }
 
+/* Status summary bar */
+.summary-bar {
+    display: flex;
+    gap: 1px;
+    background: var(--border);
+    border-bottom: 1px solid var(--border);
+}
+
+.summary-item {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 0.75rem 1rem;
+    background: var(--surface);
+    gap: 0.25rem;
+    min-width: 0;
+}
+
+.summary-label {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+}
+
+.summary-value {
+    font-size: 1.1rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.summary-indicator {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    flex-shrink: 0;
+}
+
+.summary-indicator.healthy {
+    background: var(--success);
+    box-shadow: 0 0 6px rgba(52, 211, 153, 0.5);
+}
+
+.summary-indicator.warning {
+    background: var(--warning);
+    box-shadow: 0 0 6px rgba(251, 191, 36, 0.5);
+}
+
+.summary-indicator.danger {
+    background: var(--danger);
+    box-shadow: 0 0 6px rgba(248, 113, 113, 0.5);
+}
+
+.summary-state-pills {
+    display: flex;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+    justify-content: center;
+    font-variant-numeric: tabular-nums;
+}
+
+.state-pill {
+    font-size: 0.65rem;
+    font-weight: 600;
+    padding: 0.15rem 0.45rem;
+    border-radius: 3px;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.state-pill.running {
+    background: rgba(52, 211, 153, 0.15);
+    color: var(--success);
+}
+
+.state-pill.paused {
+    background: rgba(251, 191, 36, 0.15);
+    color: var(--warning);
+}
+
+.state-pill.stopped {
+    background: rgba(248, 113, 113, 0.15);
+    color: var(--danger);
+}
+
+.state-pill.circuit-open {
+    background: rgba(248, 113, 113, 0.25);
+    color: var(--danger);
+}
+
 main {
     padding: 2rem;
     max-width: 1400px;
@@ -406,6 +501,15 @@ h2 {
 
 @media (max-width: 768px) {
     header { flex-direction: column; gap: 0.5rem; }
+    .summary-bar {
+        flex-direction: column;
+        gap: 1px;
+    }
+    .summary-item {
+        flex-direction: row;
+        justify-content: space-between;
+        padding: 0.5rem 1rem;
+    }
     main { padding: 1rem; }
     .card-grid { grid-template-columns: 1fr; }
     .metrics-grid { grid-template-columns: repeat(2, 1fr); }
