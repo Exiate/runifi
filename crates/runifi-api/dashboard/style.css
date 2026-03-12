@@ -404,10 +404,330 @@ h2 {
     fill: var(--border);
 }
 
+/* Connection card inspect button */
+.conn-card {
+    cursor: pointer;
+    transition: border-color 0.2s;
+}
+
+.conn-card:hover {
+    border-color: var(--accent);
+}
+
+.conn-inspect-hint {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    text-align: center;
+    margin-top: 0.5rem;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.conn-card:hover .conn-inspect-hint {
+    opacity: 1;
+}
+
+/* Modal (shared) */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.modal-content {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    width: 90%;
+    max-width: 560px;
+    max-height: 80vh;
+    overflow-y: auto;
+}
+
+.modal-lg {
+    max-width: 900px;
+}
+
+.modal-sm {
+    max-width: 400px;
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 1.25rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.modal-header h3 {
+    font-size: 0.95rem;
+    font-weight: 600;
+}
+
+.modal-close {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 1.4rem;
+    cursor: pointer;
+    padding: 0 0.25rem;
+    line-height: 1;
+}
+
+.modal-close:hover {
+    color: var(--text);
+}
+
+.modal-body {
+    padding: 1.25rem;
+}
+
+/* Queue Inspector */
+.queue-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1.25rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.queue-summary {
+    font-size: 0.85rem;
+    color: var(--text-dim);
+}
+
+.btn-danger-sm {
+    padding: 0.35rem 0.75rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    font-family: var(--font);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    border: 1px solid var(--danger);
+    border-radius: 4px;
+    background: rgba(248, 113, 113, 0.1);
+    color: var(--danger);
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.btn-danger-sm:hover {
+    background: rgba(248, 113, 113, 0.25);
+}
+
+.btn-cancel {
+    padding: 0.35rem 0.75rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    font-family: var(--font);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.btn-cancel:hover {
+    border-color: var(--text-dim);
+    color: var(--text);
+}
+
+.btn-link {
+    padding: 0.2rem 0.5rem;
+    font-size: 0.7rem;
+    font-weight: 500;
+    font-family: var(--font);
+    border: none;
+    background: none;
+    color: var(--accent);
+    cursor: pointer;
+    text-decoration: none;
+    transition: color 0.15s;
+}
+
+.btn-link:hover {
+    color: var(--text);
+}
+
+.btn-remove {
+    padding: 0.2rem 0.5rem;
+    font-size: 0.7rem;
+    font-weight: 500;
+    font-family: var(--font);
+    border: none;
+    background: none;
+    color: var(--danger);
+    cursor: pointer;
+    transition: color 0.15s;
+}
+
+.btn-remove:hover {
+    color: var(--text);
+}
+
+/* Queue table */
+.queue-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8rem;
+}
+
+.queue-table thead th {
+    text-align: left;
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.queue-table tbody tr {
+    border-bottom: 1px solid var(--border);
+    transition: background 0.1s;
+    cursor: pointer;
+}
+
+.queue-table tbody tr:hover {
+    background: var(--surface-hover);
+}
+
+.queue-table tbody tr:last-child {
+    border-bottom: none;
+}
+
+.queue-table td {
+    padding: 0.5rem 0.75rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.queue-table .empty-row td {
+    text-align: center;
+    color: var(--text-dim);
+    padding: 2rem;
+    cursor: default;
+}
+
+/* Queue pagination */
+.queue-pagination {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+}
+
+.queue-pagination button {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.75rem;
+    font-family: var(--font);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.queue-pagination button:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--text);
+}
+
+.queue-pagination button:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+}
+
+/* FlowFile detail attributes table */
+.attr-heading {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    margin-top: 1rem;
+    margin-bottom: 0.5rem;
+}
+
+.attr-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8rem;
+}
+
+.attr-table thead th {
+    text-align: left;
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    padding: 0.4rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.attr-table td {
+    padding: 0.4rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+    word-break: break-all;
+}
+
+.attr-table tr:last-child td {
+    border-bottom: none;
+}
+
+.ff-detail-meta {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.ff-detail-meta .detail-row {
+    display: flex;
+    flex-direction: column;
+}
+
+.ff-detail-meta .detail-label {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.ff-detail-meta .detail-value {
+    font-size: 0.9rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Confirm dialog */
+.confirm-actions {
+    display: flex;
+    gap: 0.75rem;
+    justify-content: flex-end;
+    margin-top: 1rem;
+}
+
 @media (max-width: 768px) {
     header { flex-direction: column; gap: 0.5rem; }
     main { padding: 1rem; }
     .card-grid { grid-template-columns: 1fr; }
     .metrics-grid { grid-template-columns: repeat(2, 1fr); }
     .dag-container { max-height: 400px; }
+    .modal-content { width: 95%; }
+    .modal-lg { max-width: 95%; }
 }

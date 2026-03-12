@@ -4,6 +4,7 @@ use std::time::Instant;
 use super::metrics::ProcessorMetrics;
 use super::processor_node::SchedulingStrategy;
 use crate::connection::flow_connection::FlowConnection;
+use crate::repository::content_repo::ContentRepository;
 
 /// Information about a processor instance, visible to the API.
 #[derive(Clone)]
@@ -50,6 +51,7 @@ pub struct EngineHandle {
     pub processors: Arc<Vec<ProcessorInfo>>,
     pub connections: Arc<Vec<ConnectionInfo>>,
     pub plugin_types: Arc<Vec<PluginTypeInfo>>,
+    pub content_repo: Arc<dyn ContentRepository>,
 }
 
 impl EngineHandle {

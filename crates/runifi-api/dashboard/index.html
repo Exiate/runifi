@@ -40,6 +40,73 @@
         </section>
     </main>
 
+    <!-- Queue Inspector Modal -->
+    <div class="modal-overlay" id="queue-modal" style="display:none;">
+        <div class="modal-content modal-lg">
+            <div class="modal-header">
+                <h3 id="queue-modal-title">Queue Inspector</h3>
+                <button class="modal-close" id="queue-modal-close">&times;</button>
+            </div>
+            <div class="queue-toolbar">
+                <span class="queue-summary" id="queue-summary"></span>
+                <button class="btn-danger-sm" id="queue-empty-btn">Empty Queue</button>
+            </div>
+            <div class="modal-body">
+                <table class="queue-table" id="queue-table">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>ID</th>
+                            <th>Size</th>
+                            <th>Age</th>
+                            <th>Content</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="queue-table-body"></tbody>
+                </table>
+                <div class="queue-pagination" id="queue-pagination"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- FlowFile Detail Modal -->
+    <div class="modal-overlay" id="flowfile-modal" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="flowfile-modal-title">FlowFile Details</h3>
+                <button class="modal-close" id="flowfile-modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="ff-detail-meta" id="ff-detail-meta"></div>
+                <h4 class="attr-heading">Attributes</h4>
+                <table class="attr-table">
+                    <thead>
+                        <tr><th>Key</th><th>Value</th></tr>
+                    </thead>
+                    <tbody id="ff-attr-body"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Confirm Dialog -->
+    <div class="modal-overlay" id="confirm-modal" style="display:none;">
+        <div class="modal-content modal-sm">
+            <div class="modal-header">
+                <h3>Confirm</h3>
+                <button class="modal-close" id="confirm-modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="confirm-message"></p>
+                <div class="confirm-actions">
+                    <button class="btn-cancel" id="confirm-cancel">Cancel</button>
+                    <button class="btn-danger-sm" id="confirm-ok">Confirm</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="/app.js"></script>
 </body>
 </html>

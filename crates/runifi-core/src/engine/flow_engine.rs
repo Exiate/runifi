@@ -215,6 +215,7 @@ impl FlowEngine {
             processors: Arc::new(processor_infos),
             connections: Arc::new(connection_infos),
             plugin_types: Arc::new(Vec::new()), // populated by server after start
+            content_repo: self.content_repo.clone(),
         };
         self.handle = Some(engine_handle);
 
