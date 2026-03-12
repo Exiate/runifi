@@ -318,9 +318,96 @@ h2 {
 
 .conn-stats span { font-variant-numeric: tabular-nums; }
 
+/* DAG Canvas */
+.dag-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: auto;
+    min-height: 200px;
+    max-height: 600px;
+    position: relative;
+}
+
+#dag-canvas {
+    display: block;
+    min-width: 100%;
+    min-height: 200px;
+}
+
+#dag-canvas .dag-node-rect {
+    fill: var(--bg);
+    stroke: var(--border);
+    stroke-width: 2;
+    rx: 8;
+    ry: 8;
+    transition: stroke 0.2s;
+}
+
+#dag-canvas .dag-node-rect.state-running {
+    stroke: var(--success);
+}
+
+#dag-canvas .dag-node-rect.state-paused {
+    stroke: var(--warning);
+}
+
+#dag-canvas .dag-node-rect.state-stopped {
+    stroke: var(--border);
+}
+
+#dag-canvas .dag-node-name {
+    fill: var(--text);
+    font-family: var(--font);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+#dag-canvas .dag-node-type {
+    fill: var(--text-dim);
+    font-family: var(--font);
+    font-size: 11px;
+}
+
+#dag-canvas .dag-node-metric {
+    fill: var(--text-dim);
+    font-family: var(--font);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+}
+
+#dag-canvas .dag-node-metric-value {
+    fill: var(--text);
+}
+
+#dag-canvas .dag-edge {
+    fill: none;
+    stroke: var(--border);
+    stroke-width: 2;
+}
+
+#dag-canvas .dag-edge-label {
+    fill: var(--accent);
+    font-family: var(--font);
+    font-size: 10px;
+    font-weight: 500;
+}
+
+#dag-canvas .dag-edge-queue {
+    fill: var(--text-dim);
+    font-family: var(--font);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+}
+
+#dag-canvas .dag-arrowhead {
+    fill: var(--border);
+}
+
 @media (max-width: 768px) {
     header { flex-direction: column; gap: 0.5rem; }
     main { padding: 1rem; }
     .card-grid { grid-template-columns: 1fr; }
     .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+    .dag-container { max-height: 400px; }
 }
