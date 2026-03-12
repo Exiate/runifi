@@ -534,6 +534,143 @@ h2 {
     fill: var(--border);
 }
 
+/* Bulletin Board */
+.bulletins-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+
+.bulletins-header h2 {
+    margin-bottom: 0;
+}
+
+.bulletin-filters {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.bulletin-filters select {
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.35rem 0.6rem;
+    font-family: var(--font);
+    font-size: 0.75rem;
+    cursor: pointer;
+}
+
+.bulletin-filters select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.bulletins-list {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.bulletin-empty {
+    padding: 2rem;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 0.85rem;
+}
+
+.bulletin-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.bulletin-item:last-child {
+    border-bottom: none;
+}
+
+.bulletin-item:hover {
+    background: var(--surface-hover);
+}
+
+.bulletin-severity {
+    flex-shrink: 0;
+    font-size: 0.65rem;
+    font-weight: 700;
+    padding: 0.15rem 0.4rem;
+    border-radius: 3px;
+    text-transform: uppercase;
+    margin-top: 0.1rem;
+}
+
+.bulletin-severity.warn {
+    background: rgba(251, 191, 36, 0.15);
+    color: var(--warning);
+}
+
+.bulletin-severity.error {
+    background: rgba(248, 113, 113, 0.15);
+    color: var(--danger);
+}
+
+.bulletin-body {
+    flex: 1;
+    min-width: 0;
+}
+
+.bulletin-meta {
+    display: flex;
+    gap: 0.75rem;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    margin-bottom: 0.2rem;
+}
+
+.bulletin-processor {
+    font-weight: 600;
+    color: var(--accent);
+}
+
+.bulletin-message {
+    font-size: 0.8rem;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Bulletin indicator on processor cards */
+.bulletin-indicator {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-left: 0.4rem;
+    vertical-align: middle;
+}
+
+.bulletin-indicator.warn {
+    background: var(--warning);
+    box-shadow: 0 0 4px var(--warning);
+}
+
+.bulletin-indicator.error {
+    background: var(--danger);
+    box-shadow: 0 0 4px var(--danger);
+}
+
+/* Bulletin indicator on DAG nodes */
+#dag-canvas .dag-bulletin-indicator {
+    transition: opacity 0.3s;
+}
+
 /* Modal (shared) */
 .modal-overlay {
     position: fixed;
@@ -728,6 +865,34 @@ h2 {
 .btn-secondary:hover {
     border-color: var(--text-dim);
     color: var(--text);
+}
+
+.modal-body .detail-row {
+    margin-bottom: 0.75rem;
+}
+
+.modal-body .detail-label {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    margin-bottom: 0.15rem;
+}
+
+.modal-body .detail-value {
+    font-size: 0.85rem;
+    color: var(--text);
+    word-break: break-word;
+}
+
+.modal-body .detail-value.severity-warn {
+    color: var(--warning);
+    font-weight: 600;
+}
+
+.modal-body .detail-value.severity-error {
+    color: var(--danger);
+    font-weight: 600;
 }
 
 /* Queue Inspector */
@@ -1120,6 +1285,7 @@ h2 {
     .card-grid { grid-template-columns: 1fr; }
     .metrics-grid { grid-template-columns: repeat(2, 1fr); }
     .dag-container { max-height: 400px; }
+    .bulletins-header { flex-direction: column; gap: 0.5rem; align-items: flex-start; }
     .modal-content { width: 95%; }
     .modal-lg { max-width: 95%; }
     .modal { width: 95vw; max-height: 90vh; }

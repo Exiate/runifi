@@ -11,6 +11,7 @@ use runifi_plugin_api::property::PropertyValue;
 use runifi_plugin_api::relationship::Relationship;
 use runifi_plugin_api::session::ProcessSession;
 
+use super::bulletin::{BulletinBoard, BulletinSeverity};
 use super::metrics::ProcessorMetrics;
 use super::supervisor::{InvocationResult, ProcessorSupervisor};
 use crate::connection::flow_connection::FlowConnection;
@@ -72,6 +73,7 @@ pub struct ProcessorNode {
     cancel_token: CancellationToken,
     input_notifiers: Vec<Arc<Notify>>,
     metrics: Arc<ProcessorMetrics>,
+    bulletin_board: Arc<BulletinBoard>,
 }
 
 impl ProcessorNode {
@@ -86,6 +88,7 @@ impl ProcessorNode {
         id_gen: Arc<IdGenerator>,
         cancel_token: CancellationToken,
         metrics: Arc<ProcessorMetrics>,
+        bulletin_board: Arc<BulletinBoard>,
     ) -> Self {
         Self {
             name,
@@ -100,6 +103,7 @@ impl ProcessorNode {
             cancel_token,
             input_notifiers: Vec::new(),
             metrics,
+            bulletin_board,
         }
     }
 
@@ -169,6 +173,11 @@ impl ProcessorNode {
             // Call on_scheduled.
             if let Err(e) = self.supervisor.on_scheduled(&ctx) {
                 tracing::error!(processor = %self.name, error = %e, "on_scheduled failed");
+                self.bulletin_board.add(
+                    &self.name,
+                    BulletinSeverity::Error,
+                    format!("on_scheduled failed: {e}"),
+                );
                 return;
             }
 
@@ -218,6 +227,11 @@ impl ProcessorNode {
                 // Skip if circuit breaker is open.
                 if self.supervisor.is_circuit_open() {
                     tracing::warn!(processor = %self.name, "Circuit breaker open, skipping trigger");
+                    self.bulletin_board.add(
+                        &self.name,
+                        BulletinSeverity::Warn,
+                        "Circuit breaker open, skipping trigger".to_string(),
+                    );
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                     continue;
                 }
@@ -293,6 +307,15 @@ impl ProcessorNode {
                             consecutive = self.supervisor.consecutive_failures(),
                             "Processor failed"
                         );
+                        self.bulletin_board.add(
+                            &self.name,
+                            BulletinSeverity::Warn,
+                            format!(
+                                "Processor failed (consecutive: {}): {}",
+                                self.supervisor.consecutive_failures(),
+                                e
+                            ),
+                        );
                         session.rollback();
                         let backoff = self.supervisor.current_backoff();
                         if !backoff.is_zero() {
@@ -305,6 +328,15 @@ impl ProcessorNode {
                             panic = %msg,
                             consecutive = self.supervisor.consecutive_failures(),
                             "Processor panicked"
+                        );
+                        self.bulletin_board.add(
+                            &self.name,
+                            BulletinSeverity::Error,
+                            format!(
+                                "Processor panicked (consecutive: {}): {}",
+                                self.supervisor.consecutive_failures(),
+                                msg
+                            ),
                         );
                         // Session is automatically rolled back on drop.
                     }
@@ -367,6 +399,14 @@ impl ProcessorNode {
                             processor = %self.name,
                             relationship = rel_name,
                             "Failed to route FlowFile — connection full"
+                        );
+                        self.bulletin_board.add(
+                            &self.name,
+                            BulletinSeverity::Warn,
+                            format!(
+                                "Failed to route FlowFile on relationship '{}' — connection full",
+                                rel_name
+                            ),
                         );
                     } else {
                         ff_out += 1;

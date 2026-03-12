@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use runifi_core::engine::bulletin::Bulletin;
 use runifi_core::engine::handle::{PluginKind, ProcessorInfo};
 use runifi_core::engine::metrics::MetricsSnapshot;
 
@@ -143,6 +144,28 @@ impl PluginResponse {
     }
 }
 
+/// A bulletin response for the API.
+#[derive(Serialize)]
+pub struct BulletinResponse {
+    pub id: u64,
+    pub timestamp_ms: u64,
+    pub severity: String,
+    pub processor_name: String,
+    pub message: String,
+}
+
+impl From<Bulletin> for BulletinResponse {
+    fn from(b: Bulletin) -> Self {
+        Self {
+            id: b.id,
+            timestamp_ms: b.timestamp_ms,
+            severity: b.severity.as_str().to_string(),
+            processor_name: b.processor_name,
+            message: b.message,
+        }
+    }
+}
+
 /// A queued FlowFile as returned by the queue inspection API.
 #[derive(Serialize)]
 pub struct QueuedFlowFileResponse {
@@ -177,6 +200,7 @@ pub struct SseMetricsEvent {
     pub uptime_secs: u64,
     pub processors: Vec<ProcessorResponse>,
     pub connections: Vec<ConnectionResponse>,
+    pub bulletins: Vec<BulletinResponse>,
 }
 
 // ── Processor configuration DTOs ─────────────────────────────
