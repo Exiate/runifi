@@ -54,6 +54,10 @@
             const circuitClass = p.metrics.circuit_open ? 'open' : 'ok';
             const circuitText = p.metrics.circuit_open ? 'Circuit Open' : 'OK';
             const failClass = p.metrics.total_failures > 0 ? ' danger' : '';
+            const state = p.state || 'stopped';
+            const isRunning = state === 'running';
+            const isPaused = state === 'paused';
+            const isStopped = state === 'stopped';
 
             card.innerHTML = `
                 <div class="card-header">
@@ -61,9 +65,12 @@
                         <div class="card-title">${esc(p.name)}</div>
                         <div class="card-type">${esc(p.type_name)} &middot; ${esc(p.scheduling)}</div>
                     </div>
-                    <span class="circuit-badge ${circuitClass}"
-                          ${p.metrics.circuit_open ? 'title="Click to reset"' : ''}
-                          data-processor="${esc(p.name)}">${circuitText}</span>
+                    <div class="card-badges">
+                        <span class="state-badge ${esc(state)}">${esc(state)}</span>
+                        <span class="circuit-badge ${circuitClass}"
+                              ${p.metrics.circuit_open ? 'title="Click to reset"' : ''}
+                              data-processor="${esc(p.name)}">${circuitText}</span>
+                    </div>
                 </div>
                 <div class="metrics-grid">
                     <div class="metric">
@@ -91,6 +98,12 @@
                         <span class="metric-value">${fmtBytes(p.metrics.bytes_out)}</span>
                     </div>
                 </div>
+                <div class="proc-controls">
+                    <button class="btn-start" ${isRunning ? 'disabled' : ''} data-action="start" data-processor="${esc(p.name)}">Start</button>
+                    <button class="btn-pause" ${!isRunning ? 'disabled' : ''} data-action="pause" data-processor="${esc(p.name)}">Pause</button>
+                    <button class="btn-resume" ${!isPaused ? 'disabled' : ''} data-action="resume" data-processor="${esc(p.name)}">Resume</button>
+                    <button class="btn-stop" ${isStopped ? 'disabled' : ''} data-action="stop" data-processor="${esc(p.name)}">Stop</button>
+                </div>
             `;
 
             // Circuit reset click handler
@@ -98,6 +111,15 @@
             if (badge) {
                 badge.addEventListener('click', () => resetCircuit(p.name));
             }
+
+            // Processor control button handlers
+            card.querySelectorAll('.proc-controls button').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const action = btn.getAttribute('data-action');
+                    const proc = btn.getAttribute('data-processor');
+                    controlProcessor(proc, action);
+                });
+            });
 
             processorsGrid.appendChild(card);
         }
@@ -137,6 +159,12 @@
 
     function resetCircuit(name) {
         fetch('/api/v1/processors/' + encodeURIComponent(name) + '/reset-circuit', {
+            method: 'POST'
+        }).catch(() => {});
+    }
+
+    function controlProcessor(name, action) {
+        fetch('/api/v1/processors/' + encodeURIComponent(name) + '/' + action, {
             method: 'POST'
         }).catch(() => {});
     }

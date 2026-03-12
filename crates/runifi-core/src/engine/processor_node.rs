@@ -123,9 +123,12 @@ impl ProcessorNode {
         self.supervisor.is_circuit_open()
     }
 
-    /// Run the processor loop until cancelled.
+    /// Run the processor lifecycle until the cancellation token fires.
     ///
     /// This is spawned as a tokio task by the engine.
+    /// The outer loop handles stop/start transitions: when `enabled` is set to
+    /// false, the inner processing loop breaks cleanly, and the task waits
+    /// until `enabled` is set back to true (or the cancellation token fires).
     pub async fn run(mut self) {
         let ctx = NodeProcessContext {
             name: self.name.clone(),
@@ -134,127 +137,172 @@ impl ProcessorNode {
             yield_duration_ms: 1000,
         };
 
-        // Call on_scheduled.
-        if let Err(e) = self.supervisor.on_scheduled(&ctx) {
-            tracing::error!(processor = %self.name, error = %e, "on_scheduled failed");
-            return;
-        }
+        'lifecycle: loop {
+            // Wait until the processor is enabled (or cancelled).
+            while !self.metrics.enabled.load(Ordering::Relaxed) {
+                tokio::select! {
+                    _ = self.cancel_token.cancelled() => {
+                        tracing::info!(processor = %self.name, "Processor exiting (cancelled while stopped)");
+                        return;
+                    }
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+                }
+            }
 
-        self.metrics.active.store(true, Ordering::Relaxed);
-        tracing::info!(processor = %self.name, "Processor started");
+            // Call on_scheduled.
+            if let Err(e) = self.supervisor.on_scheduled(&ctx) {
+                tracing::error!(processor = %self.name, error = %e, "on_scheduled failed");
+                return;
+            }
 
-        loop {
-            // Wait for trigger based on scheduling strategy.
-            tokio::select! {
-                _ = self.cancel_token.cancelled() => {
-                    tracing::info!(processor = %self.name, "Processor stopping (cancelled)");
+            self.metrics.active.store(true, Ordering::Relaxed);
+            tracing::info!(processor = %self.name, "Processor started");
+
+            loop {
+                // Check per-processor enabled flag — break cleanly on stop.
+                if !self.metrics.enabled.load(Ordering::Relaxed) {
+                    tracing::info!(processor = %self.name, "Processor stopping (disabled)");
                     break;
                 }
-                _ = self.wait_for_trigger() => {}
-            }
 
-            // Check if the API requested a circuit reset.
-            if self.metrics.reset_requested.swap(false, Ordering::Relaxed) {
-                self.supervisor.reset_circuit();
-                tracing::info!(processor = %self.name, "Circuit breaker reset via API");
-            }
+                // Check per-processor paused flag — skip invocation, sleep, continue.
+                if self.metrics.paused.load(Ordering::Relaxed) {
+                    tokio::select! {
+                        _ = self.cancel_token.cancelled() => {
+                            tracing::info!(processor = %self.name, "Processor stopping (cancelled while paused)");
+                            break 'lifecycle;
+                        }
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+                    }
+                    continue;
+                }
 
-            // Skip if circuit breaker is open.
-            if self.supervisor.is_circuit_open() {
-                tracing::warn!(processor = %self.name, "Circuit breaker open, skipping trigger");
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                continue;
-            }
+                // Wait for trigger based on scheduling strategy.
+                tokio::select! {
+                    _ = self.cancel_token.cancelled() => {
+                        tracing::info!(processor = %self.name, "Processor stopping (cancelled)");
+                        break 'lifecycle;
+                    }
+                    _ = self.wait_for_trigger() => {}
+                }
 
-            // Check back-pressure on output connections.
-            if self.any_output_back_pressured() {
-                tracing::debug!(processor = %self.name, "Output back-pressured, yielding");
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                continue;
-            }
+                // Re-check enabled after waking from trigger wait.
+                if !self.metrics.enabled.load(Ordering::Relaxed) {
+                    tracing::info!(processor = %self.name, "Processor stopping (disabled)");
+                    break;
+                }
 
-            // Record trigger timestamp.
-            let now_nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64;
-            self.metrics
-                .last_trigger_nanos
-                .store(now_nanos, Ordering::Relaxed);
+                // Check if the API requested a circuit reset.
+                if self.metrics.reset_requested.swap(false, Ordering::Relaxed) {
+                    self.supervisor.reset_circuit();
+                    tracing::info!(processor = %self.name, "Circuit breaker reset via API");
+                }
 
-            // Build session and invoke processor in a blocking thread.
-            let mut session = CoreProcessSession::new(
-                self.content_repo.clone(),
-                self.id_gen.clone(),
-                self.input_connections.clone(),
-                ctx.yield_duration_ms,
-            );
+                // Skip if circuit breaker is open.
+                if self.supervisor.is_circuit_open() {
+                    tracing::warn!(processor = %self.name, "Circuit breaker open, skipping trigger");
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    continue;
+                }
 
-            // Invoke with fault isolation via spawn_blocking.
-            let result = {
-                // We need to pass mutable references into spawn_blocking.
-                // Since the processor is !Send across await points in some cases,
-                // we do the invocation inline here (it's synchronous anyway).
-                self.supervisor.invoke(&ctx, &mut session)
-            };
+                // Check back-pressure on output connections.
+                if self.any_output_back_pressured() {
+                    tracing::debug!(processor = %self.name, "Output back-pressured, yielding");
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    continue;
+                }
 
-            // Sync supervisor metrics to shared atomics.
-            self.metrics.sync_from_supervisor(
-                self.supervisor.total_invocations(),
-                self.supervisor.total_failures(),
-                self.supervisor.consecutive_failures(),
-                self.supervisor.is_circuit_open(),
-            );
-
-            // Track input metrics.
-            let acquired = session.acquired_count();
-            let acquired_bytes = session.acquired_bytes();
-            if acquired > 0 {
+                // Record trigger timestamp.
+                let now_nanos = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as u64;
                 self.metrics
-                    .flowfiles_in
-                    .fetch_add(acquired as u64, Ordering::Relaxed);
-                self.metrics
-                    .bytes_in
-                    .fetch_add(acquired_bytes, Ordering::Relaxed);
-            }
+                    .last_trigger_nanos
+                    .store(now_nanos, Ordering::Relaxed);
 
-            match &result {
-                InvocationResult::Success => {
-                    if session.is_committed() {
-                        let (ff_out, bytes_out) = self.route_transfers(&mut session);
-                        self.metrics
-                            .flowfiles_out
-                            .fetch_add(ff_out, Ordering::Relaxed);
-                        self.metrics
-                            .bytes_out
-                            .fetch_add(bytes_out, Ordering::Relaxed);
+                // Build session and invoke processor in a blocking thread.
+                let mut session = CoreProcessSession::new(
+                    self.content_repo.clone(),
+                    self.id_gen.clone(),
+                    self.input_connections.clone(),
+                    ctx.yield_duration_ms,
+                );
+
+                // Invoke with fault isolation via spawn_blocking.
+                let result = {
+                    // We need to pass mutable references into spawn_blocking.
+                    // Since the processor is !Send across await points in some cases,
+                    // we do the invocation inline here (it's synchronous anyway).
+                    self.supervisor.invoke(&ctx, &mut session)
+                };
+
+                // Sync supervisor metrics to shared atomics.
+                self.metrics.sync_from_supervisor(
+                    self.supervisor.total_invocations(),
+                    self.supervisor.total_failures(),
+                    self.supervisor.consecutive_failures(),
+                    self.supervisor.is_circuit_open(),
+                );
+
+                // Track input metrics.
+                let acquired = session.acquired_count();
+                let acquired_bytes = session.acquired_bytes();
+                if acquired > 0 {
+                    self.metrics
+                        .flowfiles_in
+                        .fetch_add(acquired as u64, Ordering::Relaxed);
+                    self.metrics
+                        .bytes_in
+                        .fetch_add(acquired_bytes, Ordering::Relaxed);
+                }
+
+                match &result {
+                    InvocationResult::Success => {
+                        if session.is_committed() {
+                            let (ff_out, bytes_out) = self.route_transfers(&mut session);
+                            self.metrics
+                                .flowfiles_out
+                                .fetch_add(ff_out, Ordering::Relaxed);
+                            self.metrics
+                                .bytes_out
+                                .fetch_add(bytes_out, Ordering::Relaxed);
+                        }
+                    }
+                    InvocationResult::Failed(e) => {
+                        tracing::warn!(
+                            processor = %self.name,
+                            error = %e,
+                            consecutive = self.supervisor.consecutive_failures(),
+                            "Processor failed"
+                        );
+                        session.rollback();
+                        let backoff = self.supervisor.current_backoff();
+                        if !backoff.is_zero() {
+                            tokio::time::sleep(backoff).await;
+                        }
+                    }
+                    InvocationResult::Panic(msg) => {
+                        tracing::error!(
+                            processor = %self.name,
+                            panic = %msg,
+                            consecutive = self.supervisor.consecutive_failures(),
+                            "Processor panicked"
+                        );
+                        // Session is automatically rolled back on drop.
                     }
                 }
-                InvocationResult::Failed(e) => {
-                    tracing::warn!(
-                        processor = %self.name,
-                        error = %e,
-                        consecutive = self.supervisor.consecutive_failures(),
-                        "Processor failed"
-                    );
-                    session.rollback();
-                    let backoff = self.supervisor.current_backoff();
-                    if !backoff.is_zero() {
-                        tokio::time::sleep(backoff).await;
-                    }
-                }
-                InvocationResult::Panic(msg) => {
-                    tracing::error!(
-                        processor = %self.name,
-                        panic = %msg,
-                        consecutive = self.supervisor.consecutive_failures(),
-                        "Processor panicked"
-                    );
-                    // Session is automatically rolled back on drop.
-                }
             }
+
+            // Inner loop broken — processor is stopped.
+            self.metrics.active.store(false, Ordering::Relaxed);
+            self.supervisor.on_stopped(&ctx);
+            tracing::info!(processor = %self.name, "Processor stopped");
+
+            // Continue the lifecycle loop — will wait for re-enable or cancellation.
         }
 
+        // Only reached when breaking out of 'lifecycle (cancellation).
         self.metrics.active.store(false, Ordering::Relaxed);
         self.supervisor.on_stopped(&ctx);
         tracing::info!(processor = %self.name, "Processor stopped");

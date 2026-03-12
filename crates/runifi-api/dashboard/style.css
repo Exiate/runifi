@@ -114,6 +114,36 @@ h2 {
     margin-top: 0.15rem;
 }
 
+.card-badges {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.35rem;
+}
+
+.state-badge {
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    text-transform: uppercase;
+}
+
+.state-badge.running {
+    background: rgba(52, 211, 153, 0.15);
+    color: var(--success);
+}
+
+.state-badge.paused {
+    background: rgba(251, 191, 36, 0.15);
+    color: var(--warning);
+}
+
+.state-badge.stopped {
+    background: rgba(248, 113, 113, 0.15);
+    color: var(--danger);
+}
+
 .circuit-badge {
     font-size: 0.7rem;
     font-weight: 600;
@@ -135,6 +165,60 @@ h2 {
 
 .circuit-badge.open:hover {
     background: rgba(248, 113, 113, 0.3);
+}
+
+.proc-controls {
+    display: flex;
+    gap: 0.4rem;
+    margin-top: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--border);
+}
+
+.proc-controls button {
+    flex: 1;
+    padding: 0.35rem 0.5rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    font-family: var(--font);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.proc-controls button:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--text);
+}
+
+.proc-controls button:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+}
+
+.proc-controls button.btn-start:hover:not(:disabled) {
+    border-color: var(--success);
+    color: var(--success);
+}
+
+.proc-controls button.btn-stop:hover:not(:disabled) {
+    border-color: var(--danger);
+    color: var(--danger);
+}
+
+.proc-controls button.btn-pause:hover:not(:disabled) {
+    border-color: var(--warning);
+    color: var(--warning);
+}
+
+.proc-controls button.btn-resume:hover:not(:disabled) {
+    border-color: var(--success);
+    color: var(--success);
 }
 
 .metrics-grid {

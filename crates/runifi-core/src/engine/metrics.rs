@@ -17,6 +17,10 @@ pub struct ProcessorMetrics {
     pub active: AtomicBool,
     /// API sets this flag to request a circuit reset; processor loop checks and clears it.
     pub reset_requested: AtomicBool,
+    /// When false, the processor's run loop breaks cleanly (per-processor stop).
+    pub enabled: AtomicBool,
+    /// When true, the processor skips invocation and sleeps (per-processor pause).
+    pub paused: AtomicBool,
 }
 
 impl ProcessorMetrics {
@@ -33,6 +37,8 @@ impl ProcessorMetrics {
             last_trigger_nanos: AtomicU64::new(0),
             active: AtomicBool::new(false),
             reset_requested: AtomicBool::new(false),
+            enabled: AtomicBool::new(true),
+            paused: AtomicBool::new(false),
         }
     }
 
@@ -54,6 +60,20 @@ impl ProcessorMetrics {
 
     /// Take a point-in-time snapshot for serialization.
     pub fn snapshot(&self) -> MetricsSnapshot {
+        let enabled = self.enabled.load(Ordering::Relaxed);
+        let paused = self.paused.load(Ordering::Relaxed);
+        let active = self.active.load(Ordering::Relaxed);
+
+        let state = if !enabled {
+            ProcessorState::Stopped
+        } else if paused {
+            ProcessorState::Paused
+        } else if active {
+            ProcessorState::Running
+        } else {
+            ProcessorState::Stopped
+        };
+
         MetricsSnapshot {
             total_invocations: self.total_invocations.load(Ordering::Relaxed),
             total_failures: self.total_failures.load(Ordering::Relaxed),
@@ -64,7 +84,8 @@ impl ProcessorMetrics {
             flowfiles_in: self.flowfiles_in.load(Ordering::Relaxed),
             flowfiles_out: self.flowfiles_out.load(Ordering::Relaxed),
             last_trigger_nanos: self.last_trigger_nanos.load(Ordering::Relaxed),
-            active: self.active.load(Ordering::Relaxed),
+            active,
+            state,
         }
     }
 }
@@ -72,6 +93,24 @@ impl ProcessorMetrics {
 impl Default for ProcessorMetrics {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Derived processor state from control flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessorState {
+    Running,
+    Paused,
+    Stopped,
+}
+
+impl ProcessorState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Paused => "paused",
+            Self::Stopped => "stopped",
+        }
     }
 }
 
@@ -88,4 +127,5 @@ pub struct MetricsSnapshot {
     pub flowfiles_out: u64,
     pub last_trigger_nanos: u64,
     pub active: bool,
+    pub state: ProcessorState,
 }

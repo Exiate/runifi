@@ -66,4 +66,66 @@ impl EngineHandle {
         }
         false
     }
+
+    /// Stop a processor by name (set enabled=false).
+    /// Returns `true` if the processor was found.
+    pub fn stop_processor(&self, name: &str) -> bool {
+        for info in self.processors.iter() {
+            if info.name == name {
+                info.metrics
+                    .enabled
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                info.metrics
+                    .paused
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Start a processor by name (set enabled=true).
+    /// Returns `true` if the processor was found.
+    pub fn start_processor(&self, name: &str) -> bool {
+        for info in self.processors.iter() {
+            if info.name == name {
+                info.metrics
+                    .enabled
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                info.metrics
+                    .paused
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Pause a processor by name (set paused=true).
+    /// Returns `true` if the processor was found.
+    pub fn pause_processor(&self, name: &str) -> bool {
+        for info in self.processors.iter() {
+            if info.name == name {
+                info.metrics
+                    .paused
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Resume a processor by name (set paused=false).
+    /// Returns `true` if the processor was found.
+    pub fn resume_processor(&self, name: &str) -> bool {
+        for info in self.processors.iter() {
+            if info.name == name {
+                info.metrics
+                    .paused
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                return true;
+            }
+        }
+        false
+    }
 }
