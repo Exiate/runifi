@@ -229,7 +229,9 @@ impl ProcessorMetrics {
         let b_in = self.bytes_in.load(Ordering::Relaxed);
         let b_out = self.bytes_out.load(Ordering::Relaxed);
 
-        self.rolling.lock().record(now_secs, ff_in, ff_out, b_in, b_out);
+        self.rolling
+            .lock()
+            .record(now_secs, ff_in, ff_out, b_in, b_out);
     }
 
     /// Get a rolling 5-minute snapshot of throughput rates.
