@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use parking_lot::RwLock;
 
+use super::bulletin::BulletinBoard;
 use super::metrics::ProcessorMetrics;
 use super::processor_node::SchedulingStrategy;
 use crate::connection::flow_connection::FlowConnection;
@@ -103,6 +104,7 @@ pub struct EngineHandle {
     pub processors: Arc<Vec<ProcessorInfo>>,
     pub connections: Arc<Vec<ConnectionInfo>>,
     pub plugin_types: Arc<Vec<PluginTypeInfo>>,
+    pub bulletin_board: Arc<BulletinBoard>,
     pub content_repo: Arc<dyn ContentRepository>,
 }
 

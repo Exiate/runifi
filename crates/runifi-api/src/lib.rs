@@ -27,6 +27,7 @@ pub fn create_router(handle: EngineHandle) -> Router {
         .merge(routes::flow::routes())
         .merge(routes::plugins::routes())
         .merge(routes::events::routes())
+        .merge(routes::bulletins::routes())
         .merge(dashboard::routes())
         .layer(cors)
         .with_state(state)

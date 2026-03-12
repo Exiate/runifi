@@ -9,6 +9,7 @@ use runifi_plugin_api::Processor;
 
 use parking_lot::RwLock;
 
+use super::bulletin::BulletinBoard;
 use super::handle::{
     ConnectionInfo, EngineHandle, PluginTypeInfo, ProcessorInfo, PropertyDescriptorInfo,
     RelationshipInfo,
@@ -36,6 +37,7 @@ pub struct FlowEngine {
     content_repo: Arc<dyn ContentRepository>,
     id_gen: Arc<IdGenerator>,
     cancel_token: CancellationToken,
+    bulletin_board: Arc<BulletinBoard>,
 
     // Build-phase state (consumed on start).
     nodes: Vec<NodeBuilder>,
@@ -73,6 +75,7 @@ impl FlowEngine {
             content_repo,
             id_gen: Arc::new(IdGenerator::new()),
             cancel_token: CancellationToken::new(),
+            bulletin_board: Arc::new(BulletinBoard::default()),
             nodes: Vec::new(),
             connections: Vec::new(),
             next_node_id: 0,
@@ -239,6 +242,7 @@ impl FlowEngine {
                 self.id_gen.clone(),
                 child_token,
                 metrics,
+                self.bulletin_board.clone(),
             );
 
             // Wire connections.
@@ -265,6 +269,7 @@ impl FlowEngine {
             processors: Arc::new(processor_infos),
             connections: Arc::new(connection_infos),
             plugin_types: Arc::new(Vec::new()), // populated by server after start
+            bulletin_board: self.bulletin_board.clone(),
             content_repo: self.content_repo.clone(),
         };
         self.handle = Some(engine_handle);

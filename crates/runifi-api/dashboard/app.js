@@ -9,6 +9,12 @@
     const processorsGrid = $('#processors-grid');
     const connectionsGrid = $('#connections-grid');
     const dagCanvas = $('#dag-canvas');
+    const bulletinsList = $('#bulletins-list');
+    const severityFilter = $('#bulletin-severity-filter');
+    const processorFilter = $('#bulletin-processor-filter');
+    const bulletinModal = $('#bulletin-modal');
+    const bulletinModalClose = $('#bulletin-modal-close');
+    const bulletinModalBody = $('#bulletin-modal-body');
 
     // Summary bar elements
     const summaryProcCount = $('#summary-proc-count');
@@ -30,8 +36,11 @@
 
     let flowTopology = null; // { processors: [], connections: [] }
     let dagLayout = null;    // { nodes: Map<name, {x,y,layer,col}>, layers: [] }
-    let lastProcessorMetrics = {}; // name → metrics object
-    let lastConnectionMetrics = {}; // "source→rel→dest" → {queued_count, queued_bytes, back_pressured}
+    let lastProcessorMetrics = {}; // name -> metrics object
+    let lastConnectionMetrics = {}; // "source->rel->dest" -> {queued_count, queued_bytes, back_pressured}
+    let lastBulletins = []; // latest bulletins from SSE (per-processor summary)
+    let allBulletins = []; // full bulletin list from API
+    let knownProcessorNames = new Set();
 
     // ── Fetch initial system info ──────────────────────────────
     fetch('/api/v1/system')
@@ -201,6 +210,21 @@
         rect.classList.add('state-' + state);
         g.appendChild(rect);
 
+        // Bulletin indicator on DAG node (top-right corner)
+        const bulletin = getBulletinForProcessor(proc.name);
+        if (bulletin) {
+            const indicatorColor = bulletin.severity === 'error' ? 'var(--danger)' : 'var(--warning)';
+            const circle = svgEl('circle', {
+                cx: NODE_WIDTH - 12,
+                cy: 12,
+                r: 5
+            });
+            circle.classList.add('dag-bulletin-indicator');
+            circle.setAttribute('fill', indicatorColor);
+            circle.setAttribute('data-bulletin-indicator', proc.name);
+            g.appendChild(circle);
+        }
+
         // Processor name (bold)
         const nameText = svgEl('text', { x: NODE_WIDTH / 2, y: 22 });
         nameText.classList.add('dag-node-name');
@@ -318,6 +342,33 @@
                 rect.classList.add('state-' + state);
             }
 
+            // Update bulletin indicator on DAG node
+            const existingIndicator = g.querySelector('[data-bulletin-indicator]');
+            const bulletin = getBulletinForProcessor(proc.name);
+            if (bulletin) {
+                const indicatorColor = bulletin.severity === 'error' ? 'var(--danger)' : 'var(--warning)';
+                if (existingIndicator) {
+                    existingIndicator.setAttribute('fill', indicatorColor);
+                } else {
+                    const circle = svgEl('circle', {
+                        cx: NODE_WIDTH - 12,
+                        cy: 12,
+                        r: 5
+                    });
+                    circle.classList.add('dag-bulletin-indicator');
+                    circle.setAttribute('fill', indicatorColor);
+                    circle.setAttribute('data-bulletin-indicator', proc.name);
+                    // Insert after the rect
+                    if (rect && rect.nextSibling) {
+                        g.insertBefore(circle, rect.nextSibling);
+                    } else {
+                        g.appendChild(circle);
+                    }
+                }
+            } else if (existingIndicator) {
+                existingIndicator.remove();
+            }
+
             // Update metric texts
             const texts = g.querySelectorAll('.dag-node-metric');
             if (texts.length >= 3) {
@@ -371,6 +422,124 @@
         return s.substring(0, maxLen - 1) + '\u2026';
     }
 
+    // ── Bulletin helpers ──────────────────────────────────────
+    function getBulletinForProcessor(name) {
+        return lastBulletins.find(b => b.processor_name === name) || null;
+    }
+
+    function formatTimestamp(ms) {
+        const d = new Date(ms);
+        const pad = (n) => String(n).padStart(2, '0');
+        return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    }
+
+    function showBulletinDetail(bulletin) {
+        const sevClass = bulletin.severity === 'error' ? 'severity-error' : 'severity-warn';
+        const time = new Date(bulletin.timestamp_ms).toLocaleString();
+        bulletinModalBody.innerHTML = `
+            <div class="detail-row">
+                <div class="detail-label">Severity</div>
+                <div class="detail-value ${sevClass}">${esc(bulletin.severity.toUpperCase())}</div>
+            </div>
+            <div class="detail-row">
+                <div class="detail-label">Processor</div>
+                <div class="detail-value">${esc(bulletin.processor_name)}</div>
+            </div>
+            <div class="detail-row">
+                <div class="detail-label">Time</div>
+                <div class="detail-value">${esc(time)}</div>
+            </div>
+            <div class="detail-row">
+                <div class="detail-label">Message</div>
+                <div class="detail-value">${esc(bulletin.message)}</div>
+            </div>
+        `;
+        bulletinModal.style.display = 'flex';
+    }
+
+    // Bulletin modal close handlers
+    bulletinModalClose.addEventListener('click', () => {
+        bulletinModal.style.display = 'none';
+    });
+    bulletinModal.addEventListener('click', (e) => {
+        if (e.target === bulletinModal) {
+            bulletinModal.style.display = 'none';
+        }
+    });
+
+    // Bulletin filter handlers
+    severityFilter.addEventListener('change', fetchAndRenderBulletins);
+    processorFilter.addEventListener('change', fetchAndRenderBulletins);
+
+    function fetchAndRenderBulletins() {
+        const severity = severityFilter.value;
+        const processor = processorFilter.value;
+        let url = '/api/v1/bulletins?';
+        if (severity) url += 'severity=' + encodeURIComponent(severity) + '&';
+        if (processor) url += 'processor=' + encodeURIComponent(processor) + '&';
+
+        fetch(url)
+            .then(r => r.json())
+            .then(data => {
+                allBulletins = data;
+                renderBulletinList(data);
+            })
+            .catch(() => {});
+    }
+
+    function renderBulletinList(bulletins) {
+        if (!bulletins || bulletins.length === 0) {
+            bulletinsList.innerHTML = '<div class="bulletin-empty">No bulletins to display</div>';
+            return;
+        }
+
+        // Reverse so newest are shown first
+        const sorted = bulletins.slice().reverse();
+        bulletinsList.innerHTML = '';
+
+        for (const b of sorted) {
+            const item = document.createElement('div');
+            item.className = 'bulletin-item';
+            item.innerHTML = `
+                <span class="bulletin-severity ${esc(b.severity)}">${esc(b.severity)}</span>
+                <div class="bulletin-body">
+                    <div class="bulletin-meta">
+                        <span class="bulletin-processor">${esc(b.processor_name)}</span>
+                        <span>${formatTimestamp(b.timestamp_ms)}</span>
+                    </div>
+                    <div class="bulletin-message">${esc(b.message)}</div>
+                </div>
+            `;
+            item.addEventListener('click', () => showBulletinDetail(b));
+            bulletinsList.appendChild(item);
+        }
+    }
+
+    function updateProcessorFilterOptions(processors) {
+        const newNames = new Set(processors.map(p => p.name));
+        // Only update if names changed
+        let changed = false;
+        if (newNames.size !== knownProcessorNames.size) {
+            changed = true;
+        } else {
+            for (const n of newNames) {
+                if (!knownProcessorNames.has(n)) { changed = true; break; }
+            }
+        }
+        if (!changed) return;
+        knownProcessorNames = newNames;
+
+        const currentValue = processorFilter.value;
+        processorFilter.innerHTML = '<option value="">All Processors</option>';
+        for (const name of newNames) {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            processorFilter.appendChild(opt);
+        }
+        processorFilter.value = currentValue;
+    }
+
     // ── SSE connection ─────────────────────────────────────────
     let evtSource = null;
 
@@ -408,6 +577,17 @@
         for (const c of data.connections) {
             const key = c.source_name + '\u2192' + c.relationship + '\u2192' + c.dest_name;
             lastConnectionMetrics[key] = c;
+        }
+
+        // Cache bulletins from SSE
+        lastBulletins = data.bulletins || [];
+
+        // Update processor filter options
+        updateProcessorFilterOptions(data.processors);
+
+        // If bulletins arrived and we have new ones, refresh the bulletin list
+        if (lastBulletins.length > 0) {
+            fetchAndRenderBulletins();
         }
 
         // Update DAG metrics (efficient — no re-render of layout)
@@ -514,10 +694,16 @@
             const isPaused = state === 'paused';
             const isStopped = state === 'stopped';
 
+            // Bulletin indicator for this processor
+            const bulletin = getBulletinForProcessor(p.name);
+            const bulletinHtml = bulletin
+                ? '<span class="bulletin-indicator ' + esc(bulletin.severity) + '" title="' + esc(bulletin.severity.toUpperCase() + ': ' + bulletin.message) + '"></span>'
+                : '';
+
             card.innerHTML = `
                 <div class="card-header">
                     <div>
-                        <div class="card-title">${esc(p.name)}</div>
+                        <div class="card-title">${esc(p.name)}${bulletinHtml}</div>
                         <div class="card-type">${esc(p.type_name)} &middot; ${esc(p.scheduling)}</div>
                     </div>
                     <div class="card-badges">
@@ -1174,6 +1360,9 @@
         d.textContent = s;
         return d.innerHTML;
     }
+
+    // Initial bulletin fetch
+    fetchAndRenderBulletins();
 
     connect();
 })();

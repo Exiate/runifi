@@ -9,7 +9,7 @@ use tokio_stream::Stream;
 use tokio_stream::StreamExt as _;
 use tokio_stream::wrappers::IntervalStream;
 
-use crate::dto::{ConnectionResponse, ProcessorResponse, SseMetricsEvent};
+use crate::dto::{BulletinResponse, ConnectionResponse, ProcessorResponse, SseMetricsEvent};
 use crate::state::ApiState;
 
 pub fn routes() -> Router<ApiState> {
@@ -43,10 +43,19 @@ async fn sse_events(
             })
             .collect();
 
+        // Include latest bulletins per processor in the SSE event.
+        let bulletins: Vec<BulletinResponse> = handle
+            .bulletin_board
+            .latest_per_processor()
+            .into_values()
+            .map(BulletinResponse::from)
+            .collect();
+
         let event = SseMetricsEvent {
             uptime_secs: handle.started_at.elapsed().as_secs(),
             processors,
             connections,
+            bulletins,
         };
 
         let data = serde_json::to_string(&event).unwrap_or_default();
