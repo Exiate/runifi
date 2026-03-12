@@ -1,5 +1,8 @@
-use serde::Serialize;
+use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
+
+use runifi_core::engine::bulletin::Bulletin;
 use runifi_core::engine::handle::{PluginKind, ProcessorInfo};
 use runifi_core::engine::metrics::MetricsSnapshot;
 
@@ -23,6 +26,7 @@ pub struct ProcessorResponse {
 
 #[derive(Serialize)]
 pub struct MetricsResponse {
+    // Lifetime totals.
     pub total_invocations: u64,
     pub total_failures: u64,
     pub consecutive_failures: u64,
@@ -32,6 +36,16 @@ pub struct MetricsResponse {
     pub flowfiles_in: u64,
     pub flowfiles_out: u64,
     pub active: bool,
+    // Rolling 5-minute window totals.
+    pub flowfiles_in_5m: u64,
+    pub flowfiles_out_5m: u64,
+    pub bytes_in_5m: u64,
+    pub bytes_out_5m: u64,
+    // Rolling 5-minute per-second rates.
+    pub flowfiles_in_rate: f64,
+    pub flowfiles_out_rate: f64,
+    pub bytes_in_rate: f64,
+    pub bytes_out_rate: f64,
 }
 
 impl From<MetricsSnapshot> for MetricsResponse {
@@ -46,6 +60,14 @@ impl From<MetricsSnapshot> for MetricsResponse {
             flowfiles_in: s.flowfiles_in,
             flowfiles_out: s.flowfiles_out,
             active: s.active,
+            flowfiles_in_5m: s.rolling.flowfiles_in_5m,
+            flowfiles_out_5m: s.rolling.flowfiles_out_5m,
+            bytes_in_5m: s.rolling.bytes_in_5m,
+            bytes_out_5m: s.rolling.bytes_out_5m,
+            flowfiles_in_rate: s.rolling.flowfiles_in_rate,
+            flowfiles_out_rate: s.rolling.flowfiles_out_rate,
+            bytes_in_rate: s.rolling.bytes_in_rate,
+            bytes_out_rate: s.rolling.bytes_out_rate,
         }
     }
 }
@@ -122,10 +144,174 @@ impl PluginResponse {
     }
 }
 
+/// A bulletin response for the API.
+#[derive(Serialize)]
+pub struct BulletinResponse {
+    pub id: u64,
+    pub timestamp_ms: u64,
+    pub severity: String,
+    pub processor_name: String,
+    pub message: String,
+}
+
+impl From<Bulletin> for BulletinResponse {
+    fn from(b: Bulletin) -> Self {
+        Self {
+            id: b.id,
+            timestamp_ms: b.timestamp_ms,
+            severity: b.severity.as_str().to_string(),
+            processor_name: b.processor_name,
+            message: b.message,
+        }
+    }
+}
+
+/// A queued FlowFile as returned by the queue inspection API.
+#[derive(Serialize)]
+pub struct QueuedFlowFileResponse {
+    pub id: u64,
+    pub attributes: Vec<FlowFileAttributeResponse>,
+    pub size: u64,
+    pub age_ms: u64,
+    pub has_content: bool,
+    pub position: usize,
+}
+
+/// A single FlowFile attribute key-value pair.
+#[derive(Serialize)]
+pub struct FlowFileAttributeResponse {
+    pub key: String,
+    pub value: String,
+}
+
+/// Paginated response for queue listing.
+#[derive(Serialize)]
+pub struct QueueListingResponse {
+    pub connection_id: String,
+    pub total_count: usize,
+    pub offset: usize,
+    pub limit: usize,
+    pub flowfiles: Vec<QueuedFlowFileResponse>,
+}
+
 /// SSE event payload — all metrics in one event.
 #[derive(Serialize)]
 pub struct SseMetricsEvent {
     pub uptime_secs: u64,
     pub processors: Vec<ProcessorResponse>,
     pub connections: Vec<ConnectionResponse>,
+    pub bulletins: Vec<BulletinResponse>,
+}
+
+// ── Processor configuration DTOs ─────────────────────────────
+
+/// Response for `GET /api/v1/processors/{name}/config`.
+#[derive(Serialize)]
+pub struct ProcessorConfigResponse {
+    pub processor_name: String,
+    pub type_name: String,
+    pub properties: HashMap<String, String>,
+    pub property_descriptors: Vec<PropertyDescriptorResponse>,
+    pub scheduling: SchedulingResponse,
+    pub relationships: Vec<RelationshipResponse>,
+}
+
+#[derive(Serialize)]
+pub struct PropertyDescriptorResponse {
+    pub name: String,
+    pub description: String,
+    pub required: bool,
+    pub default_value: Option<String>,
+    pub sensitive: bool,
+    pub allowed_values: Option<Vec<String>>,
+}
+
+#[derive(Serialize)]
+pub struct SchedulingResponse {
+    pub strategy: String,
+    pub interval_ms: Option<u64>,
+}
+
+#[derive(Serialize)]
+pub struct RelationshipResponse {
+    pub name: String,
+    pub description: String,
+    pub auto_terminated: bool,
+}
+
+/// Request body for `PUT /api/v1/processors/{name}/config`.
+#[derive(Deserialize)]
+pub struct ProcessorConfigUpdateRequest {
+    #[serde(default)]
+    pub properties: Option<HashMap<String, String>>,
+}
+
+impl ProcessorConfigResponse {
+    pub fn from_info(info: &ProcessorInfo) -> Self {
+        use runifi_core::engine::processor_node::SchedulingStrategy;
+
+        let (strategy, interval_ms) = match &info.scheduling {
+            SchedulingStrategy::TimerDriven { interval_ms } => {
+                ("timer".to_string(), Some(*interval_ms))
+            }
+            SchedulingStrategy::EventDriven => ("event".to_string(), None),
+        };
+
+        let raw_properties = info.properties.read().clone();
+
+        // Build a set of sensitive property names for masking.
+        let sensitive_names: std::collections::HashSet<&str> = info
+            .property_descriptors
+            .iter()
+            .filter(|pd| pd.sensitive)
+            .map(|pd| pd.name.as_str())
+            .collect();
+
+        // Mask sensitive property values in the response.
+        let properties: HashMap<String, String> = raw_properties
+            .into_iter()
+            .map(|(k, v)| {
+                if sensitive_names.contains(k.as_str()) && !v.is_empty() {
+                    (k, "********".to_string())
+                } else {
+                    (k, v)
+                }
+            })
+            .collect();
+
+        let property_descriptors = info
+            .property_descriptors
+            .iter()
+            .map(|pd| PropertyDescriptorResponse {
+                name: pd.name.clone(),
+                description: pd.description.clone(),
+                required: pd.required,
+                default_value: pd.default_value.clone(),
+                sensitive: pd.sensitive,
+                allowed_values: pd.allowed_values.clone(),
+            })
+            .collect();
+
+        let relationships = info
+            .relationships
+            .iter()
+            .map(|r| RelationshipResponse {
+                name: r.name.clone(),
+                description: r.description.clone(),
+                auto_terminated: r.auto_terminated,
+            })
+            .collect();
+
+        Self {
+            processor_name: info.name.clone(),
+            type_name: info.type_name.clone(),
+            properties,
+            property_descriptors,
+            scheduling: SchedulingResponse {
+                strategy,
+                interval_ms,
+            },
+            relationships,
+        }
+    }
 }

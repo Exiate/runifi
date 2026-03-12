@@ -21,6 +21,31 @@
         </div>
     </header>
 
+    <section id="summary-bar" class="summary-bar">
+        <div class="summary-item" id="summary-processors">
+            <span class="summary-label">Processors</span>
+            <span class="summary-value" id="summary-proc-count">--</span>
+            <span class="summary-indicator" id="summary-proc-indicator"></span>
+        </div>
+        <div class="summary-item" id="summary-queued">
+            <span class="summary-label">Queued FlowFiles</span>
+            <span class="summary-value" id="summary-queued-count">--</span>
+        </div>
+        <div class="summary-item" id="summary-throughput">
+            <span class="summary-label">Throughput</span>
+            <span class="summary-value" id="summary-throughput-value">--</span>
+        </div>
+        <div class="summary-item" id="summary-states">
+            <span class="summary-label">States</span>
+            <div class="summary-state-pills" id="summary-state-pills">--</div>
+        </div>
+        <div class="summary-item" id="summary-backpressure">
+            <span class="summary-label">Back-Pressure</span>
+            <span class="summary-value" id="summary-bp-count">--</span>
+            <span class="summary-indicator" id="summary-bp-indicator"></span>
+        </div>
+    </section>
+
     <main>
         <section id="dag-section">
             <h2>Flow Topology</h2>
@@ -38,7 +63,134 @@
             <h2>Connections</h2>
             <div class="card-grid" id="connections-grid"></div>
         </section>
+
+        <section id="bulletins-section">
+            <div class="bulletins-header">
+                <h2>Bulletin Board</h2>
+                <div class="bulletin-filters">
+                    <select id="bulletin-severity-filter">
+                        <option value="">All Severities</option>
+                        <option value="warn">Warnings</option>
+                        <option value="error">Errors</option>
+                    </select>
+                    <select id="bulletin-processor-filter">
+                        <option value="">All Processors</option>
+                    </select>
+                </div>
+            </div>
+            <div id="bulletins-list" class="bulletins-list">
+                <div class="bulletin-empty">No bulletins to display</div>
+            </div>
+        </section>
     </main>
+
+    <!-- Bulletin detail modal -->
+    <div id="bulletin-modal" class="modal-overlay" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Bulletin Details</h3>
+                <button class="modal-close" id="bulletin-modal-close">&times;</button>
+            </div>
+            <div class="modal-body" id="bulletin-modal-body"></div>
+        </div>
+    </div>
+
+    <!-- Queue Inspector Modal -->
+    <div class="modal-overlay" id="queue-modal" style="display:none;">
+        <div class="modal-content modal-lg">
+            <div class="modal-header">
+                <h3 id="queue-modal-title">Queue Inspector</h3>
+                <button class="modal-close" id="queue-modal-close">&times;</button>
+            </div>
+            <div class="queue-toolbar">
+                <span class="queue-summary" id="queue-summary"></span>
+                <button class="btn-danger-sm" id="queue-empty-btn">Empty Queue</button>
+            </div>
+            <div class="modal-body">
+                <table class="queue-table" id="queue-table">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>ID</th>
+                            <th>Size</th>
+                            <th>Age</th>
+                            <th>Content</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="queue-table-body"></tbody>
+                </table>
+                <div class="queue-pagination" id="queue-pagination"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- FlowFile Detail Modal -->
+    <div class="modal-overlay" id="flowfile-modal" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="flowfile-modal-title">FlowFile Details</h3>
+                <button class="modal-close" id="flowfile-modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="ff-detail-meta" id="ff-detail-meta"></div>
+                <h4 class="attr-heading">Attributes</h4>
+                <table class="attr-table">
+                    <thead>
+                        <tr><th>Key</th><th>Value</th></tr>
+                    </thead>
+                    <tbody id="ff-attr-body"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Confirm Dialog -->
+    <div class="modal-overlay" id="confirm-modal" style="display:none;">
+        <div class="modal-content modal-sm">
+            <div class="modal-header">
+                <h3>Confirm</h3>
+                <button class="modal-close" id="confirm-modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="confirm-message"></p>
+                <div class="confirm-actions">
+                    <button class="btn-cancel" id="confirm-cancel">Cancel</button>
+                    <button class="btn-danger-sm" id="confirm-ok">Confirm</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Processor Configuration Modal -->
+    <div class="modal-overlay" id="config-modal" style="display: none;">
+        <div class="modal">
+            <div class="modal-header">
+                <div>
+                    <h3 class="modal-title" id="config-modal-title">Configure Processor</h3>
+                    <span class="modal-subtitle" id="config-modal-subtitle"></span>
+                </div>
+                <button class="modal-close" id="config-modal-close">&times;</button>
+            </div>
+            <div class="modal-tabs">
+                <button class="tab active" data-tab="properties">Properties</button>
+                <button class="tab" data-tab="scheduling">Scheduling</button>
+                <button class="tab" data-tab="relationships">Relationships</button>
+            </div>
+            <div class="modal-body">
+                <div class="tab-content active" id="tab-properties"></div>
+                <div class="tab-content" id="tab-scheduling"></div>
+                <div class="tab-content" id="tab-relationships"></div>
+            </div>
+            <div class="modal-footer">
+                <span class="modal-status" id="config-modal-status"></span>
+                <div class="modal-actions">
+                    <button class="btn-secondary" id="config-modal-cancel">Cancel</button>
+                    <button class="btn-primary" id="config-modal-save">Save</button>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <script src="/app.js"></script>
 </body>

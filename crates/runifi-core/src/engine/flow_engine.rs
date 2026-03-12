@@ -1,13 +1,19 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use runifi_plugin_api::Processor;
 
-use super::handle::{ConnectionInfo, EngineHandle, PluginTypeInfo, ProcessorInfo};
+use parking_lot::RwLock;
+
+use super::bulletin::BulletinBoard;
+use super::handle::{
+    ConnectionInfo, EngineHandle, PluginTypeInfo, ProcessorInfo, PropertyDescriptorInfo,
+    RelationshipInfo,
+};
 use super::metrics::ProcessorMetrics;
 use super::processor_node::{ProcessorNode, SchedulingStrategy};
 use crate::connection::back_pressure::BackPressureConfig;
@@ -31,6 +37,7 @@ pub struct FlowEngine {
     content_repo: Arc<dyn ContentRepository>,
     id_gen: Arc<IdGenerator>,
     cancel_token: CancellationToken,
+    bulletin_board: Arc<BulletinBoard>,
 
     // Build-phase state (consumed on start).
     nodes: Vec<NodeBuilder>,
@@ -68,6 +75,7 @@ impl FlowEngine {
             content_repo,
             id_gen: Arc::new(IdGenerator::new()),
             cancel_token: CancellationToken::new(),
+            bulletin_board: Arc::new(BulletinBoard::default()),
             nodes: Vec::new(),
             connections: Vec::new(),
             next_node_id: 0,
@@ -137,15 +145,55 @@ impl FlowEngine {
         // Create metrics per processor.
         let mut processor_infos: Vec<ProcessorInfo> = Vec::new();
         let mut metrics_by_node: HashMap<NodeId, Arc<ProcessorMetrics>> = HashMap::new();
+        let mut shared_props_by_node: HashMap<NodeId, Arc<RwLock<HashMap<String, String>>>> =
+            HashMap::new();
 
         for node_builder in &self.nodes {
             let metrics = Arc::new(ProcessorMetrics::new());
             metrics_by_node.insert(node_builder.id, metrics.clone());
+
+            // Extract property descriptors and relationships from the processor instance.
+            let (prop_descriptors, relationships) = if let Some(ref proc) = node_builder.processor {
+                let pds = proc
+                    .property_descriptors()
+                    .into_iter()
+                    .map(|pd| PropertyDescriptorInfo {
+                        name: pd.name.to_string(),
+                        description: pd.description.to_string(),
+                        required: pd.required,
+                        default_value: pd.default_value.map(|v| v.to_string()),
+                        sensitive: pd.sensitive,
+                        allowed_values: pd
+                            .allowed_values
+                            .map(|av| av.iter().map(|v| v.to_string()).collect()),
+                    })
+                    .collect();
+                let rels = proc
+                    .relationships()
+                    .into_iter()
+                    .map(|r| RelationshipInfo {
+                        name: r.name.to_string(),
+                        description: r.description.to_string(),
+                        auto_terminated: r.auto_terminated,
+                    })
+                    .collect();
+                (pds, rels)
+            } else {
+                (Vec::new(), Vec::new())
+            };
+
+            // Shared mutable properties.
+            let shared_props = Arc::new(RwLock::new(node_builder.properties.clone()));
+            shared_props_by_node.insert(node_builder.id, shared_props.clone());
+
             processor_infos.push(ProcessorInfo {
                 name: node_builder.name.clone(),
                 type_name: node_builder.type_name.clone(),
                 scheduling: node_builder.scheduling.clone(),
                 metrics,
+                property_descriptors: prop_descriptors,
+                relationships,
+                properties: shared_props,
             });
         }
 
@@ -179,16 +227,22 @@ impl FlowEngine {
                 .expect("metrics must exist")
                 .clone();
 
+            let shared_props = shared_props_by_node
+                .get(&node_builder.id)
+                .expect("shared_props must exist")
+                .clone();
+
             let mut pn = ProcessorNode::new(
                 node_builder.name.clone(),
                 format!("node-{}", node_builder.id),
                 processor,
                 node_builder.scheduling.clone(),
-                node_builder.properties.clone(),
+                shared_props,
                 self.content_repo.clone(),
                 self.id_gen.clone(),
                 child_token,
                 metrics,
+                self.bulletin_board.clone(),
             );
 
             // Wire connections.
@@ -215,13 +269,36 @@ impl FlowEngine {
             processors: Arc::new(processor_infos),
             connections: Arc::new(connection_infos),
             plugin_types: Arc::new(Vec::new()), // populated by server after start
+            bulletin_board: self.bulletin_board.clone(),
+            content_repo: self.content_repo.clone(),
         };
         self.handle = Some(engine_handle);
 
-        // Spawn tasks.
+        // Spawn processor tasks.
         for node in processor_nodes {
             let handle = tokio::spawn(node.run());
             self.task_handles.push(handle);
+        }
+
+        // Spawn a dedicated metrics tick task that updates rolling windows once per second.
+        {
+            let all_metrics: Vec<Arc<ProcessorMetrics>> =
+                metrics_by_node.values().cloned().collect();
+            let tick_token = self.cancel_token.child_token();
+            let tick_handle = tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(1));
+                loop {
+                    tokio::select! {
+                        _ = tick_token.cancelled() => break,
+                        _ = interval.tick() => {
+                            for m in &all_metrics {
+                                m.record_tick();
+                            }
+                        }
+                    }
+                }
+            });
+            self.task_handles.push(tick_handle);
         }
 
         self.running = true;

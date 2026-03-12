@@ -1,3 +1,4 @@
+pub mod bulletins;
 pub mod connections;
 pub mod events;
 pub mod flow;

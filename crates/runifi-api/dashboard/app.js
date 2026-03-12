@@ -9,6 +9,21 @@
     const processorsGrid = $('#processors-grid');
     const connectionsGrid = $('#connections-grid');
     const dagCanvas = $('#dag-canvas');
+    const bulletinsList = $('#bulletins-list');
+    const severityFilter = $('#bulletin-severity-filter');
+    const processorFilter = $('#bulletin-processor-filter');
+    const bulletinModal = $('#bulletin-modal');
+    const bulletinModalClose = $('#bulletin-modal-close');
+    const bulletinModalBody = $('#bulletin-modal-body');
+
+    // Summary bar elements
+    const summaryProcCount = $('#summary-proc-count');
+    const summaryProcIndicator = $('#summary-proc-indicator');
+    const summaryQueuedCount = $('#summary-queued-count');
+    const summaryThroughputValue = $('#summary-throughput-value');
+    const summaryStatePills = $('#summary-state-pills');
+    const summaryBpCount = $('#summary-bp-count');
+    const summaryBpIndicator = $('#summary-bp-indicator');
 
     // ── DAG state ──────────────────────────────────────────────
     const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -21,8 +36,11 @@
 
     let flowTopology = null; // { processors: [], connections: [] }
     let dagLayout = null;    // { nodes: Map<name, {x,y,layer,col}>, layers: [] }
-    let lastProcessorMetrics = {}; // name → metrics object
-    let lastConnectionMetrics = {}; // "source→rel→dest" → {queued_count, queued_bytes, back_pressured}
+    let lastProcessorMetrics = {}; // name -> metrics object
+    let lastConnectionMetrics = {}; // "source->rel->dest" -> {queued_count, queued_bytes, back_pressured}
+    let lastBulletins = []; // latest bulletins from SSE (per-processor summary)
+    let allBulletins = []; // full bulletin list from API
+    let knownProcessorNames = new Set();
 
     // ── Fetch initial system info ──────────────────────────────
     fetch('/api/v1/system')
@@ -192,6 +210,21 @@
         rect.classList.add('state-' + state);
         g.appendChild(rect);
 
+        // Bulletin indicator on DAG node (top-right corner)
+        const bulletin = getBulletinForProcessor(proc.name);
+        if (bulletin) {
+            const indicatorColor = bulletin.severity === 'error' ? 'var(--danger)' : 'var(--warning)';
+            const circle = svgEl('circle', {
+                cx: NODE_WIDTH - 12,
+                cy: 12,
+                r: 5
+            });
+            circle.classList.add('dag-bulletin-indicator');
+            circle.setAttribute('fill', indicatorColor);
+            circle.setAttribute('data-bulletin-indicator', proc.name);
+            g.appendChild(circle);
+        }
+
         // Processor name (bold)
         const nameText = svgEl('text', { x: NODE_WIDTH / 2, y: 22 });
         nameText.classList.add('dag-node-name');
@@ -246,7 +279,7 @@
     }
 
     function renderEdge(conn, srcPos, dstPos) {
-        const g = svgEl('g', { 'data-edge': conn.source + '→' + conn.destination });
+        const g = svgEl('g', { 'data-edge': conn.source + '\u2192' + conn.destination });
 
         // Calculate start and end points
         const x1 = srcPos.x + NODE_WIDTH;
@@ -276,7 +309,7 @@
         g.appendChild(relLabel);
 
         // Queue depth label
-        const key = conn.source + '→' + conn.relationship + '→' + conn.destination;
+        const key = conn.source + '\u2192' + conn.relationship + '\u2192' + conn.destination;
         const connMetrics = lastConnectionMetrics[key];
         const queueCount = connMetrics ? connMetrics.queued_count : 0;
 
@@ -309,6 +342,33 @@
                 rect.classList.add('state-' + state);
             }
 
+            // Update bulletin indicator on DAG node
+            const existingIndicator = g.querySelector('[data-bulletin-indicator]');
+            const bulletin = getBulletinForProcessor(proc.name);
+            if (bulletin) {
+                const indicatorColor = bulletin.severity === 'error' ? 'var(--danger)' : 'var(--warning)';
+                if (existingIndicator) {
+                    existingIndicator.setAttribute('fill', indicatorColor);
+                } else {
+                    const circle = svgEl('circle', {
+                        cx: NODE_WIDTH - 12,
+                        cy: 12,
+                        r: 5
+                    });
+                    circle.classList.add('dag-bulletin-indicator');
+                    circle.setAttribute('fill', indicatorColor);
+                    circle.setAttribute('data-bulletin-indicator', proc.name);
+                    // Insert after the rect
+                    if (rect && rect.nextSibling) {
+                        g.insertBefore(circle, rect.nextSibling);
+                    } else {
+                        g.appendChild(circle);
+                    }
+                }
+            } else if (existingIndicator) {
+                existingIndicator.remove();
+            }
+
             // Update metric texts
             const texts = g.querySelectorAll('.dag-node-metric');
             if (texts.length >= 3) {
@@ -331,7 +391,7 @@
 
         // Update connection queue labels
         for (const conn of flowTopology.connections) {
-            const key = conn.source + '→' + conn.relationship + '→' + conn.destination;
+            const key = conn.source + '\u2192' + conn.relationship + '\u2192' + conn.destination;
             const label = dagCanvas.querySelector('[data-queue-label="' + CSS.escape(key) + '"]');
             if (!label) continue;
             const connMetrics = lastConnectionMetrics[key];
@@ -362,6 +422,124 @@
         return s.substring(0, maxLen - 1) + '\u2026';
     }
 
+    // ── Bulletin helpers ──────────────────────────────────────
+    function getBulletinForProcessor(name) {
+        return lastBulletins.find(b => b.processor_name === name) || null;
+    }
+
+    function formatTimestamp(ms) {
+        const d = new Date(ms);
+        const pad = (n) => String(n).padStart(2, '0');
+        return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    }
+
+    function showBulletinDetail(bulletin) {
+        const sevClass = bulletin.severity === 'error' ? 'severity-error' : 'severity-warn';
+        const time = new Date(bulletin.timestamp_ms).toLocaleString();
+        bulletinModalBody.innerHTML = `
+            <div class="detail-row">
+                <div class="detail-label">Severity</div>
+                <div class="detail-value ${sevClass}">${esc(bulletin.severity.toUpperCase())}</div>
+            </div>
+            <div class="detail-row">
+                <div class="detail-label">Processor</div>
+                <div class="detail-value">${esc(bulletin.processor_name)}</div>
+            </div>
+            <div class="detail-row">
+                <div class="detail-label">Time</div>
+                <div class="detail-value">${esc(time)}</div>
+            </div>
+            <div class="detail-row">
+                <div class="detail-label">Message</div>
+                <div class="detail-value">${esc(bulletin.message)}</div>
+            </div>
+        `;
+        bulletinModal.style.display = 'flex';
+    }
+
+    // Bulletin modal close handlers
+    bulletinModalClose.addEventListener('click', () => {
+        bulletinModal.style.display = 'none';
+    });
+    bulletinModal.addEventListener('click', (e) => {
+        if (e.target === bulletinModal) {
+            bulletinModal.style.display = 'none';
+        }
+    });
+
+    // Bulletin filter handlers
+    severityFilter.addEventListener('change', fetchAndRenderBulletins);
+    processorFilter.addEventListener('change', fetchAndRenderBulletins);
+
+    function fetchAndRenderBulletins() {
+        const severity = severityFilter.value;
+        const processor = processorFilter.value;
+        let url = '/api/v1/bulletins?';
+        if (severity) url += 'severity=' + encodeURIComponent(severity) + '&';
+        if (processor) url += 'processor=' + encodeURIComponent(processor) + '&';
+
+        fetch(url)
+            .then(r => r.json())
+            .then(data => {
+                allBulletins = data;
+                renderBulletinList(data);
+            })
+            .catch(() => {});
+    }
+
+    function renderBulletinList(bulletins) {
+        if (!bulletins || bulletins.length === 0) {
+            bulletinsList.innerHTML = '<div class="bulletin-empty">No bulletins to display</div>';
+            return;
+        }
+
+        // Reverse so newest are shown first
+        const sorted = bulletins.slice().reverse();
+        bulletinsList.innerHTML = '';
+
+        for (const b of sorted) {
+            const item = document.createElement('div');
+            item.className = 'bulletin-item';
+            item.innerHTML = `
+                <span class="bulletin-severity ${esc(b.severity)}">${esc(b.severity)}</span>
+                <div class="bulletin-body">
+                    <div class="bulletin-meta">
+                        <span class="bulletin-processor">${esc(b.processor_name)}</span>
+                        <span>${formatTimestamp(b.timestamp_ms)}</span>
+                    </div>
+                    <div class="bulletin-message">${esc(b.message)}</div>
+                </div>
+            `;
+            item.addEventListener('click', () => showBulletinDetail(b));
+            bulletinsList.appendChild(item);
+        }
+    }
+
+    function updateProcessorFilterOptions(processors) {
+        const newNames = new Set(processors.map(p => p.name));
+        // Only update if names changed
+        let changed = false;
+        if (newNames.size !== knownProcessorNames.size) {
+            changed = true;
+        } else {
+            for (const n of newNames) {
+                if (!knownProcessorNames.has(n)) { changed = true; break; }
+            }
+        }
+        if (!changed) return;
+        knownProcessorNames = newNames;
+
+        const currentValue = processorFilter.value;
+        processorFilter.innerHTML = '<option value="">All Processors</option>';
+        for (const name of newNames) {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            processorFilter.appendChild(opt);
+        }
+        processorFilter.value = currentValue;
+    }
+
     // ── SSE connection ─────────────────────────────────────────
     let evtSource = null;
 
@@ -387,6 +565,9 @@
     function updateDashboard(data) {
         uptimeEl.textContent = formatUptime(data.uptime_secs);
 
+        // Update summary bar
+        updateSummaryBar(data.processors, data.connections);
+
         // Cache metrics for DAG
         lastProcessorMetrics = {};
         for (const p of data.processors) {
@@ -394,8 +575,19 @@
         }
         lastConnectionMetrics = {};
         for (const c of data.connections) {
-            const key = c.source_name + '→' + c.relationship + '→' + c.dest_name;
+            const key = c.source_name + '\u2192' + c.relationship + '\u2192' + c.dest_name;
             lastConnectionMetrics[key] = c;
+        }
+
+        // Cache bulletins from SSE
+        lastBulletins = data.bulletins || [];
+
+        // Update processor filter options
+        updateProcessorFilterOptions(data.processors);
+
+        // If bulletins arrived and we have new ones, refresh the bulletin list
+        if (lastBulletins.length > 0) {
+            fetchAndRenderBulletins();
         }
 
         // Update DAG metrics (efficient — no re-render of layout)
@@ -412,6 +604,82 @@
         renderConnections(data.connections);
     }
 
+    // ── Summary bar ────────────────────────────────────────────
+    function updateSummaryBar(processors, connections) {
+        const total = processors.length;
+        const stateCounts = { running: 0, paused: 0, stopped: 0 };
+        let circuitOpenCount = 0;
+        let totalFfOutRate = 0;
+        let totalBytesOutRate = 0;
+
+        for (const p of processors) {
+            const state = p.state || 'stopped';
+            if (state in stateCounts) {
+                stateCounts[state]++;
+            } else {
+                stateCounts[state] = (stateCounts[state] || 0) + 1;
+            }
+            if (p.metrics.circuit_open) {
+                circuitOpenCount++;
+            }
+            totalFfOutRate += p.metrics.flowfiles_out_rate || 0;
+            totalBytesOutRate += p.metrics.bytes_out_rate || 0;
+        }
+
+        const running = stateCounts.running;
+
+        // Processor count + indicator
+        summaryProcCount.textContent = running + ' / ' + total + ' Running';
+        if (circuitOpenCount > 0) {
+            summaryProcIndicator.className = 'summary-indicator danger';
+        } else if (running === total && total > 0) {
+            summaryProcIndicator.className = 'summary-indicator healthy';
+        } else if (running > 0) {
+            summaryProcIndicator.className = 'summary-indicator warning';
+        } else {
+            summaryProcIndicator.className = 'summary-indicator';
+        }
+
+        // Total queued FlowFiles
+        let totalQueued = 0;
+        let bpCount = 0;
+        for (const c of connections) {
+            totalQueued += c.queued_count;
+            if (c.back_pressured) bpCount++;
+        }
+        summaryQueuedCount.textContent = fmt(totalQueued);
+
+        // System throughput
+        const ffRateStr = fmtRate(totalFfOutRate);
+        const bytesRateStr = fmtBytes(totalBytesOutRate);
+        summaryThroughputValue.textContent = ffRateStr + ' FF/s \u00B7 ' + bytesRateStr + '/s';
+
+        // State pills
+        summaryStatePills.innerHTML = '';
+        if (stateCounts.running > 0) {
+            summaryStatePills.innerHTML += '<span class="state-pill running">' + stateCounts.running + ' running</span>';
+        }
+        if (stateCounts.paused > 0) {
+            summaryStatePills.innerHTML += '<span class="state-pill paused">' + stateCounts.paused + ' paused</span>';
+        }
+        if (stateCounts.stopped > 0) {
+            summaryStatePills.innerHTML += '<span class="state-pill stopped">' + stateCounts.stopped + ' stopped</span>';
+        }
+        if (circuitOpenCount > 0) {
+            summaryStatePills.innerHTML += '<span class="state-pill circuit-open">' + circuitOpenCount + ' circuit-open</span>';
+        }
+
+        // Back-pressure count + indicator
+        summaryBpCount.textContent = bpCount + ' / ' + connections.length;
+        if (bpCount > 0) {
+            summaryBpIndicator.className = 'summary-indicator warning';
+        } else if (connections.length > 0) {
+            summaryBpIndicator.className = 'summary-indicator healthy';
+        } else {
+            summaryBpIndicator.className = 'summary-indicator';
+        }
+    }
+
     // ── Processor cards ────────────────────────────────────────
     function renderProcessors(processors) {
         processorsGrid.innerHTML = '';
@@ -426,10 +694,16 @@
             const isPaused = state === 'paused';
             const isStopped = state === 'stopped';
 
+            // Bulletin indicator for this processor
+            const bulletin = getBulletinForProcessor(p.name);
+            const bulletinHtml = bulletin
+                ? '<span class="bulletin-indicator ' + esc(bulletin.severity) + '" title="' + esc(bulletin.severity.toUpperCase() + ': ' + bulletin.message) + '"></span>'
+                : '';
+
             card.innerHTML = `
                 <div class="card-header">
                     <div>
-                        <div class="card-title">${esc(p.name)}</div>
+                        <div class="card-title">${esc(p.name)}${bulletinHtml}</div>
                         <div class="card-type">${esc(p.type_name)} &middot; ${esc(p.scheduling)}</div>
                     </div>
                     <div class="card-badges">
@@ -465,12 +739,32 @@
                         <span class="metric-value">${fmtBytes(p.metrics.bytes_out)}</span>
                     </div>
                 </div>
+                <div class="rolling-header">5-Minute Window</div>
+                <div class="metrics-grid rolling">
+                    <div class="metric">
+                        <span class="metric-label">FF In/s</span>
+                        <span class="metric-value">${fmtRate(p.metrics.flowfiles_in_rate)}</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">FF Out/s</span>
+                        <span class="metric-value">${fmtRate(p.metrics.flowfiles_out_rate)}</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">In (5m)</span>
+                        <span class="metric-value">${fmt(p.metrics.flowfiles_in_5m)} FF / ${fmtBytes(p.metrics.bytes_in_5m)}</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Out (5m)</span>
+                        <span class="metric-value">${fmt(p.metrics.flowfiles_out_5m)} FF / ${fmtBytes(p.metrics.bytes_out_5m)}</span>
+                    </div>
+                </div>
                 <div class="proc-controls">
                     <button class="btn-start" ${isRunning ? 'disabled' : ''} data-action="start" data-processor="${esc(p.name)}">Start</button>
                     <button class="btn-pause" ${!isRunning ? 'disabled' : ''} data-action="pause" data-processor="${esc(p.name)}">Pause</button>
                     <button class="btn-resume" ${!isPaused ? 'disabled' : ''} data-action="resume" data-processor="${esc(p.name)}">Resume</button>
                     <button class="btn-stop" ${isStopped ? 'disabled' : ''} data-action="stop" data-processor="${esc(p.name)}">Stop</button>
                 </div>
+                <button class="btn-config" data-config-processor="${esc(p.name)}">Configure</button>
             `;
 
             // Circuit reset click handler
@@ -487,6 +781,14 @@
                     controlProcessor(proc, action);
                 });
             });
+
+            // Configure button handler
+            const configBtn = card.querySelector('.btn-config');
+            if (configBtn) {
+                configBtn.addEventListener('click', () => {
+                    openConfigModal(configBtn.getAttribute('data-config-processor'));
+                });
+            }
 
             processorsGrid.appendChild(card);
         }
@@ -520,9 +822,260 @@
                     <span>Queued: ${fmt(c.queued_count)}</span>
                     <span>Bytes: ${fmtBytes(c.queued_bytes)}</span>
                 </div>
+                <div class="conn-inspect-hint">Click to inspect queue</div>
             `;
+
+            // Click handler to open queue inspector
+            (function(connId, srcName, relName, dstName) {
+                card.addEventListener('click', function() {
+                    openQueueInspector(connId, srcName, relName, dstName);
+                });
+            })(c.id, c.source_name, c.relationship, c.dest_name);
+
             connectionsGrid.appendChild(card);
         }
+    }
+
+    // ── Queue Inspector ───────────────────────────────────────
+    const queueModal = $('#queue-modal');
+    const queueModalTitle = $('#queue-modal-title');
+    const queueModalClose = $('#queue-modal-close');
+    const queueSummary = $('#queue-summary');
+    const queueEmptyBtn = $('#queue-empty-btn');
+    const queueTableBody = $('#queue-table-body');
+    const queuePagination = $('#queue-pagination');
+
+    const flowfileModal = $('#flowfile-modal');
+    const flowfileModalTitle = $('#flowfile-modal-title');
+    const flowfileModalClose = $('#flowfile-modal-close');
+    const ffDetailMeta = $('#ff-detail-meta');
+    const ffAttrBody = $('#ff-attr-body');
+
+    const confirmModal = $('#confirm-modal');
+    const confirmMessage = $('#confirm-message');
+    const confirmCancel = $('#confirm-cancel');
+    let confirmOkBtn = $('#confirm-ok');
+    const confirmModalClose = $('#confirm-modal-close');
+
+    let currentQueueConnId = null;
+    let currentQueueOffset = 0;
+    const QUEUE_PAGE_SIZE = 50;
+
+    // Close handlers for queue modals
+    if (queueModalClose) {
+        queueModalClose.addEventListener('click', function() { queueModal.style.display = 'none'; });
+    }
+    if (flowfileModalClose) {
+        flowfileModalClose.addEventListener('click', function() { flowfileModal.style.display = 'none'; });
+    }
+    if (confirmModalClose) {
+        confirmModalClose.addEventListener('click', function() { confirmModal.style.display = 'none'; });
+    }
+    if (confirmCancel) {
+        confirmCancel.addEventListener('click', function() { confirmModal.style.display = 'none'; });
+    }
+
+    // Close queue modals on overlay click
+    [queueModal, flowfileModal, confirmModal].forEach(function(modal) {
+        if (modal) {
+            modal.addEventListener('click', function(e) {
+                if (e.target === modal) modal.style.display = 'none';
+            });
+        }
+    });
+
+    function openQueueInspector(connId, source, rel, dest) {
+        currentQueueConnId = connId;
+        currentQueueOffset = 0;
+        if (queueModalTitle) {
+            queueModalTitle.textContent = source + ' \u2192 ' + rel + ' \u2192 ' + dest;
+        }
+        if (queueModal) {
+            queueModal.style.display = 'flex';
+        }
+        loadQueuePage();
+    }
+
+    function loadQueuePage() {
+        if (!currentQueueConnId) return;
+        var url = '/api/v1/connections/' + encodeURIComponent(currentQueueConnId)
+            + '/queue?offset=' + currentQueueOffset + '&limit=' + QUEUE_PAGE_SIZE;
+
+        fetch(url)
+            .then(function(r) { return r.json(); })
+            .then(function(data) { renderQueueTable(data); })
+            .catch(function() {
+                if (queueTableBody) {
+                    queueTableBody.innerHTML = '<tr class="empty-row"><td colspan="6">Failed to load queue</td></tr>';
+                }
+            });
+    }
+
+    function renderQueueTable(data) {
+        if (queueSummary) {
+            queueSummary.textContent = data.total_count + ' FlowFile' + (data.total_count !== 1 ? 's' : '') + ' queued';
+        }
+        if (!queueTableBody) return;
+        queueTableBody.innerHTML = '';
+
+        if (data.flowfiles.length === 0) {
+            queueTableBody.innerHTML = '<tr class="empty-row"><td colspan="6">Queue is empty</td></tr>';
+        } else {
+            for (var idx = 0; idx < data.flowfiles.length; idx++) {
+                var tr = document.createElement('tr');
+                var ff = data.flowfiles[idx];
+                var downloadLink = ff.has_content
+                    ? '<a class="btn-link ff-download-btn" href="/api/v1/connections/'
+                      + encodeURIComponent(currentQueueConnId)
+                      + '/queue/' + ff.id + '/content" target="_blank">Download</a>'
+                    : '';
+                tr.innerHTML = '<td>' + (ff.position + 1) + '</td>'
+                    + '<td>' + ff.id + '</td>'
+                    + '<td>' + fmtBytes(ff.size) + '</td>'
+                    + '<td>' + fmtAge(ff.age_ms) + '</td>'
+                    + '<td>' + (ff.has_content ? 'Yes' : 'No') + '</td>'
+                    + '<td>'
+                    + '<button class="btn-link ff-view-btn" data-ff-id="' + ff.id + '">View</button>'
+                    + downloadLink
+                    + '<button class="btn-remove ff-remove-btn" data-ff-id="' + ff.id + '">Remove</button>'
+                    + '</td>';
+
+                (function(flowfile) {
+                    tr.addEventListener('click', function(e) {
+                        if (e.target.tagName === 'BUTTON' || e.target.tagName === 'A') return;
+                        openFlowFileDetail(flowfile);
+                    });
+                    tr.querySelector('.ff-view-btn').addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        openFlowFileDetail(flowfile);
+                    });
+                    tr.querySelector('.ff-remove-btn').addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        showConfirmDialog('Remove FlowFile #' + flowfile.id + ' from the queue?', function() {
+                            removeFlowFile(currentQueueConnId, flowfile.id);
+                        });
+                    });
+                })(ff);
+
+                queueTableBody.appendChild(tr);
+            }
+        }
+
+        renderQueuePagination(data.total_count, data.offset, data.limit);
+    }
+
+    function renderQueuePagination(total, offset, limit) {
+        if (!queuePagination) return;
+        queuePagination.innerHTML = '';
+        if (total <= limit) return;
+
+        var totalPages = Math.ceil(total / limit);
+        var currentPage = Math.floor(offset / limit) + 1;
+
+        var prevBtn = document.createElement('button');
+        prevBtn.textContent = 'Previous';
+        prevBtn.disabled = currentPage <= 1;
+        prevBtn.addEventListener('click', function() {
+            currentQueueOffset = Math.max(0, currentQueueOffset - QUEUE_PAGE_SIZE);
+            loadQueuePage();
+        });
+        queuePagination.appendChild(prevBtn);
+
+        var info = document.createElement('span');
+        info.textContent = 'Page ' + currentPage + ' of ' + totalPages;
+        queuePagination.appendChild(info);
+
+        var nextBtn = document.createElement('button');
+        nextBtn.textContent = 'Next';
+        nextBtn.disabled = currentPage >= totalPages;
+        nextBtn.addEventListener('click', function() {
+            currentQueueOffset += QUEUE_PAGE_SIZE;
+            loadQueuePage();
+        });
+        queuePagination.appendChild(nextBtn);
+    }
+
+    function openFlowFileDetail(ff) {
+        if (flowfileModalTitle) {
+            flowfileModalTitle.textContent = 'FlowFile #' + ff.id;
+        }
+        if (ffDetailMeta) {
+            ffDetailMeta.innerHTML = ''
+                + '<div class="detail-row"><span class="detail-label">ID</span><span class="detail-value">' + ff.id + '</span></div>'
+                + '<div class="detail-row"><span class="detail-label">Size</span><span class="detail-value">' + fmtBytes(ff.size) + '</span></div>'
+                + '<div class="detail-row"><span class="detail-label">Age</span><span class="detail-value">' + fmtAge(ff.age_ms) + '</span></div>'
+                + '<div class="detail-row"><span class="detail-label">Has Content</span><span class="detail-value">' + (ff.has_content ? 'Yes' : 'No') + '</span></div>';
+        }
+        if (ffAttrBody) {
+            ffAttrBody.innerHTML = '';
+            if (ff.attributes.length === 0) {
+                ffAttrBody.innerHTML = '<tr><td colspan="2" style="color: var(--text-dim); text-align: center;">No attributes</td></tr>';
+            } else {
+                for (var i = 0; i < ff.attributes.length; i++) {
+                    var attr = ff.attributes[i];
+                    var atr = document.createElement('tr');
+                    atr.innerHTML = '<td>' + esc(attr.key) + '</td><td>' + esc(attr.value) + '</td>';
+                    ffAttrBody.appendChild(atr);
+                }
+            }
+        }
+        if (flowfileModal) {
+            flowfileModal.style.display = 'flex';
+        }
+    }
+
+    // Empty Queue button
+    if (queueEmptyBtn) {
+        queueEmptyBtn.addEventListener('click', function() {
+            showConfirmDialog('Empty the entire queue? This will remove all FlowFiles from this connection.', function() {
+                emptyQueue(currentQueueConnId);
+            });
+        });
+    }
+
+    function emptyQueue(connId) {
+        fetch('/api/v1/connections/' + encodeURIComponent(connId) + '/queue', {
+            method: 'DELETE'
+        })
+        .then(function(r) { return r.json(); })
+        .then(function() {
+            currentQueueOffset = 0;
+            loadQueuePage();
+        })
+        .catch(function() {});
+    }
+
+    function removeFlowFile(connId, ffId) {
+        fetch('/api/v1/connections/' + encodeURIComponent(connId) + '/queue/' + ffId, {
+            method: 'DELETE'
+        })
+        .then(function(r) { return r.json(); })
+        .then(function() { loadQueuePage(); })
+        .catch(function() {});
+    }
+
+    function showConfirmDialog(message, onConfirm) {
+        if (confirmMessage) confirmMessage.textContent = message;
+        if (confirmModal) confirmModal.style.display = 'flex';
+        if (confirmOkBtn) {
+            var newOk = confirmOkBtn.cloneNode(true);
+            confirmOkBtn.parentNode.replaceChild(newOk, confirmOkBtn);
+            confirmOkBtn = newOk;
+            newOk.addEventListener('click', function() {
+                if (confirmModal) confirmModal.style.display = 'none';
+                onConfirm();
+            });
+        }
+    }
+
+    function fmtAge(ms) {
+        if (ms < 1000) return ms + 'ms';
+        var secs = Math.floor(ms / 1000);
+        if (secs < 60) return secs + 's';
+        var mins = Math.floor(secs / 60);
+        if (mins < 60) return mins + 'm ' + (secs % 60) + 's';
+        var hours = Math.floor(mins / 60);
+        return hours + 'h ' + (mins % 60) + 'm';
     }
 
     // ── API actions ────────────────────────────────────────────
@@ -538,6 +1091,241 @@
         }).catch(() => {});
     }
 
+    // ── Configuration Modal ───────────────────────────────────
+    const configModal = $('#config-modal');
+    const configModalTitle = $('#config-modal-title');
+    const configModalSubtitle = $('#config-modal-subtitle');
+    const configModalStatus = $('#config-modal-status');
+    const configModalSave = $('#config-modal-save');
+    const tabProperties = $('#tab-properties');
+    const tabScheduling = $('#tab-scheduling');
+    const tabRelationships = $('#tab-relationships');
+
+    let currentConfigProcessor = null;
+    let currentConfigData = null;
+    let configRefreshTimer = null;
+
+    // Tab switching
+    document.querySelectorAll('.modal-tabs .tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            document.querySelectorAll('.modal-tabs .tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(tc => tc.classList.remove('active'));
+            tab.classList.add('active');
+            const target = tab.getAttribute('data-tab');
+            $('#tab-' + target).classList.add('active');
+        });
+    });
+
+    // Close modal
+    $('#config-modal-close').addEventListener('click', closeConfigModal);
+    $('#config-modal-cancel').addEventListener('click', closeConfigModal);
+    configModal.addEventListener('click', (e) => {
+        if (e.target === configModal) closeConfigModal();
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && configModal.style.display !== 'none') {
+            closeConfigModal();
+        }
+    });
+
+    function closeConfigModal() {
+        configModal.style.display = 'none';
+        currentConfigProcessor = null;
+        currentConfigData = null;
+        configModalStatus.textContent = '';
+        configModalStatus.className = 'modal-status';
+        if (configRefreshTimer !== null) {
+            clearTimeout(configRefreshTimer);
+            configRefreshTimer = null;
+        }
+    }
+
+    function openConfigModal(processorName) {
+        currentConfigProcessor = processorName;
+        configModalStatus.textContent = 'Loading...';
+        configModalStatus.className = 'modal-status';
+        configModal.style.display = 'flex';
+
+        // Reset to properties tab
+        document.querySelectorAll('.modal-tabs .tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(tc => tc.classList.remove('active'));
+        document.querySelector('.modal-tabs .tab[data-tab="properties"]').classList.add('active');
+        tabProperties.classList.add('active');
+
+        // Fetch config
+        fetch('/api/v1/processors/' + encodeURIComponent(processorName) + '/config')
+            .then(r => {
+                if (!r.ok) throw new Error('Failed to load config');
+                return r.json();
+            })
+            .then(data => {
+                currentConfigData = data;
+                configModalTitle.textContent = data.processor_name;
+                configModalSubtitle.textContent = data.type_name;
+                configModalStatus.textContent = '';
+                renderConfigTabs(data);
+            })
+            .catch(err => {
+                configModalStatus.textContent = err.message;
+                configModalStatus.className = 'modal-status error';
+            });
+    }
+
+    function renderConfigTabs(data) {
+        // Properties tab
+        if (data.property_descriptors.length === 0) {
+            tabProperties.innerHTML = '<div class="config-empty">This processor has no configurable properties.</div>';
+        } else {
+            let html = '';
+            for (const desc of data.property_descriptors) {
+                const currentVal = data.properties[desc.name] || '';
+                const hasAllowed = desc.allowed_values && desc.allowed_values.length > 0;
+                html += '<div class="config-field">';
+                html += '<label class="config-label">' + esc(desc.name);
+                if (desc.required) html += '<span class="config-required">REQUIRED</span>';
+                html += '</label>';
+                html += '<span class="config-description">' + esc(desc.description) + '</span>';
+
+                if (hasAllowed) {
+                    html += '<select class="config-select" data-prop="' + esc(desc.name) + '">';
+                    if (!desc.required) {
+                        html += '<option value="">-- Select --</option>';
+                    }
+                    for (const av of desc.allowed_values) {
+                        const selected = currentVal === av ? ' selected' : '';
+                        html += '<option value="' + esc(av) + '"' + selected + '>' + esc(av) + '</option>';
+                    }
+                    html += '</select>';
+                } else {
+                    const placeholder = desc.default_value ? 'Default: ' + desc.default_value : '';
+                    html += '<input class="config-input" type="text" data-prop="' + esc(desc.name)
+                        + '" value="' + esc(currentVal)
+                        + '" placeholder="' + esc(placeholder) + '">';
+                }
+
+                if (desc.default_value) {
+                    html += '<span class="config-default">Default: ' + esc(desc.default_value) + '</span>';
+                }
+                html += '</div>';
+            }
+            tabProperties.innerHTML = html;
+        }
+
+        // Scheduling tab
+        {
+            let html = '<div class="scheduling-info">';
+            html += '<div class="config-field">';
+            html += '<label class="config-label">Strategy</label>';
+            html += '<span class="config-description">How the processor is triggered</span>';
+            html += '<input class="config-input" type="text" value="' + esc(data.scheduling.strategy) + '" disabled>';
+            html += '</div>';
+
+            if (data.scheduling.interval_ms !== null && data.scheduling.interval_ms !== undefined) {
+                html += '<div class="config-field">';
+                html += '<label class="config-label">Interval</label>';
+                html += '<span class="config-description">Trigger interval in milliseconds</span>';
+                html += '<input class="config-input" type="text" value="' + data.scheduling.interval_ms + ' ms" disabled>';
+                html += '</div>';
+            }
+
+            html += '</div>';
+            tabScheduling.innerHTML = html;
+        }
+
+        // Relationships tab
+        if (data.relationships.length === 0) {
+            tabRelationships.innerHTML = '<div class="config-empty">This processor has no relationships.</div>';
+        } else {
+            let html = '<table class="rel-table">';
+            html += '<thead><tr><th>Name</th><th>Description</th><th>Auto-Terminated</th></tr></thead>';
+            html += '<tbody>';
+            for (const rel of data.relationships) {
+                const atClass = rel.auto_terminated ? 'yes' : 'no';
+                const atText = rel.auto_terminated ? 'Yes' : 'No';
+                html += '<tr>';
+                html += '<td><strong>' + esc(rel.name) + '</strong></td>';
+                html += '<td>' + esc(rel.description) + '</td>';
+                html += '<td><span class="rel-auto-term ' + atClass + '">' + atText + '</span></td>';
+                html += '</tr>';
+            }
+            html += '</tbody></table>';
+            tabRelationships.innerHTML = html;
+        }
+
+        // Check processor state to enable/disable save
+        const metrics = lastProcessorMetrics[data.processor_name];
+        const state = metrics ? metrics.state : 'stopped';
+        if (state !== 'stopped') {
+            configModalSave.disabled = true;
+            configModalStatus.textContent = 'Stop the processor to edit configuration';
+            configModalStatus.className = 'modal-status';
+        } else {
+            configModalSave.disabled = false;
+        }
+    }
+
+    // Save config
+    configModalSave.addEventListener('click', () => {
+        if (!currentConfigProcessor || !currentConfigData) return;
+
+        // Check state
+        const metrics = lastProcessorMetrics[currentConfigProcessor];
+        const state = metrics ? metrics.state : 'stopped';
+        if (state !== 'stopped') {
+            configModalStatus.textContent = 'Processor must be stopped to save configuration';
+            configModalStatus.className = 'modal-status error';
+            return;
+        }
+
+        // Collect properties from form
+        const properties = {};
+        tabProperties.querySelectorAll('[data-prop]').forEach(el => {
+            const name = el.getAttribute('data-prop');
+            const value = el.value;
+            if (value !== '') {
+                properties[name] = value;
+            }
+        });
+
+        // Validate required fields
+        for (const desc of currentConfigData.property_descriptors) {
+            if (desc.required && !properties[desc.name] && !desc.default_value) {
+                configModalStatus.textContent = 'Required property "' + desc.name + '" is missing';
+                configModalStatus.className = 'modal-status error';
+                return;
+            }
+        }
+
+        configModalStatus.textContent = 'Saving...';
+        configModalStatus.className = 'modal-status';
+        configModalSave.disabled = true;
+
+        fetch('/api/v1/processors/' + encodeURIComponent(currentConfigProcessor) + '/config', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ properties: properties })
+        })
+        .then(r => {
+            if (!r.ok) return r.json().then(data => { throw new Error(data.error || 'Save failed'); });
+            return r.json();
+        })
+        .then(() => {
+            configModalStatus.textContent = 'Configuration saved';
+            configModalStatus.className = 'modal-status success';
+            configModalSave.disabled = false;
+            // Refresh config display
+            configRefreshTimer = setTimeout(() => {
+                configRefreshTimer = null;
+                if (currentConfigProcessor) openConfigModal(currentConfigProcessor);
+            }, 800);
+        })
+        .catch(err => {
+            configModalStatus.textContent = err.message;
+            configModalStatus.className = 'modal-status error';
+            configModalSave.disabled = false;
+        });
+    });
+
     // ── Formatters ─────────────────────────────────────────────
     function formatUptime(secs) {
         const h = Math.floor(secs / 3600);
@@ -550,6 +1338,13 @@
 
     function fmt(n) {
         return n.toLocaleString();
+    }
+
+    function fmtRate(r) {
+        if (r < 0.01) return '0';
+        if (r < 10) return r.toFixed(2);
+        if (r < 100) return r.toFixed(1);
+        return Math.round(r).toLocaleString();
     }
 
     function fmtBytes(b) {
@@ -565,6 +1360,9 @@
         d.textContent = s;
         return d.innerHTML;
     }
+
+    // Initial bulletin fetch
+    fetchAndRenderBulletins();
 
     connect();
 })();
