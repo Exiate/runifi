@@ -996,6 +996,7 @@ name = "runifi-api"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "bytes",
  "include_dir",
  "runifi-core",
  "serde",

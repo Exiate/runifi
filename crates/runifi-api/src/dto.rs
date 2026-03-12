@@ -122,6 +122,34 @@ impl PluginResponse {
     }
 }
 
+/// A queued FlowFile as returned by the queue inspection API.
+#[derive(Serialize)]
+pub struct QueuedFlowFileResponse {
+    pub id: u64,
+    pub attributes: Vec<FlowFileAttributeResponse>,
+    pub size: u64,
+    pub age_ms: u64,
+    pub has_content: bool,
+    pub position: usize,
+}
+
+/// A single FlowFile attribute key-value pair.
+#[derive(Serialize)]
+pub struct FlowFileAttributeResponse {
+    pub key: String,
+    pub value: String,
+}
+
+/// Paginated response for queue listing.
+#[derive(Serialize)]
+pub struct QueueListingResponse {
+    pub connection_id: String,
+    pub total_count: usize,
+    pub offset: usize,
+    pub limit: usize,
+    pub flowfiles: Vec<QueuedFlowFileResponse>,
+}
+
 /// SSE event payload — all metrics in one event.
 #[derive(Serialize)]
 pub struct SseMetricsEvent {

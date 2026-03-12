@@ -520,9 +520,260 @@
                     <span>Queued: ${fmt(c.queued_count)}</span>
                     <span>Bytes: ${fmtBytes(c.queued_bytes)}</span>
                 </div>
+                <div class="conn-inspect-hint">Click to inspect queue</div>
             `;
+
+            // Click handler to open queue inspector
+            (function(connId, srcName, relName, dstName) {
+                card.addEventListener('click', function() {
+                    openQueueInspector(connId, srcName, relName, dstName);
+                });
+            })(c.id, c.source_name, c.relationship, c.dest_name);
+
             connectionsGrid.appendChild(card);
         }
+    }
+
+    // ── Queue Inspector ───────────────────────────────────────
+    const queueModal = $('#queue-modal');
+    const queueModalTitle = $('#queue-modal-title');
+    const queueModalClose = $('#queue-modal-close');
+    const queueSummary = $('#queue-summary');
+    const queueEmptyBtn = $('#queue-empty-btn');
+    const queueTableBody = $('#queue-table-body');
+    const queuePagination = $('#queue-pagination');
+
+    const flowfileModal = $('#flowfile-modal');
+    const flowfileModalTitle = $('#flowfile-modal-title');
+    const flowfileModalClose = $('#flowfile-modal-close');
+    const ffDetailMeta = $('#ff-detail-meta');
+    const ffAttrBody = $('#ff-attr-body');
+
+    const confirmModal = $('#confirm-modal');
+    const confirmMessage = $('#confirm-message');
+    const confirmCancel = $('#confirm-cancel');
+    let confirmOkBtn = $('#confirm-ok');
+    const confirmModalClose = $('#confirm-modal-close');
+
+    let currentQueueConnId = null;
+    let currentQueueOffset = 0;
+    const QUEUE_PAGE_SIZE = 50;
+
+    // Close handlers for queue modals
+    if (queueModalClose) {
+        queueModalClose.addEventListener('click', function() { queueModal.style.display = 'none'; });
+    }
+    if (flowfileModalClose) {
+        flowfileModalClose.addEventListener('click', function() { flowfileModal.style.display = 'none'; });
+    }
+    if (confirmModalClose) {
+        confirmModalClose.addEventListener('click', function() { confirmModal.style.display = 'none'; });
+    }
+    if (confirmCancel) {
+        confirmCancel.addEventListener('click', function() { confirmModal.style.display = 'none'; });
+    }
+
+    // Close queue modals on overlay click
+    [queueModal, flowfileModal, confirmModal].forEach(function(modal) {
+        if (modal) {
+            modal.addEventListener('click', function(e) {
+                if (e.target === modal) modal.style.display = 'none';
+            });
+        }
+    });
+
+    function openQueueInspector(connId, source, rel, dest) {
+        currentQueueConnId = connId;
+        currentQueueOffset = 0;
+        if (queueModalTitle) {
+            queueModalTitle.textContent = source + ' \u2192 ' + rel + ' \u2192 ' + dest;
+        }
+        if (queueModal) {
+            queueModal.style.display = 'flex';
+        }
+        loadQueuePage();
+    }
+
+    function loadQueuePage() {
+        if (!currentQueueConnId) return;
+        var url = '/api/v1/connections/' + encodeURIComponent(currentQueueConnId)
+            + '/queue?offset=' + currentQueueOffset + '&limit=' + QUEUE_PAGE_SIZE;
+
+        fetch(url)
+            .then(function(r) { return r.json(); })
+            .then(function(data) { renderQueueTable(data); })
+            .catch(function() {
+                if (queueTableBody) {
+                    queueTableBody.innerHTML = '<tr class="empty-row"><td colspan="6">Failed to load queue</td></tr>';
+                }
+            });
+    }
+
+    function renderQueueTable(data) {
+        if (queueSummary) {
+            queueSummary.textContent = data.total_count + ' FlowFile' + (data.total_count !== 1 ? 's' : '') + ' queued';
+        }
+        if (!queueTableBody) return;
+        queueTableBody.innerHTML = '';
+
+        if (data.flowfiles.length === 0) {
+            queueTableBody.innerHTML = '<tr class="empty-row"><td colspan="6">Queue is empty</td></tr>';
+        } else {
+            for (var idx = 0; idx < data.flowfiles.length; idx++) {
+                var tr = document.createElement('tr');
+                var ff = data.flowfiles[idx];
+                var downloadLink = ff.has_content
+                    ? '<a class="btn-link ff-download-btn" href="/api/v1/connections/'
+                      + encodeURIComponent(currentQueueConnId)
+                      + '/queue/' + ff.id + '/content" target="_blank">Download</a>'
+                    : '';
+                tr.innerHTML = '<td>' + (ff.position + 1) + '</td>'
+                    + '<td>' + ff.id + '</td>'
+                    + '<td>' + fmtBytes(ff.size) + '</td>'
+                    + '<td>' + fmtAge(ff.age_ms) + '</td>'
+                    + '<td>' + (ff.has_content ? 'Yes' : 'No') + '</td>'
+                    + '<td>'
+                    + '<button class="btn-link ff-view-btn" data-ff-id="' + ff.id + '">View</button>'
+                    + downloadLink
+                    + '<button class="btn-remove ff-remove-btn" data-ff-id="' + ff.id + '">Remove</button>'
+                    + '</td>';
+
+                (function(flowfile) {
+                    tr.addEventListener('click', function(e) {
+                        if (e.target.tagName === 'BUTTON' || e.target.tagName === 'A') return;
+                        openFlowFileDetail(flowfile);
+                    });
+                    tr.querySelector('.ff-view-btn').addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        openFlowFileDetail(flowfile);
+                    });
+                    tr.querySelector('.ff-remove-btn').addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        showConfirmDialog('Remove FlowFile #' + flowfile.id + ' from the queue?', function() {
+                            removeFlowFile(currentQueueConnId, flowfile.id);
+                        });
+                    });
+                })(ff);
+
+                queueTableBody.appendChild(tr);
+            }
+        }
+
+        renderQueuePagination(data.total_count, data.offset, data.limit);
+    }
+
+    function renderQueuePagination(total, offset, limit) {
+        if (!queuePagination) return;
+        queuePagination.innerHTML = '';
+        if (total <= limit) return;
+
+        var totalPages = Math.ceil(total / limit);
+        var currentPage = Math.floor(offset / limit) + 1;
+
+        var prevBtn = document.createElement('button');
+        prevBtn.textContent = 'Previous';
+        prevBtn.disabled = currentPage <= 1;
+        prevBtn.addEventListener('click', function() {
+            currentQueueOffset = Math.max(0, currentQueueOffset - QUEUE_PAGE_SIZE);
+            loadQueuePage();
+        });
+        queuePagination.appendChild(prevBtn);
+
+        var info = document.createElement('span');
+        info.textContent = 'Page ' + currentPage + ' of ' + totalPages;
+        queuePagination.appendChild(info);
+
+        var nextBtn = document.createElement('button');
+        nextBtn.textContent = 'Next';
+        nextBtn.disabled = currentPage >= totalPages;
+        nextBtn.addEventListener('click', function() {
+            currentQueueOffset += QUEUE_PAGE_SIZE;
+            loadQueuePage();
+        });
+        queuePagination.appendChild(nextBtn);
+    }
+
+    function openFlowFileDetail(ff) {
+        if (flowfileModalTitle) {
+            flowfileModalTitle.textContent = 'FlowFile #' + ff.id;
+        }
+        if (ffDetailMeta) {
+            ffDetailMeta.innerHTML = ''
+                + '<div class="detail-row"><span class="detail-label">ID</span><span class="detail-value">' + ff.id + '</span></div>'
+                + '<div class="detail-row"><span class="detail-label">Size</span><span class="detail-value">' + fmtBytes(ff.size) + '</span></div>'
+                + '<div class="detail-row"><span class="detail-label">Age</span><span class="detail-value">' + fmtAge(ff.age_ms) + '</span></div>'
+                + '<div class="detail-row"><span class="detail-label">Has Content</span><span class="detail-value">' + (ff.has_content ? 'Yes' : 'No') + '</span></div>';
+        }
+        if (ffAttrBody) {
+            ffAttrBody.innerHTML = '';
+            if (ff.attributes.length === 0) {
+                ffAttrBody.innerHTML = '<tr><td colspan="2" style="color: var(--text-dim); text-align: center;">No attributes</td></tr>';
+            } else {
+                for (var i = 0; i < ff.attributes.length; i++) {
+                    var attr = ff.attributes[i];
+                    var atr = document.createElement('tr');
+                    atr.innerHTML = '<td>' + esc(attr.key) + '</td><td>' + esc(attr.value) + '</td>';
+                    ffAttrBody.appendChild(atr);
+                }
+            }
+        }
+        if (flowfileModal) {
+            flowfileModal.style.display = 'flex';
+        }
+    }
+
+    // Empty Queue button
+    if (queueEmptyBtn) {
+        queueEmptyBtn.addEventListener('click', function() {
+            showConfirmDialog('Empty the entire queue? This will remove all FlowFiles from this connection.', function() {
+                emptyQueue(currentQueueConnId);
+            });
+        });
+    }
+
+    function emptyQueue(connId) {
+        fetch('/api/v1/connections/' + encodeURIComponent(connId) + '/queue', {
+            method: 'DELETE'
+        })
+        .then(function(r) { return r.json(); })
+        .then(function() {
+            currentQueueOffset = 0;
+            loadQueuePage();
+        })
+        .catch(function() {});
+    }
+
+    function removeFlowFile(connId, ffId) {
+        fetch('/api/v1/connections/' + encodeURIComponent(connId) + '/queue/' + ffId, {
+            method: 'DELETE'
+        })
+        .then(function(r) { return r.json(); })
+        .then(function() { loadQueuePage(); })
+        .catch(function() {});
+    }
+
+    function showConfirmDialog(message, onConfirm) {
+        if (confirmMessage) confirmMessage.textContent = message;
+        if (confirmModal) confirmModal.style.display = 'flex';
+        if (confirmOkBtn) {
+            var newOk = confirmOkBtn.cloneNode(true);
+            confirmOkBtn.parentNode.replaceChild(newOk, confirmOkBtn);
+            confirmOkBtn = newOk;
+            newOk.addEventListener('click', function() {
+                if (confirmModal) confirmModal.style.display = 'none';
+                onConfirm();
+            });
+        }
+    }
+
+    function fmtAge(ms) {
+        if (ms < 1000) return ms + 'ms';
+        var secs = Math.floor(ms / 1000);
+        if (secs < 60) return secs + 's';
+        var mins = Math.floor(secs / 60);
+        if (mins < 60) return mins + 'm ' + (secs % 60) + 's';
+        var hours = Math.floor(mins / 60);
+        return hours + 'h ' + (mins % 60) + 'm';
     }
 
     // ── API actions ────────────────────────────────────────────
