@@ -207,9 +207,7 @@ impl EngineHandle {
             .processors
             .iter()
             .find(|p| p.name == name)
-            .ok_or_else(|| {
-                ConfigUpdateError::NotFound(format!("Processor not found: {}", name))
-            })?;
+            .ok_or_else(|| ConfigUpdateError::NotFound(format!("Processor not found: {}", name)))?;
 
         // Acquire the write lock BEFORE checking state to prevent TOCTOU race
         // with concurrent start requests.

@@ -180,8 +180,7 @@ impl FlowEngine {
             };
 
             // Shared mutable properties.
-            let shared_props =
-                Arc::new(RwLock::new(node_builder.properties.clone()));
+            let shared_props = Arc::new(RwLock::new(node_builder.properties.clone()));
             shared_props_by_node.insert(node_builder.id, shared_props.clone());
 
             processor_infos.push(ProcessorInfo {
