@@ -14,7 +14,7 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-rust-version = "1.85"
+rust-version = "1.94"
 
 [workspace.dependencies]
 # Async runtime
@@ -41,6 +41,9 @@ rustls = "0.23"
 bytes = { version = "1", features = ["serde"] }
 memmap2 = "0.9"              # Memory-mapped files for large transfers
 io-uring = "0.7"             # Linux io_uring for zero-copy IO
+
+# Async utilities
+futures = "0.3"
 
 # Utilities
 uuid = { version = "1", features = ["v7", "serde"] }

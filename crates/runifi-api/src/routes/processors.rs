@@ -15,6 +15,10 @@ pub fn routes() -> Router<ApiState> {
             "/api/v1/processors/{name}/reset-circuit",
             post(reset_circuit),
         )
+        .route("/api/v1/processors/{name}/stop", post(stop_processor))
+        .route("/api/v1/processors/{name}/start", post(start_processor))
+        .route("/api/v1/processors/{name}/pause", post(pause_processor))
+        .route("/api/v1/processors/{name}/resume", post(resume_processor))
 }
 
 async fn list_processors(State(state): State<ApiState>) -> Json<Vec<ProcessorResponse>> {
@@ -48,6 +52,58 @@ async fn reset_circuit(
     if state.handle.request_circuit_reset(&name) {
         Ok(Json(
             serde_json::json!({ "status": "reset_requested", "processor": name }),
+        ))
+    } else {
+        Err(ApiError::ProcessorNotFound(name))
+    }
+}
+
+async fn stop_processor(
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    if state.handle.stop_processor(&name) {
+        Ok(Json(
+            serde_json::json!({ "status": "stopped", "processor": name }),
+        ))
+    } else {
+        Err(ApiError::ProcessorNotFound(name))
+    }
+}
+
+async fn start_processor(
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    if state.handle.start_processor(&name) {
+        Ok(Json(
+            serde_json::json!({ "status": "started", "processor": name }),
+        ))
+    } else {
+        Err(ApiError::ProcessorNotFound(name))
+    }
+}
+
+async fn pause_processor(
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    if state.handle.pause_processor(&name) {
+        Ok(Json(
+            serde_json::json!({ "status": "paused", "processor": name }),
+        ))
+    } else {
+        Err(ApiError::ProcessorNotFound(name))
+    }
+}
+
+async fn resume_processor(
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    if state.handle.resume_processor(&name) {
+        Ok(Json(
+            serde_json::json!({ "status": "resumed", "processor": name }),
         ))
     } else {
         Err(ApiError::ProcessorNotFound(name))

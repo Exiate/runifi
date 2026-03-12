@@ -114,6 +114,36 @@ h2 {
     margin-top: 0.15rem;
 }
 
+.card-badges {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.35rem;
+}
+
+.state-badge {
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    text-transform: uppercase;
+}
+
+.state-badge.running {
+    background: rgba(52, 211, 153, 0.15);
+    color: var(--success);
+}
+
+.state-badge.paused {
+    background: rgba(251, 191, 36, 0.15);
+    color: var(--warning);
+}
+
+.state-badge.stopped {
+    background: rgba(248, 113, 113, 0.15);
+    color: var(--danger);
+}
+
 .circuit-badge {
     font-size: 0.7rem;
     font-weight: 600;
@@ -135,6 +165,60 @@ h2 {
 
 .circuit-badge.open:hover {
     background: rgba(248, 113, 113, 0.3);
+}
+
+.proc-controls {
+    display: flex;
+    gap: 0.4rem;
+    margin-top: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--border);
+}
+
+.proc-controls button {
+    flex: 1;
+    padding: 0.35rem 0.5rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    font-family: var(--font);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.proc-controls button:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--text);
+}
+
+.proc-controls button:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+}
+
+.proc-controls button.btn-start:hover:not(:disabled) {
+    border-color: var(--success);
+    color: var(--success);
+}
+
+.proc-controls button.btn-stop:hover:not(:disabled) {
+    border-color: var(--danger);
+    color: var(--danger);
+}
+
+.proc-controls button.btn-pause:hover:not(:disabled) {
+    border-color: var(--warning);
+    color: var(--warning);
+}
+
+.proc-controls button.btn-resume:hover:not(:disabled) {
+    border-color: var(--success);
+    color: var(--success);
 }
 
 .metrics-grid {
@@ -234,9 +318,96 @@ h2 {
 
 .conn-stats span { font-variant-numeric: tabular-nums; }
 
+/* DAG Canvas */
+.dag-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: auto;
+    min-height: 200px;
+    max-height: 600px;
+    position: relative;
+}
+
+#dag-canvas {
+    display: block;
+    min-width: 100%;
+    min-height: 200px;
+}
+
+#dag-canvas .dag-node-rect {
+    fill: var(--bg);
+    stroke: var(--border);
+    stroke-width: 2;
+    rx: 8;
+    ry: 8;
+    transition: stroke 0.2s;
+}
+
+#dag-canvas .dag-node-rect.state-running {
+    stroke: var(--success);
+}
+
+#dag-canvas .dag-node-rect.state-paused {
+    stroke: var(--warning);
+}
+
+#dag-canvas .dag-node-rect.state-stopped {
+    stroke: var(--border);
+}
+
+#dag-canvas .dag-node-name {
+    fill: var(--text);
+    font-family: var(--font);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+#dag-canvas .dag-node-type {
+    fill: var(--text-dim);
+    font-family: var(--font);
+    font-size: 11px;
+}
+
+#dag-canvas .dag-node-metric {
+    fill: var(--text-dim);
+    font-family: var(--font);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+}
+
+#dag-canvas .dag-node-metric-value {
+    fill: var(--text);
+}
+
+#dag-canvas .dag-edge {
+    fill: none;
+    stroke: var(--border);
+    stroke-width: 2;
+}
+
+#dag-canvas .dag-edge-label {
+    fill: var(--accent);
+    font-family: var(--font);
+    font-size: 10px;
+    font-weight: 500;
+}
+
+#dag-canvas .dag-edge-queue {
+    fill: var(--text-dim);
+    font-family: var(--font);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+}
+
+#dag-canvas .dag-arrowhead {
+    fill: var(--border);
+}
+
 @media (max-width: 768px) {
     header { flex-direction: column; gap: 0.5rem; }
     main { padding: 1rem; }
     .card-grid { grid-template-columns: 1fr; }
     .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+    .dag-container { max-height: 400px; }
 }

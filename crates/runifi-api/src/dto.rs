@@ -17,6 +17,7 @@ pub struct ProcessorResponse {
     pub name: String,
     pub type_name: String,
     pub scheduling: String,
+    pub state: String,
     pub metrics: MetricsResponse,
 }
 
@@ -58,11 +59,14 @@ impl ProcessorResponse {
             }
             SchedulingStrategy::EventDriven => "event".to_string(),
         };
+        let snapshot = info.metrics.snapshot();
+        let state = snapshot.state.as_str().to_string();
         Self {
             name: info.name.clone(),
             type_name: info.type_name.clone(),
             scheduling,
-            metrics: info.metrics.snapshot().into(),
+            state,
+            metrics: snapshot.into(),
         }
     }
 }

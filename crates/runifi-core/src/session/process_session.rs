@@ -195,7 +195,9 @@ impl ProcessSession for CoreProcessSession {
                 let _ = self.content_repo.decrement_ref(claim.resource_id);
             }
         }
-        self.acquired_flowfiles.clear();
+        // Note: acquired_flowfiles is intentionally NOT cleared here.
+        // ProcessorNode reads acquired_count()/acquired_bytes() after commit
+        // to track input metrics. The Vec is freed when the session is dropped.
         self.committed = true;
     }
 
