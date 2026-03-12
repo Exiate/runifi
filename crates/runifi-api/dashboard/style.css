@@ -247,6 +247,22 @@ h2 {
 
 .metric-value.danger { color: var(--danger); }
 
+.rolling-header {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-top: 0.75rem;
+    margin-bottom: 0.35rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--border);
+}
+
+.metrics-grid.rolling .metric-value {
+    font-size: 0.95rem;
+    color: var(--accent);
+}
+
 /* Connection cards */
 .conn-card {
     background: var(--surface);

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -218,10 +218,31 @@ impl FlowEngine {
         };
         self.handle = Some(engine_handle);
 
-        // Spawn tasks.
+        // Spawn processor tasks.
         for node in processor_nodes {
             let handle = tokio::spawn(node.run());
             self.task_handles.push(handle);
+        }
+
+        // Spawn a dedicated metrics tick task that updates rolling windows once per second.
+        {
+            let all_metrics: Vec<Arc<ProcessorMetrics>> =
+                metrics_by_node.values().cloned().collect();
+            let tick_token = self.cancel_token.child_token();
+            let tick_handle = tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(1));
+                loop {
+                    tokio::select! {
+                        _ = tick_token.cancelled() => break,
+                        _ = interval.tick() => {
+                            for m in &all_metrics {
+                                m.record_tick();
+                            }
+                        }
+                    }
+                }
+            });
+            self.task_handles.push(tick_handle);
         }
 
         self.running = true;
