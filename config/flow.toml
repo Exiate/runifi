@@ -1,0 +1,45 @@
+# Example RuniFi flow configuration
+# GenerateFlowFile → LogAttribute → PutFile pipeline
+
+[flow]
+name = "example-flow"
+
+[[flow.processors]]
+name = "generate-test-data"
+type = "GenerateFlowFile"
+[flow.processors.scheduling]
+strategy = "timer"
+interval_ms = 1000
+[flow.processors.properties]
+"File Size" = "5120"
+"Batch Size" = "1"
+"Data Format" = "text"
+
+[[flow.processors]]
+name = "log-attributes"
+type = "LogAttribute"
+[flow.processors.scheduling]
+strategy = "event"
+interval_ms = 100
+[flow.processors.properties]
+"Log Payload" = "false"
+
+[[flow.processors]]
+name = "write-output"
+type = "PutFile"
+[flow.processors.scheduling]
+strategy = "event"
+interval_ms = 100
+[flow.processors.properties]
+"Output Directory" = "/tmp/runifi-output"
+"Conflict Resolution" = "replace"
+
+[[flow.connections]]
+source = "generate-test-data"
+relationship = "success"
+destination = "log-attributes"
+
+[[flow.connections]]
+source = "log-attributes"
+relationship = "success"
+destination = "write-output"

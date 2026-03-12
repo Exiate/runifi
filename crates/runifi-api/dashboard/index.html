@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RuniFi Dashboard</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <header id="header">
+        <div class="header-left">
+            <h1>RuniFi</h1>
+            <span class="version" id="version"></span>
+        </div>
+        <div class="header-right">
+            <span class="flow-name" id="flow-name"></span>
+            <span class="separator">|</span>
+            <span class="uptime" id="uptime"></span>
+            <span class="separator">|</span>
+            <span class="status" id="connection-status">Connecting...</span>
+        </div>
+    </header>
+
+    <main>
+        <section id="processors-section">
+            <h2>Processors</h2>
+            <div class="card-grid" id="processors-grid"></div>
+        </section>
+
+        <section id="connections-section">
+            <h2>Connections</h2>
+            <div class="card-grid" id="connections-grid"></div>
+        </section>
+    </main>
+
+    <script src="/app.js"></script>
+</body>
+</html>

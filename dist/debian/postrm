@@ -1,0 +1,25 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    purge)
+        # Remove data directory on purge
+        rm -rf /var/lib/runifi
+
+        # Remove runifi user
+        if getent passwd runifi >/dev/null 2>&1; then
+            userdel runifi || true
+        fi
+
+        # Remove config directory
+        rm -rf /etc/runifi
+        ;;
+
+    remove|upgrade)
+        systemctl daemon-reload || true
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

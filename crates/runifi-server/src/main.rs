@@ -1,0 +1,189 @@
+use std::sync::Arc;
+
+use anyhow::{Context, Result};
+use tracing_subscriber::EnvFilter;
+
+use runifi_core::config::flow_config::FlowConfig;
+use runifi_core::connection::back_pressure::BackPressureConfig;
+use runifi_core::engine::flow_engine::FlowEngine;
+use runifi_core::engine::handle::{PluginKind, PluginTypeInfo};
+use runifi_core::engine::processor_node::SchedulingStrategy;
+use runifi_core::registry::plugin_registry::PluginRegistry;
+use runifi_core::repository::content_memory::InMemoryContentRepository;
+
+// Ensure processor registrations are linked in.
+extern crate runifi_processors;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
+
+    tracing::info!("RuniFi v{} starting...", env!("CARGO_PKG_VERSION"));
+
+    // Discover all registered plugins.
+    let registry = PluginRegistry::discover();
+    tracing::info!(
+        processors = ?registry.processor_types(),
+        sources = ?registry.source_types(),
+        sinks = ?registry.sink_types(),
+        "Plugin registry initialized"
+    );
+
+    // Load flow configuration.
+    let config_path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "config/flow.toml".to_string());
+
+    let config_str = match std::fs::read_to_string(&config_path) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(path = %config_path, error = %e, "No config file found, running idle");
+            wait_for_shutdown().await;
+            return Ok(());
+        }
+    };
+
+    let config: FlowConfig =
+        toml::from_str(&config_str).context("Failed to parse flow configuration")?;
+
+    tracing::info!(flow = %config.flow.name, "Loaded flow configuration");
+
+    // Create content repository.
+    let content_repo = Arc::new(InMemoryContentRepository::new());
+
+    // Build the flow engine.
+    let mut engine = FlowEngine::new(&config.flow.name, content_repo);
+
+    // Add processors from config.
+    let mut node_ids = std::collections::HashMap::new();
+
+    for proc_config in &config.flow.processors {
+        let processor = registry
+            .create_processor(&proc_config.type_name)
+            .ok_or_else(|| anyhow::anyhow!("Unknown processor type: {}", proc_config.type_name))?;
+
+        let scheduling = match proc_config.scheduling.strategy.as_str() {
+            "event" => SchedulingStrategy::EventDriven,
+            _ => SchedulingStrategy::TimerDriven {
+                interval_ms: proc_config.scheduling.interval_ms,
+            },
+        };
+
+        let node_id = engine.add_processor(
+            &proc_config.name,
+            &proc_config.type_name,
+            processor,
+            scheduling,
+            proc_config.properties.clone(),
+        );
+        node_ids.insert(proc_config.name.clone(), node_id);
+
+        tracing::info!(
+            name = %proc_config.name,
+            type_name = %proc_config.type_name,
+            "Added processor"
+        );
+    }
+
+    // Wire connections.
+    for conn_config in &config.flow.connections {
+        let source_id = *node_ids
+            .get(&conn_config.source)
+            .ok_or_else(|| anyhow::anyhow!("Unknown source processor: {}", conn_config.source))?;
+        let dest_id = *node_ids.get(&conn_config.destination).ok_or_else(|| {
+            anyhow::anyhow!("Unknown destination processor: {}", conn_config.destination)
+        })?;
+
+        let bp_config = match &conn_config.back_pressure {
+            Some(bp) => BackPressureConfig::new(
+                bp.max_count
+                    .unwrap_or(BackPressureConfig::DEFAULT_MAX_COUNT),
+                bp.max_bytes
+                    .unwrap_or(BackPressureConfig::DEFAULT_MAX_BYTES),
+            ),
+            None => BackPressureConfig::default(),
+        };
+
+        // We need a &'static str for the relationship name.
+        // Leak is acceptable here since these live for the program's lifetime.
+        let rel_name: &'static str = Box::leak(conn_config.relationship.clone().into_boxed_str());
+        engine.connect(source_id, rel_name, dest_id, bp_config);
+
+        tracing::info!(
+            source = %conn_config.source,
+            relationship = %conn_config.relationship,
+            destination = %conn_config.destination,
+            "Added connection"
+        );
+    }
+
+    // Start the engine.
+    engine.start().await.context("Failed to start engine")?;
+    tracing::info!("Flow engine is running");
+
+    // Set plugin types on the engine handle.
+    let mut plugin_types: Vec<PluginTypeInfo> = Vec::new();
+    for name in registry.processor_types() {
+        plugin_types.push(PluginTypeInfo {
+            type_name: name.to_string(),
+            kind: PluginKind::Processor,
+        });
+    }
+    for name in registry.source_types() {
+        plugin_types.push(PluginTypeInfo {
+            type_name: name.to_string(),
+            kind: PluginKind::Source,
+        });
+    }
+    for name in registry.sink_types() {
+        plugin_types.push(PluginTypeInfo {
+            type_name: name.to_string(),
+            kind: PluginKind::Sink,
+        });
+    }
+    engine.set_plugin_types(plugin_types);
+
+    // Start the API server if enabled.
+    let api_handle = if config.api.enabled {
+        let engine_handle = engine
+            .handle()
+            .expect("engine handle must exist after start")
+            .clone();
+
+        let bind_address = config.api.bind_address.clone();
+        let port = config.api.port;
+
+        Some(tokio::spawn(async move {
+            if let Err(e) = runifi_api::start_api_server(engine_handle, &bind_address, port).await {
+                tracing::error!(error = %e, "API server failed");
+            }
+        }))
+    } else {
+        tracing::info!("API server disabled");
+        None
+    };
+
+    // Wait for shutdown signal.
+    wait_for_shutdown().await;
+
+    // Graceful shutdown.
+    tracing::info!("Shutting down...");
+    if let Some(handle) = api_handle {
+        handle.abort();
+    }
+    engine.stop().await;
+    tracing::info!("RuniFi stopped");
+
+    Ok(())
+}
+
+async fn wait_for_shutdown() {
+    tokio::signal::ctrl_c()
+        .await
+        .expect("Failed to listen for Ctrl+C");
+    tracing::info!("Received shutdown signal");
+}

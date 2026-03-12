@@ -1,0 +1,33 @@
+[Unit]
+Description=RuniFi — High-Performance Data Flow Engine
+Documentation=https://github.com/lost_castle/runifi
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=runifi
+Group=runifi
+ExecStart=/usr/bin/runifi /etc/runifi/flow.toml
+EnvironmentFile=-/etc/runifi/runifi.env
+Restart=on-failure
+RestartSec=5s
+
+# File descriptor limit for high-throughput transfers
+LimitNOFILE=65536
+
+# Working directory
+WorkingDirectory=/var/lib/runifi
+
+# Security hardening
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/runifi
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target

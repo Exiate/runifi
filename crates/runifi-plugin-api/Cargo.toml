@@ -1,0 +1,12 @@
+[package]
+name = "runifi-plugin-api"
+description = "Stable plugin contract for RuniFi processors, sources, sinks, and services"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+inventory = { workspace = true }

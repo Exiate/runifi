@@ -1,0 +1,80 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/runifi-plugin-api",
+    "crates/runifi-core",
+    "crates/runifi-processors",
+    "crates/runifi-transport",
+    "crates/runifi-api",
+    "crates/runifi-server",
+    "crates/runifi-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec", "io"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Networking
+quinn = "0.11"                # QUIC transport
+rustls = "0.23"
+
+# IO
+bytes = { version = "1", features = ["serde"] }
+memmap2 = "0.9"              # Memory-mapped files for large transfers
+io-uring = "0.7"             # Linux io_uring for zero-copy IO
+
+# Utilities
+uuid = { version = "1", features = ["v7", "serde"] }
+dashmap = "6"                # Concurrent hashmap
+crossbeam = "0.8"            # Lock-free data structures
+chrono = { version = "0.4", features = ["serde"] }
+async-trait = "0.1"
+inventory = "0.3"            # Compile-time plugin registration
+slab = "0.4"                 # Slab allocator for FlowFile IDs
+parking_lot = "0.12"         # Fast synchronization primitives
+smallvec = "2"               # Small-buffer-optimized Vec
+
+# Config
+toml = "0.8"
+
+# Web API
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
+tokio-stream = { version = "0.1", features = ["time"] }
+include_dir = "0.7"
+
+# Internal crates
+runifi-plugin-api = { path = "crates/runifi-plugin-api" }
+runifi-core = { path = "crates/runifi-core" }
+runifi-processors = { path = "crates/runifi-processors" }
+runifi-transport = { path = "crates/runifi-transport" }
+runifi-api = { path = "crates/runifi-api" }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+
+[profile.bench]
+inherits = "release"
+debug = true

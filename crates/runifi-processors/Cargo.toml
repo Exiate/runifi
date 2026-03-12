@@ -1,0 +1,19 @@
+[package]
+name = "runifi-processors"
+description = "Built-in processors for RuniFi — file I/O, routing, debugging"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["all"]
+all = ["filesystem", "routing", "debug"]
+filesystem = []
+routing = []
+debug = []
+
+[dependencies]
+runifi-plugin-api = { workspace = true }
+bytes = { workspace = true }
+tracing = { workspace = true }
+inventory = { workspace = true }

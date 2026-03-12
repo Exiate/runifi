@@ -1,0 +1,29 @@
+# Build artifacts
+/target/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.*
+
+# Generated certs
+*.pem
+*.key
+*.crt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Crash logs
+*.log
+
+# Packages
+*.deb
+*.rpm
+dist/out/

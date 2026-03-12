@@ -1,0 +1,17 @@
+[package]
+name = "runifi-cli"
+description = "CLI tools for RuniFi — flow management, status, and diagnostics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "runifi-cli"
+path = "src/main.rs"
+
+[dependencies]
+runifi-core = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }

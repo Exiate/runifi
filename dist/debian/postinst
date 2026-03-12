@@ -1,0 +1,25 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure)
+        # Create runifi system user if it doesn't exist
+        if ! getent passwd runifi >/dev/null 2>&1; then
+            useradd --system --no-create-home --shell /usr/sbin/nologin --home-dir /var/lib/runifi runifi
+        fi
+
+        # Create data directory
+        install -d -o runifi -g runifi -m 0750 /var/lib/runifi
+
+        # Ensure config directory permissions
+        chown root:runifi /etc/runifi
+        chmod 0750 /etc/runifi
+
+        # Reload systemd to pick up new unit file
+        systemctl daemon-reload || true
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

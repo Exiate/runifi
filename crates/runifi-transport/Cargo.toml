@@ -1,0 +1,19 @@
+[package]
+name = "runifi-transport"
+description = "Network transport layer for RuniFi — QUIC, TCP, and io_uring backends"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+runifi-core = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+quinn = { workspace = true }
+rustls = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+memmap2 = { workspace = true }
+serde = { workspace = true }
+uuid = { workspace = true }

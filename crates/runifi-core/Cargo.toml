@@ -1,0 +1,24 @@
+[package]
+name = "runifi-core"
+description = "Core data flow engine for RuniFi — engine, repositories, connections, and scheduling"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+runifi-plugin-api = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }
+dashmap = { workspace = true }
+crossbeam = { workspace = true }
+inventory = { workspace = true }
+slab = { workspace = true }
+parking_lot = { workspace = true }
+tokio-util = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

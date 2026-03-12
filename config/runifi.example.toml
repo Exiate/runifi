@@ -1,0 +1,36 @@
+# RuniFi Configuration
+
+[server]
+bind_address = "0.0.0.0"
+port = 9443
+
+[transport]
+# QUIC configuration
+max_concurrent_streams = 1000
+idle_timeout_ms = 30000
+
+[transport.tls]
+cert_path = "certs/server.crt"
+key_path = "certs/server.key"
+
+[transfer]
+# Chunk size for standard transfers (bytes)
+chunk_size = 1048576  # 1MB
+
+# Buffer pool size for micro transfers
+micro_buffer_pool_size = 8192
+
+# Max concurrent bulk transfers
+max_bulk_transfers = 4
+
+[storage]
+# Where FlowFile content is stored on disk
+content_repo_path = "./data/content"
+
+# Max size before spilling inline content to disk
+inline_threshold_bytes = 65536  # 64KB
+
+[logging]
+# RUST_LOG compatible filter
+level = "info"
+format = "pretty"  # "pretty" or "json"
