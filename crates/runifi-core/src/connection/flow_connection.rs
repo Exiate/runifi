@@ -6,6 +6,7 @@ use crossbeam::channel::{self, Receiver, Sender, TryRecvError, TrySendError};
 use parking_lot::Mutex;
 use runifi_plugin_api::{ContentClaim, FlowFile};
 use tokio::sync::Notify;
+use tracing::warn;
 
 use super::back_pressure::BackPressureConfig;
 
@@ -160,6 +161,17 @@ impl FlowConnection {
         shadow.iter().find(|s| s.id == flowfile_id).cloned()
     }
 
+    /// Look up a single FlowFile snapshot by ID, returning it with its
+    /// current position in the queue.
+    pub fn queue_get_with_position(&self, flowfile_id: u64) -> Option<(usize, FlowFileSnapshot)> {
+        let shadow = self.shadow.lock();
+        shadow
+            .iter()
+            .enumerate()
+            .find(|(_, s)| s.id == flowfile_id)
+            .map(|(pos, s)| (pos, s.clone()))
+    }
+
     /// Remove a specific FlowFile from the queue by ID.
     ///
     /// This drains the crossbeam channel, removes the matching FlowFile,
@@ -176,7 +188,7 @@ impl FlowConnection {
             None => return false,
         };
 
-        let removed_snapshot = shadow.remove(pos).expect("position was valid");
+        let _removed_snapshot = shadow.remove(pos).expect("position was valid");
 
         // Drain the channel and re-insert everything except the target.
         let mut drained = Vec::new();
@@ -193,20 +205,27 @@ impl FlowConnection {
                 self.count.fetch_sub(1, Ordering::Relaxed);
                 self.bytes.fetch_sub(ff.size, Ordering::Relaxed);
             } else {
-                // Re-insert into channel.
-                let _ = self.sender.try_send(ff);
+                // Re-insert into channel. Use blocking send to avoid silent
+                // data loss if concurrent senders filled the channel while
+                // we had it drained.
+                if let Err(e) = self.sender.send(ff) {
+                    // Channel is disconnected — log and adjust counters so
+                    // they stay consistent with actual channel contents.
+                    warn!(
+                        connection_id = %self.id,
+                        flowfile_id = e.0.id,
+                        "failed to re-insert FlowFile during remove: channel disconnected"
+                    );
+                    self.count.fetch_sub(1, Ordering::Relaxed);
+                    self.bytes.fetch_sub(e.0.size, Ordering::Relaxed);
+                }
             }
         }
 
-        // If not found in channel (race condition), still remove from shadow.
         if !found {
-            // The FlowFile may have been consumed between shadow check and drain.
-            // Adjust atomics based on shadow snapshot.
-            let _ = self.count
-                .fetch_sub(1, Ordering::Relaxed)
-                .min(self.count.load(Ordering::Relaxed));
-            self.bytes
-                .fetch_sub(removed_snapshot.size, Ordering::Relaxed);
+            // The FlowFile was already consumed by a concurrent try_recv,
+            // which already decremented the atomics. Do NOT decrement again.
+            // From the user's perspective the FlowFile is gone, so return true.
         }
 
         true

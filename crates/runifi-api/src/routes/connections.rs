@@ -127,9 +127,9 @@ async fn get_flowfile(
         .find(|c| c.id == id)
         .ok_or(ApiError::ConnectionNotFound(id.clone()))?;
 
-    let snap = conn_info
+    let (position, snap) = conn_info
         .connection
-        .queue_get(flowfile_id)
+        .queue_get_with_position(flowfile_id)
         .ok_or(ApiError::FlowFileNotFound(flowfile_id))?;
 
     let now_nanos = SystemTime::now()
@@ -156,7 +156,7 @@ async fn get_flowfile(
         size: snap.size,
         age_ms,
         has_content: snap.content_claim.is_some(),
-        position: 0,
+        position,
     }))
 }
 
@@ -188,13 +188,31 @@ async fn download_content(
         .read(claim)
         .map_err(|_| ApiError::ContentNotAvailable(flowfile_id))?;
 
-    // Determine filename from attributes if available.
-    let filename = snap
+    // Determine filename from attributes if available, then sanitize to
+    // prevent Content-Disposition header injection (quotes, backslashes,
+    // newlines, and non-ASCII control characters).
+    let raw_filename = snap
         .attributes
         .iter()
         .find(|(k, _)| k.as_ref() == "filename")
         .map(|(_, v)| v.to_string())
         .unwrap_or_else(|| format!("flowfile-{}", flowfile_id));
+
+    let safe_filename: String = raw_filename
+        .chars()
+        .map(|c| {
+            if c == '"' || c == '\\' || c == '\r' || c == '\n' || c.is_ascii_control() {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let safe_filename = if safe_filename.is_empty() {
+        format!("flowfile-{}", flowfile_id)
+    } else {
+        safe_filename
+    };
 
     Ok((
         StatusCode::OK,
@@ -202,7 +220,7 @@ async fn download_content(
             (header::CONTENT_TYPE, "application/octet-stream".to_string()),
             (
                 header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{}\"", filename),
+                format!("attachment; filename=\"{}\"", safe_filename),
             ),
             (header::CONTENT_LENGTH, content.len().to_string()),
         ],
