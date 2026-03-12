@@ -53,7 +53,8 @@ async fn list_bulletins(
         .bulletin_board
         .get_all(query.processor.as_deref(), severity);
 
-    let response: Vec<BulletinResponse> = bulletins.into_iter().map(BulletinResponse::from).collect();
+    let response: Vec<BulletinResponse> =
+        bulletins.into_iter().map(BulletinResponse::from).collect();
     Ok(Json(response))
 }
 
@@ -78,8 +79,12 @@ async fn list_processor_bulletins(
         None => None,
     };
 
-    let bulletins = state.handle.bulletin_board.get_for_processor(&name, severity);
+    let bulletins = state
+        .handle
+        .bulletin_board
+        .get_for_processor(&name, severity);
 
-    let response: Vec<BulletinResponse> = bulletins.into_iter().map(BulletinResponse::from).collect();
+    let response: Vec<BulletinResponse> =
+        bulletins.into_iter().map(BulletinResponse::from).collect();
     Ok(Json(response))
 }

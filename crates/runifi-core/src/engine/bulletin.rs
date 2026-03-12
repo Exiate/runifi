@@ -126,12 +126,7 @@ impl BulletinBoard {
     }
 
     /// Record a bulletin for a processor.
-    pub fn add(
-        &self,
-        processor_name: &str,
-        severity: BulletinSeverity,
-        message: String,
-    ) {
+    pub fn add(&self, processor_name: &str, severity: BulletinSeverity, message: String) {
         let id = self
             .next_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);

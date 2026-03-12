@@ -403,7 +403,10 @@ impl ProcessorNode {
                         self.bulletin_board.add(
                             &self.name,
                             BulletinSeverity::Warn,
-                            format!("Failed to route FlowFile on relationship '{}' — connection full", rel_name),
+                            format!(
+                                "Failed to route FlowFile on relationship '{}' — connection full",
+                                rel_name
+                            ),
                         );
                     } else {
                         ff_out += 1;
