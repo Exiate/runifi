@@ -16,8 +16,45 @@
 *.key
 *.crt
 
-# Claude Code
+# AI assistants
 CLAUDE.md
+.claude/
+.cursorrules
+.cursor/
+.github/copilot-instructions.md
+.aider*
+.codeium/
+.cody/
+.tabnine*
+.windsurf/
+.bolt/
+.v0/
+.lovable/
+.devin/
+
+# Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Coverage reports
+tarpaulin-report.*
+lcov.info
+*.profraw
+*.profdata
+coverage/
+
+# Rust ICE reports
+rustc-ice-*
+
+# Core dumps
+core
+core.*
+
+# Backup files
+*~
+*.bak
+*.orig
 
 # OS
 .DS_Store
