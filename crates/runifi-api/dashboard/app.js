@@ -917,6 +917,7 @@
 
     let currentConfigProcessor = null;
     let currentConfigData = null;
+    let configRefreshTimer = null;
 
     // Tab switching
     document.querySelectorAll('.modal-tabs .tab').forEach(tab => {
@@ -935,6 +936,11 @@
     configModal.addEventListener('click', (e) => {
         if (e.target === configModal) closeConfigModal();
     });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && configModal.style.display !== 'none') {
+            closeConfigModal();
+        }
+    });
 
     function closeConfigModal() {
         configModal.style.display = 'none';
@@ -942,6 +948,10 @@
         currentConfigData = null;
         configModalStatus.textContent = '';
         configModalStatus.className = 'modal-status';
+        if (configRefreshTimer !== null) {
+            clearTimeout(configRefreshTimer);
+            configRefreshTimer = null;
+        }
     }
 
     function openConfigModal(processorName) {
@@ -1118,7 +1128,10 @@
             configModalStatus.className = 'modal-status success';
             configModalSave.disabled = false;
             // Refresh config display
-            setTimeout(() => openConfigModal(currentConfigProcessor), 800);
+            configRefreshTimer = setTimeout(() => {
+                configRefreshTimer = null;
+                if (currentConfigProcessor) openConfigModal(currentConfigProcessor);
+            }, 800);
         })
         .catch(err => {
             configModalStatus.textContent = err.message;

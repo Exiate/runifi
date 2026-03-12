@@ -66,18 +66,13 @@ async fn update_processor_config(
     Path(name): Path<String>,
     Json(body): Json<ProcessorConfigUpdateRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    // Verify processor exists.
-    let _ = state
-        .handle
-        .get_processor_info(&name)
-        .ok_or_else(|| ApiError::ProcessorNotFound(name.clone()))?;
+    let properties = body
+        .properties
+        .ok_or_else(|| ApiError::BadRequest("Missing 'properties' field in request body".into()))?;
 
-    if let Some(properties) = body.properties {
-        state
-            .handle
-            .update_processor_properties(&name, properties)
-            .map_err(ApiError::ConfigError)?;
-    }
+    state
+        .handle
+        .update_processor_properties(&name, properties)?;
 
     Ok(Json(
         serde_json::json!({ "status": "updated", "processor": name }),

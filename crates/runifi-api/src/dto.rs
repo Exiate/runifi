@@ -233,7 +233,27 @@ impl ProcessorConfigResponse {
             SchedulingStrategy::EventDriven => ("event".to_string(), None),
         };
 
-        let properties = info.properties.read().clone();
+        let raw_properties = info.properties.read().clone();
+
+        // Build a set of sensitive property names for masking.
+        let sensitive_names: std::collections::HashSet<&str> = info
+            .property_descriptors
+            .iter()
+            .filter(|pd| pd.sensitive)
+            .map(|pd| pd.name.as_str())
+            .collect();
+
+        // Mask sensitive property values in the response.
+        let properties: HashMap<String, String> = raw_properties
+            .into_iter()
+            .map(|(k, v)| {
+                if sensitive_names.contains(k.as_str()) && !v.is_empty() {
+                    (k, "********".to_string())
+                } else {
+                    (k, v)
+                }
+            })
+            .collect();
 
         let property_descriptors = info
             .property_descriptors
