@@ -21,6 +21,31 @@
         </div>
     </header>
 
+    <section id="summary-bar" class="summary-bar">
+        <div class="summary-item" id="summary-processors">
+            <span class="summary-label">Processors</span>
+            <span class="summary-value" id="summary-proc-count">--</span>
+            <span class="summary-indicator" id="summary-proc-indicator"></span>
+        </div>
+        <div class="summary-item" id="summary-queued">
+            <span class="summary-label">Queued FlowFiles</span>
+            <span class="summary-value" id="summary-queued-count">--</span>
+        </div>
+        <div class="summary-item" id="summary-throughput">
+            <span class="summary-label">Throughput</span>
+            <span class="summary-value" id="summary-throughput-value">--</span>
+        </div>
+        <div class="summary-item" id="summary-states">
+            <span class="summary-label">States</span>
+            <div class="summary-state-pills" id="summary-state-pills">--</div>
+        </div>
+        <div class="summary-item" id="summary-backpressure">
+            <span class="summary-label">Back-Pressure</span>
+            <span class="summary-value" id="summary-bp-count">--</span>
+            <span class="summary-indicator" id="summary-bp-indicator"></span>
+        </div>
+    </section>
+
     <main>
         <section id="dag-section">
             <h2>Flow Topology</h2>

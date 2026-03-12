@@ -10,6 +10,15 @@
     const connectionsGrid = $('#connections-grid');
     const dagCanvas = $('#dag-canvas');
 
+    // Summary bar elements
+    const summaryProcCount = $('#summary-proc-count');
+    const summaryProcIndicator = $('#summary-proc-indicator');
+    const summaryQueuedCount = $('#summary-queued-count');
+    const summaryThroughputValue = $('#summary-throughput-value');
+    const summaryStatePills = $('#summary-state-pills');
+    const summaryBpCount = $('#summary-bp-count');
+    const summaryBpIndicator = $('#summary-bp-indicator');
+
     // ── DAG state ──────────────────────────────────────────────
     const SVG_NS = 'http://www.w3.org/2000/svg';
     const NODE_WIDTH = 200;
@@ -246,7 +255,7 @@
     }
 
     function renderEdge(conn, srcPos, dstPos) {
-        const g = svgEl('g', { 'data-edge': conn.source + '→' + conn.destination });
+        const g = svgEl('g', { 'data-edge': conn.source + '\u2192' + conn.destination });
 
         // Calculate start and end points
         const x1 = srcPos.x + NODE_WIDTH;
@@ -276,7 +285,7 @@
         g.appendChild(relLabel);
 
         // Queue depth label
-        const key = conn.source + '→' + conn.relationship + '→' + conn.destination;
+        const key = conn.source + '\u2192' + conn.relationship + '\u2192' + conn.destination;
         const connMetrics = lastConnectionMetrics[key];
         const queueCount = connMetrics ? connMetrics.queued_count : 0;
 
@@ -331,7 +340,7 @@
 
         // Update connection queue labels
         for (const conn of flowTopology.connections) {
-            const key = conn.source + '→' + conn.relationship + '→' + conn.destination;
+            const key = conn.source + '\u2192' + conn.relationship + '\u2192' + conn.destination;
             const label = dagCanvas.querySelector('[data-queue-label="' + CSS.escape(key) + '"]');
             if (!label) continue;
             const connMetrics = lastConnectionMetrics[key];
@@ -387,6 +396,9 @@
     function updateDashboard(data) {
         uptimeEl.textContent = formatUptime(data.uptime_secs);
 
+        // Update summary bar
+        updateSummaryBar(data.processors, data.connections);
+
         // Cache metrics for DAG
         lastProcessorMetrics = {};
         for (const p of data.processors) {
@@ -394,7 +406,7 @@
         }
         lastConnectionMetrics = {};
         for (const c of data.connections) {
-            const key = c.source_name + '→' + c.relationship + '→' + c.dest_name;
+            const key = c.source_name + '\u2192' + c.relationship + '\u2192' + c.dest_name;
             lastConnectionMetrics[key] = c;
         }
 
@@ -410,6 +422,82 @@
         // Update detail cards
         renderProcessors(data.processors);
         renderConnections(data.connections);
+    }
+
+    // ── Summary bar ────────────────────────────────────────────
+    function updateSummaryBar(processors, connections) {
+        const total = processors.length;
+        const stateCounts = { running: 0, paused: 0, stopped: 0 };
+        let circuitOpenCount = 0;
+        let totalFfOutRate = 0;
+        let totalBytesOutRate = 0;
+
+        for (const p of processors) {
+            const state = p.state || 'stopped';
+            if (state in stateCounts) {
+                stateCounts[state]++;
+            } else {
+                stateCounts[state] = (stateCounts[state] || 0) + 1;
+            }
+            if (p.metrics.circuit_open) {
+                circuitOpenCount++;
+            }
+            totalFfOutRate += p.metrics.flowfiles_out_rate || 0;
+            totalBytesOutRate += p.metrics.bytes_out_rate || 0;
+        }
+
+        const running = stateCounts.running;
+
+        // Processor count + indicator
+        summaryProcCount.textContent = running + ' / ' + total + ' Running';
+        if (circuitOpenCount > 0) {
+            summaryProcIndicator.className = 'summary-indicator danger';
+        } else if (running === total && total > 0) {
+            summaryProcIndicator.className = 'summary-indicator healthy';
+        } else if (running > 0) {
+            summaryProcIndicator.className = 'summary-indicator warning';
+        } else {
+            summaryProcIndicator.className = 'summary-indicator';
+        }
+
+        // Total queued FlowFiles
+        let totalQueued = 0;
+        let bpCount = 0;
+        for (const c of connections) {
+            totalQueued += c.queued_count;
+            if (c.back_pressured) bpCount++;
+        }
+        summaryQueuedCount.textContent = fmt(totalQueued);
+
+        // System throughput
+        const ffRateStr = fmtRate(totalFfOutRate);
+        const bytesRateStr = fmtBytes(totalBytesOutRate);
+        summaryThroughputValue.textContent = ffRateStr + ' FF/s \u00B7 ' + bytesRateStr + '/s';
+
+        // State pills
+        summaryStatePills.innerHTML = '';
+        if (stateCounts.running > 0) {
+            summaryStatePills.innerHTML += '<span class="state-pill running">' + stateCounts.running + ' running</span>';
+        }
+        if (stateCounts.paused > 0) {
+            summaryStatePills.innerHTML += '<span class="state-pill paused">' + stateCounts.paused + ' paused</span>';
+        }
+        if (stateCounts.stopped > 0) {
+            summaryStatePills.innerHTML += '<span class="state-pill stopped">' + stateCounts.stopped + ' stopped</span>';
+        }
+        if (circuitOpenCount > 0) {
+            summaryStatePills.innerHTML += '<span class="state-pill circuit-open">' + circuitOpenCount + ' circuit-open</span>';
+        }
+
+        // Back-pressure count + indicator
+        summaryBpCount.textContent = bpCount + ' / ' + connections.length;
+        if (bpCount > 0) {
+            summaryBpIndicator.className = 'summary-indicator warning';
+        } else if (connections.length > 0) {
+            summaryBpIndicator.className = 'summary-indicator healthy';
+        } else {
+            summaryBpIndicator.className = 'summary-indicator';
+        }
     }
 
     // ── Processor cards ────────────────────────────────────────
@@ -801,6 +889,13 @@
 
     function fmt(n) {
         return n.toLocaleString();
+    }
+
+    function fmtRate(r) {
+        if (r < 0.01) return '0';
+        if (r < 10) return r.toFixed(2);
+        if (r < 100) return r.toFixed(1);
+        return Math.round(r).toLocaleString();
     }
 
     function fmtBytes(b) {
