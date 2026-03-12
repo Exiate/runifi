@@ -42,6 +42,9 @@ bytes = { version = "1", features = ["serde"] }
 memmap2 = "0.9"              # Memory-mapped files for large transfers
 io-uring = "0.7"             # Linux io_uring for zero-copy IO
 
+# Async utilities
+futures = "0.3"
+
 # Utilities
 uuid = { version = "1", features = ["v7", "serde"] }
 dashmap = "6"                # Concurrent hashmap

@@ -69,7 +69,7 @@ pub struct ProcessorNode {
     content_repo: Arc<dyn ContentRepository>,
     id_gen: Arc<IdGenerator>,
     cancel_token: CancellationToken,
-    input_notify: Arc<Notify>,
+    input_notifiers: Vec<Arc<Notify>>,
     metrics: Arc<ProcessorMetrics>,
 }
 
@@ -97,24 +97,20 @@ impl ProcessorNode {
             content_repo,
             id_gen,
             cancel_token,
-            input_notify: Arc::new(Notify::new()),
+            input_notifiers: Vec::new(),
             metrics,
         }
     }
 
-    /// Add an input connection.
+    /// Add an input connection and wire its notifier for event-driven wakeup.
     pub fn add_input(&mut self, connection: Arc<FlowConnection>) {
+        self.input_notifiers.push(connection.notifier());
         self.input_connections.push(connection);
     }
 
     /// Add an output connection for a specific relationship.
     pub fn add_output(&mut self, relationship: Relationship, connection: Arc<FlowConnection>) {
         self.output_connections.push((relationship, connection));
-    }
-
-    /// Get the input notifier for event-driven wakeup.
-    pub fn input_notify(&self) -> Arc<Notify> {
-        self.input_notify.clone()
     }
 
     /// Get the processor's supported relationships.
@@ -270,7 +266,18 @@ impl ProcessorNode {
                 tokio::time::sleep(std::time::Duration::from_millis(*interval_ms)).await;
             }
             SchedulingStrategy::EventDriven => {
-                self.input_notify.notified().await;
+                if self.input_notifiers.is_empty() {
+                    // No inputs wired — suspend forever (cancel token will break the loop).
+                    std::future::pending::<()>().await;
+                } else {
+                    // Race all input connection notifiers — wake on ANY data arrival.
+                    let futures: Vec<_> = self
+                        .input_notifiers
+                        .iter()
+                        .map(|n| Box::pin(n.notified()))
+                        .collect();
+                    futures::future::select_all(futures).await;
+                }
             }
         }
     }
