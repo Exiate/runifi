@@ -1,10 +1,32 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
+
+use parking_lot::RwLock;
 
 use super::metrics::ProcessorMetrics;
 use super::processor_node::SchedulingStrategy;
 use crate::connection::flow_connection::FlowConnection;
 use crate::repository::content_repo::ContentRepository;
+
+/// Static metadata about a processor property, suitable for API responses.
+#[derive(Debug, Clone)]
+pub struct PropertyDescriptorInfo {
+    pub name: String,
+    pub description: String,
+    pub required: bool,
+    pub default_value: Option<String>,
+    pub sensitive: bool,
+    pub allowed_values: Option<Vec<String>>,
+}
+
+/// Static metadata about a processor relationship, suitable for API responses.
+#[derive(Debug, Clone)]
+pub struct RelationshipInfo {
+    pub name: String,
+    pub description: String,
+    pub auto_terminated: bool,
+}
 
 /// Information about a processor instance, visible to the API.
 #[derive(Clone)]
@@ -13,6 +35,12 @@ pub struct ProcessorInfo {
     pub type_name: String,
     pub scheduling: SchedulingStrategy,
     pub metrics: Arc<ProcessorMetrics>,
+    /// Property descriptors (static metadata from the processor type).
+    pub property_descriptors: Vec<PropertyDescriptorInfo>,
+    /// Relationships (static metadata from the processor type).
+    pub relationships: Vec<RelationshipInfo>,
+    /// Current property values, shared with the processor node for runtime updates.
+    pub properties: Arc<RwLock<HashMap<String, String>>>,
 }
 
 /// Information about a connection, visible to the API.
@@ -129,5 +157,71 @@ impl EngineHandle {
             }
         }
         false
+    }
+
+    /// Get the processor info for a processor by name.
+    pub fn get_processor_info(&self, name: &str) -> Option<&ProcessorInfo> {
+        self.processors.iter().find(|p| p.name == name)
+    }
+
+    /// Update properties for a processor by name.
+    /// Returns `Ok(())` if successful, `Err(reason)` if the processor is not found
+    /// or is not in a stopped state.
+    pub fn update_processor_properties(
+        &self,
+        name: &str,
+        new_properties: HashMap<String, String>,
+    ) -> Result<(), String> {
+        let info = self
+            .processors
+            .iter()
+            .find(|p| p.name == name)
+            .ok_or_else(|| format!("Processor not found: {}", name))?;
+
+        // Require processor to be stopped (enabled=false and not active).
+        let enabled = info
+            .metrics
+            .enabled
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let active = info
+            .metrics
+            .active
+            .load(std::sync::atomic::Ordering::Relaxed);
+
+        if enabled || active {
+            return Err(
+                "Processor must be stopped before updating configuration".to_string(),
+            );
+        }
+
+        // Validate required properties.
+        for desc in &info.property_descriptors {
+            if desc.required {
+                let has_value = new_properties.contains_key(&desc.name);
+                let has_default = desc.default_value.is_some();
+                if !has_value && !has_default {
+                    return Err(format!("Required property '{}' is missing", desc.name));
+                }
+            }
+        }
+
+        // Validate allowed values.
+        for (key, value) in &new_properties {
+            if let Some(desc) = info.property_descriptors.iter().find(|d| d.name == *key)
+                && let Some(ref allowed) = desc.allowed_values
+                && !allowed.iter().any(|v| v == value)
+            {
+                return Err(format!(
+                    "Invalid value '{}' for property '{}'. Allowed: {:?}",
+                    value, key, allowed
+                ));
+            }
+        }
+
+        // Apply the new properties.
+        let mut props = info.properties.write();
+        *props = new_properties;
+
+        Ok(())
     }
 }

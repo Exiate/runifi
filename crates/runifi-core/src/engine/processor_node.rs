@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use parking_lot::RwLock;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
@@ -62,7 +63,7 @@ pub struct ProcessorNode {
     pub name: String,
     pub id: String,
     pub scheduling: SchedulingStrategy,
-    pub properties: HashMap<String, String>,
+    pub properties: Arc<RwLock<HashMap<String, String>>>,
     supervisor: ProcessorSupervisor,
     input_connections: Vec<Arc<FlowConnection>>,
     output_connections: Vec<(Relationship, Arc<FlowConnection>)>,
@@ -80,7 +81,7 @@ impl ProcessorNode {
         id: String,
         processor: Box<dyn Processor>,
         scheduling: SchedulingStrategy,
-        properties: HashMap<String, String>,
+        properties: Arc<RwLock<HashMap<String, String>>>,
         content_repo: Arc<dyn ContentRepository>,
         id_gen: Arc<IdGenerator>,
         cancel_token: CancellationToken,
@@ -130,14 +131,30 @@ impl ProcessorNode {
     /// false, the inner processing loop breaks cleanly, and the task waits
     /// until `enabled` is set back to true (or the cancellation token fires).
     pub async fn run(mut self) {
-        let ctx = NodeProcessContext {
+        // Last context, kept for on_stopped after lifecycle loop exits.
+        #[allow(unused_assignments)]
+        let mut last_ctx = NodeProcessContext {
             name: self.name.clone(),
             id: self.id.clone(),
-            properties: self.properties.clone(),
+            properties: self.properties.read().clone(),
             yield_duration_ms: 1000,
         };
 
         'lifecycle: loop {
+            // Re-read properties from shared store on each lifecycle iteration.
+            // This picks up any config changes made via the API while stopped.
+            let ctx = NodeProcessContext {
+                name: self.name.clone(),
+                id: self.id.clone(),
+                properties: self.properties.read().clone(),
+                yield_duration_ms: 1000,
+            };
+            last_ctx = NodeProcessContext {
+                name: ctx.name.clone(),
+                id: ctx.id.clone(),
+                properties: ctx.properties.clone(),
+                yield_duration_ms: ctx.yield_duration_ms,
+            };
             // Wait until the processor is enabled (or cancelled).
             while !self.metrics.enabled.load(Ordering::Relaxed) {
                 tokio::select! {
@@ -304,7 +321,7 @@ impl ProcessorNode {
 
         // Only reached when breaking out of 'lifecycle (cancellation).
         self.metrics.active.store(false, Ordering::Relaxed);
-        self.supervisor.on_stopped(&ctx);
+        self.supervisor.on_stopped(&last_ctx);
         tracing::info!(processor = %self.name, "Processor stopped");
     }
 

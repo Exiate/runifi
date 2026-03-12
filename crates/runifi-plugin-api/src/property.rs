@@ -6,6 +6,7 @@ pub struct PropertyDescriptor {
     pub required: bool,
     pub default_value: Option<&'static str>,
     pub sensitive: bool,
+    pub allowed_values: Option<&'static [&'static str]>,
 }
 
 impl PropertyDescriptor {
@@ -16,6 +17,7 @@ impl PropertyDescriptor {
             required: false,
             default_value: None,
             sensitive: false,
+            allowed_values: None,
         }
     }
 
@@ -31,6 +33,11 @@ impl PropertyDescriptor {
 
     pub const fn sensitive(mut self) -> Self {
         self.sensitive = true;
+        self
+    }
+
+    pub const fn allowed_values(mut self, values: &'static [&'static str]) -> Self {
+        self.allowed_values = Some(values);
         self
     }
 }

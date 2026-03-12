@@ -15,6 +15,13 @@ pub enum ApiError {
 
     #[error("Content not available for FlowFile {0}")]
     ContentNotAvailable(u64),
+
+    #[error("{0}")]
+    ConfigError(String),
+
+    #[allow(dead_code)]
+    #[error("Invalid request body: {0}")]
+    BadRequest(String),
 }
 
 impl IntoResponse for ApiError {
@@ -24,6 +31,8 @@ impl IntoResponse for ApiError {
             ApiError::ConnectionNotFound(_) => StatusCode::NOT_FOUND,
             ApiError::FlowFileNotFound(_) => StatusCode::NOT_FOUND,
             ApiError::ContentNotAvailable(_) => StatusCode::NOT_FOUND,
+            ApiError::ConfigError(_) => StatusCode::CONFLICT,
+            ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
         };
         let body = serde_json::json!({ "error": self.to_string() });
         (status, axum::Json(body)).into_response()

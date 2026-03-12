@@ -578,6 +578,7 @@
                     <button class="btn-resume" ${!isPaused ? 'disabled' : ''} data-action="resume" data-processor="${esc(p.name)}">Resume</button>
                     <button class="btn-stop" ${isStopped ? 'disabled' : ''} data-action="stop" data-processor="${esc(p.name)}">Stop</button>
                 </div>
+                <button class="btn-config" data-config-processor="${esc(p.name)}">Configure</button>
             `;
 
             // Circuit reset click handler
@@ -594,6 +595,14 @@
                     controlProcessor(proc, action);
                 });
             });
+
+            // Configure button handler
+            const configBtn = card.querySelector('.btn-config');
+            if (configBtn) {
+                configBtn.addEventListener('click', () => {
+                    openConfigModal(configBtn.getAttribute('data-config-processor'));
+                });
+            }
 
             processorsGrid.appendChild(card);
         }
@@ -895,6 +904,228 @@
             method: 'POST'
         }).catch(() => {});
     }
+
+    // ── Configuration Modal ───────────────────────────────────
+    const configModal = $('#config-modal');
+    const configModalTitle = $('#config-modal-title');
+    const configModalSubtitle = $('#config-modal-subtitle');
+    const configModalStatus = $('#config-modal-status');
+    const configModalSave = $('#config-modal-save');
+    const tabProperties = $('#tab-properties');
+    const tabScheduling = $('#tab-scheduling');
+    const tabRelationships = $('#tab-relationships');
+
+    let currentConfigProcessor = null;
+    let currentConfigData = null;
+
+    // Tab switching
+    document.querySelectorAll('.modal-tabs .tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            document.querySelectorAll('.modal-tabs .tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(tc => tc.classList.remove('active'));
+            tab.classList.add('active');
+            const target = tab.getAttribute('data-tab');
+            $('#tab-' + target).classList.add('active');
+        });
+    });
+
+    // Close modal
+    $('#config-modal-close').addEventListener('click', closeConfigModal);
+    $('#config-modal-cancel').addEventListener('click', closeConfigModal);
+    configModal.addEventListener('click', (e) => {
+        if (e.target === configModal) closeConfigModal();
+    });
+
+    function closeConfigModal() {
+        configModal.style.display = 'none';
+        currentConfigProcessor = null;
+        currentConfigData = null;
+        configModalStatus.textContent = '';
+        configModalStatus.className = 'modal-status';
+    }
+
+    function openConfigModal(processorName) {
+        currentConfigProcessor = processorName;
+        configModalStatus.textContent = 'Loading...';
+        configModalStatus.className = 'modal-status';
+        configModal.style.display = 'flex';
+
+        // Reset to properties tab
+        document.querySelectorAll('.modal-tabs .tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(tc => tc.classList.remove('active'));
+        document.querySelector('.modal-tabs .tab[data-tab="properties"]').classList.add('active');
+        tabProperties.classList.add('active');
+
+        // Fetch config
+        fetch('/api/v1/processors/' + encodeURIComponent(processorName) + '/config')
+            .then(r => {
+                if (!r.ok) throw new Error('Failed to load config');
+                return r.json();
+            })
+            .then(data => {
+                currentConfigData = data;
+                configModalTitle.textContent = data.processor_name;
+                configModalSubtitle.textContent = data.type_name;
+                configModalStatus.textContent = '';
+                renderConfigTabs(data);
+            })
+            .catch(err => {
+                configModalStatus.textContent = err.message;
+                configModalStatus.className = 'modal-status error';
+            });
+    }
+
+    function renderConfigTabs(data) {
+        // Properties tab
+        if (data.property_descriptors.length === 0) {
+            tabProperties.innerHTML = '<div class="config-empty">This processor has no configurable properties.</div>';
+        } else {
+            let html = '';
+            for (const desc of data.property_descriptors) {
+                const currentVal = data.properties[desc.name] || '';
+                const hasAllowed = desc.allowed_values && desc.allowed_values.length > 0;
+                html += '<div class="config-field">';
+                html += '<label class="config-label">' + esc(desc.name);
+                if (desc.required) html += '<span class="config-required">REQUIRED</span>';
+                html += '</label>';
+                html += '<span class="config-description">' + esc(desc.description) + '</span>';
+
+                if (hasAllowed) {
+                    html += '<select class="config-select" data-prop="' + esc(desc.name) + '">';
+                    if (!desc.required) {
+                        html += '<option value="">-- Select --</option>';
+                    }
+                    for (const av of desc.allowed_values) {
+                        const selected = currentVal === av ? ' selected' : '';
+                        html += '<option value="' + esc(av) + '"' + selected + '>' + esc(av) + '</option>';
+                    }
+                    html += '</select>';
+                } else {
+                    const placeholder = desc.default_value ? 'Default: ' + desc.default_value : '';
+                    html += '<input class="config-input" type="text" data-prop="' + esc(desc.name)
+                        + '" value="' + esc(currentVal)
+                        + '" placeholder="' + esc(placeholder) + '">';
+                }
+
+                if (desc.default_value) {
+                    html += '<span class="config-default">Default: ' + esc(desc.default_value) + '</span>';
+                }
+                html += '</div>';
+            }
+            tabProperties.innerHTML = html;
+        }
+
+        // Scheduling tab
+        {
+            let html = '<div class="scheduling-info">';
+            html += '<div class="config-field">';
+            html += '<label class="config-label">Strategy</label>';
+            html += '<span class="config-description">How the processor is triggered</span>';
+            html += '<input class="config-input" type="text" value="' + esc(data.scheduling.strategy) + '" disabled>';
+            html += '</div>';
+
+            if (data.scheduling.interval_ms !== null && data.scheduling.interval_ms !== undefined) {
+                html += '<div class="config-field">';
+                html += '<label class="config-label">Interval</label>';
+                html += '<span class="config-description">Trigger interval in milliseconds</span>';
+                html += '<input class="config-input" type="text" value="' + data.scheduling.interval_ms + ' ms" disabled>';
+                html += '</div>';
+            }
+
+            html += '</div>';
+            tabScheduling.innerHTML = html;
+        }
+
+        // Relationships tab
+        if (data.relationships.length === 0) {
+            tabRelationships.innerHTML = '<div class="config-empty">This processor has no relationships.</div>';
+        } else {
+            let html = '<table class="rel-table">';
+            html += '<thead><tr><th>Name</th><th>Description</th><th>Auto-Terminated</th></tr></thead>';
+            html += '<tbody>';
+            for (const rel of data.relationships) {
+                const atClass = rel.auto_terminated ? 'yes' : 'no';
+                const atText = rel.auto_terminated ? 'Yes' : 'No';
+                html += '<tr>';
+                html += '<td><strong>' + esc(rel.name) + '</strong></td>';
+                html += '<td>' + esc(rel.description) + '</td>';
+                html += '<td><span class="rel-auto-term ' + atClass + '">' + atText + '</span></td>';
+                html += '</tr>';
+            }
+            html += '</tbody></table>';
+            tabRelationships.innerHTML = html;
+        }
+
+        // Check processor state to enable/disable save
+        const metrics = lastProcessorMetrics[data.processor_name];
+        const state = metrics ? metrics.state : 'stopped';
+        if (state !== 'stopped') {
+            configModalSave.disabled = true;
+            configModalStatus.textContent = 'Stop the processor to edit configuration';
+            configModalStatus.className = 'modal-status';
+        } else {
+            configModalSave.disabled = false;
+        }
+    }
+
+    // Save config
+    configModalSave.addEventListener('click', () => {
+        if (!currentConfigProcessor || !currentConfigData) return;
+
+        // Check state
+        const metrics = lastProcessorMetrics[currentConfigProcessor];
+        const state = metrics ? metrics.state : 'stopped';
+        if (state !== 'stopped') {
+            configModalStatus.textContent = 'Processor must be stopped to save configuration';
+            configModalStatus.className = 'modal-status error';
+            return;
+        }
+
+        // Collect properties from form
+        const properties = {};
+        tabProperties.querySelectorAll('[data-prop]').forEach(el => {
+            const name = el.getAttribute('data-prop');
+            const value = el.value;
+            if (value !== '') {
+                properties[name] = value;
+            }
+        });
+
+        // Validate required fields
+        for (const desc of currentConfigData.property_descriptors) {
+            if (desc.required && !properties[desc.name] && !desc.default_value) {
+                configModalStatus.textContent = 'Required property "' + desc.name + '" is missing';
+                configModalStatus.className = 'modal-status error';
+                return;
+            }
+        }
+
+        configModalStatus.textContent = 'Saving...';
+        configModalStatus.className = 'modal-status';
+        configModalSave.disabled = true;
+
+        fetch('/api/v1/processors/' + encodeURIComponent(currentConfigProcessor) + '/config', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ properties: properties })
+        })
+        .then(r => {
+            if (!r.ok) return r.json().then(data => { throw new Error(data.error || 'Save failed'); });
+            return r.json();
+        })
+        .then(() => {
+            configModalStatus.textContent = 'Configuration saved';
+            configModalStatus.className = 'modal-status success';
+            configModalSave.disabled = false;
+            // Refresh config display
+            setTimeout(() => openConfigModal(currentConfigProcessor), 800);
+        })
+        .catch(err => {
+            configModalStatus.textContent = err.message;
+            configModalStatus.className = 'modal-status error';
+            configModalSave.disabled = false;
+        });
+    });
 
     // ── Formatters ─────────────────────────────────────────────
     function formatUptime(secs) {
