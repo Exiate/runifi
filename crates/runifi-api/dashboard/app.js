@@ -553,6 +553,25 @@
                         <span class="metric-value">${fmtBytes(p.metrics.bytes_out)}</span>
                     </div>
                 </div>
+                <div class="rolling-header">5-Minute Window</div>
+                <div class="metrics-grid rolling">
+                    <div class="metric">
+                        <span class="metric-label">FF In/s</span>
+                        <span class="metric-value">${fmtRate(p.metrics.flowfiles_in_rate)}</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">FF Out/s</span>
+                        <span class="metric-value">${fmtRate(p.metrics.flowfiles_out_rate)}</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">In (5m)</span>
+                        <span class="metric-value">${fmt(p.metrics.flowfiles_in_5m)} FF / ${fmtBytes(p.metrics.bytes_in_5m)}</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Out (5m)</span>
+                        <span class="metric-value">${fmt(p.metrics.flowfiles_out_5m)} FF / ${fmtBytes(p.metrics.bytes_out_5m)}</span>
+                    </div>
+                </div>
                 <div class="proc-controls">
                     <button class="btn-start" ${isRunning ? 'disabled' : ''} data-action="start" data-processor="${esc(p.name)}">Start</button>
                     <button class="btn-pause" ${!isRunning ? 'disabled' : ''} data-action="pause" data-processor="${esc(p.name)}">Pause</button>

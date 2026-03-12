@@ -23,6 +23,7 @@ pub struct ProcessorResponse {
 
 #[derive(Serialize)]
 pub struct MetricsResponse {
+    // Lifetime totals.
     pub total_invocations: u64,
     pub total_failures: u64,
     pub consecutive_failures: u64,
@@ -32,6 +33,16 @@ pub struct MetricsResponse {
     pub flowfiles_in: u64,
     pub flowfiles_out: u64,
     pub active: bool,
+    // Rolling 5-minute window totals.
+    pub flowfiles_in_5m: u64,
+    pub flowfiles_out_5m: u64,
+    pub bytes_in_5m: u64,
+    pub bytes_out_5m: u64,
+    // Rolling 5-minute per-second rates.
+    pub flowfiles_in_rate: f64,
+    pub flowfiles_out_rate: f64,
+    pub bytes_in_rate: f64,
+    pub bytes_out_rate: f64,
 }
 
 impl From<MetricsSnapshot> for MetricsResponse {
@@ -46,6 +57,14 @@ impl From<MetricsSnapshot> for MetricsResponse {
             flowfiles_in: s.flowfiles_in,
             flowfiles_out: s.flowfiles_out,
             active: s.active,
+            flowfiles_in_5m: s.rolling.flowfiles_in_5m,
+            flowfiles_out_5m: s.rolling.flowfiles_out_5m,
+            bytes_in_5m: s.rolling.bytes_in_5m,
+            bytes_out_5m: s.rolling.bytes_out_5m,
+            flowfiles_in_rate: s.rolling.flowfiles_in_rate,
+            flowfiles_out_rate: s.rolling.flowfiles_out_rate,
+            bytes_in_rate: s.rolling.bytes_in_rate,
+            bytes_out_rate: s.rolling.bytes_out_rate,
         }
     }
 }
