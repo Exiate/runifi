@@ -99,9 +99,7 @@ impl Processor for GetFile {
             session.transfer(flowfile, &REL_SUCCESS);
 
             // Delete source file unless keep_source is set.
-            if !keep_source
-                && let Err(e) = std::fs::remove_file(&path)
-            {
+            if !keep_source && let Err(e) = std::fs::remove_file(&path) {
                 tracing::warn!(path = %path.display(), error = %e, "Failed to delete source file");
             }
         }
