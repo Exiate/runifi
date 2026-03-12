@@ -21,7 +21,7 @@ pub enum ApiError {
     #[error("{0}")]
     ConfigError(String),
 
-    #[error("Invalid request: {0}")]
+    #[error("Bad request: {0}")]
     BadRequest(String),
 }
 

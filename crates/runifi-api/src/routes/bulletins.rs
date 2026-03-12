@@ -37,15 +37,24 @@ fn parse_severity(s: &str) -> Option<BulletinSeverity> {
 async fn list_bulletins(
     State(state): State<ApiState>,
     Query(query): Query<BulletinQuery>,
-) -> Json<Vec<BulletinResponse>> {
-    let severity = query.severity.as_deref().and_then(parse_severity);
+) -> Result<Json<Vec<BulletinResponse>>, ApiError> {
+    let severity = match query.severity.as_deref() {
+        Some(s) => Some(parse_severity(s).ok_or_else(|| {
+            ApiError::BadRequest(format!(
+                "Invalid severity filter '{}'. Valid values: warn, warning, error",
+                s
+            ))
+        })?),
+        None => None,
+    };
+
     let bulletins = state
         .handle
         .bulletin_board
         .get_all(query.processor.as_deref(), severity);
 
     let response: Vec<BulletinResponse> = bulletins.into_iter().map(BulletinResponse::from).collect();
-    Json(response)
+    Ok(Json(response))
 }
 
 async fn list_processor_bulletins(
@@ -59,7 +68,16 @@ async fn list_processor_bulletins(
         return Err(ApiError::ProcessorNotFound(name));
     }
 
-    let severity = query.severity.as_deref().and_then(parse_severity);
+    let severity = match query.severity.as_deref() {
+        Some(s) => Some(parse_severity(s).ok_or_else(|| {
+            ApiError::BadRequest(format!(
+                "Invalid severity filter '{}'. Valid values: warn, warning, error",
+                s
+            ))
+        })?),
+        None => None,
+    };
+
     let bulletins = state.handle.bulletin_board.get_for_processor(&name, severity);
 
     let response: Vec<BulletinResponse> = bulletins.into_iter().map(BulletinResponse::from).collect();

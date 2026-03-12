@@ -188,9 +188,9 @@ async fn download_content(
         .read(claim)
         .map_err(|_| ApiError::ContentNotAvailable(flowfile_id))?;
 
-    // Determine filename from attributes if available, then sanitize to
-    // prevent Content-Disposition header injection (quotes, backslashes,
-    // newlines, and non-ASCII control characters).
+    // Determine filename from attributes if available, then sanitize
+    // to prevent header injection (strip quotes, backslashes, newlines,
+    // and non-printable/non-ASCII characters).
     let raw_filename = snap
         .attributes
         .iter()
@@ -200,14 +200,14 @@ async fn download_content(
 
     let safe_filename: String = raw_filename
         .chars()
-        .map(|c| {
-            if c == '"' || c == '\\' || c == '\r' || c == '\n' || c.is_ascii_control() {
-                '_'
-            } else {
-                c
-            }
+        .filter(|c| !c.is_control() && c.is_ascii())
+        .map(|c| match c {
+            '"' | '\\' => '_',
+            _ => c,
         })
         .collect();
+
+    // Fall back to a generic name if sanitization removed everything.
     let safe_filename = if safe_filename.is_empty() {
         format!("flowfile-{}", flowfile_id)
     } else {

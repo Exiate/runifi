@@ -188,7 +188,7 @@ impl FlowConnection {
             None => return false,
         };
 
-        let _removed_snapshot = shadow.remove(pos).expect("position was valid");
+        shadow.remove(pos).expect("position was valid");
 
         // Drain the channel and re-insert everything except the target.
         let mut drained = Vec::new();
@@ -196,10 +196,8 @@ impl FlowConnection {
             drained.push(ff);
         }
 
-        let mut found = false;
         for ff in drained {
             if ff.id == flowfile_id {
-                found = true;
                 // Don't re-insert — this is the one we're removing.
                 // Update atomics.
                 self.count.fetch_sub(1, Ordering::Relaxed);
@@ -222,11 +220,10 @@ impl FlowConnection {
             }
         }
 
-        if !found {
-            // The FlowFile was already consumed by a concurrent try_recv,
-            // which already decremented the atomics. Do NOT decrement again.
-            // From the user's perspective the FlowFile is gone, so return true.
-        }
+        // If the FlowFile was not found in the channel, it was consumed by a
+        // concurrent try_recv between the shadow check and the drain. try_recv
+        // already decremented count and bytes, so no atomic adjustment is needed.
+        // The snapshot was already removed from the shadow above.
 
         true
     }
