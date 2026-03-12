@@ -132,6 +132,36 @@
         </div>
     </div>
 
+    <!-- Processor Configuration Modal -->
+    <div class="modal-overlay" id="config-modal" style="display: none;">
+        <div class="modal">
+            <div class="modal-header">
+                <div>
+                    <h3 class="modal-title" id="config-modal-title">Configure Processor</h3>
+                    <span class="modal-subtitle" id="config-modal-subtitle"></span>
+                </div>
+                <button class="modal-close" id="config-modal-close">&times;</button>
+            </div>
+            <div class="modal-tabs">
+                <button class="tab active" data-tab="properties">Properties</button>
+                <button class="tab" data-tab="scheduling">Scheduling</button>
+                <button class="tab" data-tab="relationships">Relationships</button>
+            </div>
+            <div class="modal-body">
+                <div class="tab-content active" id="tab-properties"></div>
+                <div class="tab-content" id="tab-scheduling"></div>
+                <div class="tab-content" id="tab-relationships"></div>
+            </div>
+            <div class="modal-footer">
+                <span class="modal-status" id="config-modal-status"></span>
+                <div class="modal-actions">
+                    <button class="btn-secondary" id="config-modal-cancel">Cancel</button>
+                    <button class="btn-primary" id="config-modal-save">Save</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="/app.js"></script>
 </body>
 </html>

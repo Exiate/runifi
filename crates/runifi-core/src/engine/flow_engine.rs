@@ -7,7 +7,12 @@ use tokio_util::sync::CancellationToken;
 
 use runifi_plugin_api::Processor;
 
-use super::handle::{ConnectionInfo, EngineHandle, PluginTypeInfo, ProcessorInfo};
+use parking_lot::RwLock;
+
+use super::handle::{
+    ConnectionInfo, EngineHandle, PluginTypeInfo, ProcessorInfo, PropertyDescriptorInfo,
+    RelationshipInfo,
+};
 use super::metrics::ProcessorMetrics;
 use super::processor_node::{ProcessorNode, SchedulingStrategy};
 use crate::connection::back_pressure::BackPressureConfig;
@@ -137,15 +142,55 @@ impl FlowEngine {
         // Create metrics per processor.
         let mut processor_infos: Vec<ProcessorInfo> = Vec::new();
         let mut metrics_by_node: HashMap<NodeId, Arc<ProcessorMetrics>> = HashMap::new();
+        let mut shared_props_by_node: HashMap<NodeId, Arc<RwLock<HashMap<String, String>>>> =
+            HashMap::new();
 
         for node_builder in &self.nodes {
             let metrics = Arc::new(ProcessorMetrics::new());
             metrics_by_node.insert(node_builder.id, metrics.clone());
+
+            // Extract property descriptors and relationships from the processor instance.
+            let (prop_descriptors, relationships) = if let Some(ref proc) = node_builder.processor {
+                let pds = proc
+                    .property_descriptors()
+                    .into_iter()
+                    .map(|pd| PropertyDescriptorInfo {
+                        name: pd.name.to_string(),
+                        description: pd.description.to_string(),
+                        required: pd.required,
+                        default_value: pd.default_value.map(|v| v.to_string()),
+                        sensitive: pd.sensitive,
+                        allowed_values: pd
+                            .allowed_values
+                            .map(|av| av.iter().map(|v| v.to_string()).collect()),
+                    })
+                    .collect();
+                let rels = proc
+                    .relationships()
+                    .into_iter()
+                    .map(|r| RelationshipInfo {
+                        name: r.name.to_string(),
+                        description: r.description.to_string(),
+                        auto_terminated: r.auto_terminated,
+                    })
+                    .collect();
+                (pds, rels)
+            } else {
+                (Vec::new(), Vec::new())
+            };
+
+            // Shared mutable properties.
+            let shared_props = Arc::new(RwLock::new(node_builder.properties.clone()));
+            shared_props_by_node.insert(node_builder.id, shared_props.clone());
+
             processor_infos.push(ProcessorInfo {
                 name: node_builder.name.clone(),
                 type_name: node_builder.type_name.clone(),
                 scheduling: node_builder.scheduling.clone(),
                 metrics,
+                property_descriptors: prop_descriptors,
+                relationships,
+                properties: shared_props,
             });
         }
 
@@ -179,12 +224,17 @@ impl FlowEngine {
                 .expect("metrics must exist")
                 .clone();
 
+            let shared_props = shared_props_by_node
+                .get(&node_builder.id)
+                .expect("shared_props must exist")
+                .clone();
+
             let mut pn = ProcessorNode::new(
                 node_builder.name.clone(),
                 format!("node-{}", node_builder.id),
                 processor,
                 node_builder.scheduling.clone(),
-                node_builder.properties.clone(),
+                shared_props,
                 self.content_repo.clone(),
                 self.id_gen.clone(),
                 child_token,

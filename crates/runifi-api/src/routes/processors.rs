@@ -3,7 +3,7 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
-use crate::dto::ProcessorResponse;
+use crate::dto::{ProcessorConfigResponse, ProcessorConfigUpdateRequest, ProcessorResponse};
 use crate::error::ApiError;
 use crate::state::ApiState;
 
@@ -11,6 +11,10 @@ pub fn routes() -> Router<ApiState> {
     Router::new()
         .route("/api/v1/processors", get(list_processors))
         .route("/api/v1/processors/{name}", get(get_processor))
+        .route(
+            "/api/v1/processors/{name}/config",
+            get(get_processor_config).put(update_processor_config),
+        )
         .route(
             "/api/v1/processors/{name}/reset-circuit",
             post(reset_circuit),
@@ -43,6 +47,36 @@ async fn get_processor(
         .ok_or(ApiError::ProcessorNotFound(name))?;
 
     Ok(Json(ProcessorResponse::from_info(info)))
+}
+
+async fn get_processor_config(
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+) -> Result<Json<ProcessorConfigResponse>, ApiError> {
+    let info = state
+        .handle
+        .get_processor_info(&name)
+        .ok_or(ApiError::ProcessorNotFound(name))?;
+
+    Ok(Json(ProcessorConfigResponse::from_info(info)))
+}
+
+async fn update_processor_config(
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+    Json(body): Json<ProcessorConfigUpdateRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let properties = body
+        .properties
+        .ok_or_else(|| ApiError::BadRequest("Missing 'properties' field in request body".into()))?;
+
+    state
+        .handle
+        .update_processor_properties(&name, properties)?;
+
+    Ok(Json(
+        serde_json::json!({ "status": "updated", "processor": name }),
+    ))
 }
 
 async fn reset_circuit(

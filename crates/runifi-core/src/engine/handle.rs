@@ -1,10 +1,56 @@
+use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 use std::time::Instant;
+
+use parking_lot::RwLock;
 
 use super::metrics::ProcessorMetrics;
 use super::processor_node::SchedulingStrategy;
 use crate::connection::flow_connection::FlowConnection;
 use crate::repository::content_repo::ContentRepository;
+
+/// Error type for processor configuration updates.
+#[derive(Debug)]
+pub enum ConfigUpdateError {
+    /// Processor not found.
+    NotFound(String),
+    /// Processor is not in a stopped state (409 Conflict).
+    StateConflict(String),
+    /// Validation failure: missing required property or invalid allowed value (400 Bad Request).
+    ValidationError(String),
+}
+
+impl fmt::Display for ConfigUpdateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ConfigUpdateError::NotFound(msg) => write!(f, "{}", msg),
+            ConfigUpdateError::StateConflict(msg) => write!(f, "{}", msg),
+            ConfigUpdateError::ValidationError(msg) => write!(f, "{}", msg),
+        }
+    }
+}
+
+impl std::error::Error for ConfigUpdateError {}
+
+/// Static metadata about a processor property, suitable for API responses.
+#[derive(Debug, Clone)]
+pub struct PropertyDescriptorInfo {
+    pub name: String,
+    pub description: String,
+    pub required: bool,
+    pub default_value: Option<String>,
+    pub sensitive: bool,
+    pub allowed_values: Option<Vec<String>>,
+}
+
+/// Static metadata about a processor relationship, suitable for API responses.
+#[derive(Debug, Clone)]
+pub struct RelationshipInfo {
+    pub name: String,
+    pub description: String,
+    pub auto_terminated: bool,
+}
 
 /// Information about a processor instance, visible to the API.
 #[derive(Clone)]
@@ -13,6 +59,12 @@ pub struct ProcessorInfo {
     pub type_name: String,
     pub scheduling: SchedulingStrategy,
     pub metrics: Arc<ProcessorMetrics>,
+    /// Property descriptors (static metadata from the processor type).
+    pub property_descriptors: Vec<PropertyDescriptorInfo>,
+    /// Relationships (static metadata from the processor type).
+    pub relationships: Vec<RelationshipInfo>,
+    /// Current property values, shared with the processor node for runtime updates.
+    pub properties: Arc<RwLock<HashMap<String, String>>>,
 }
 
 /// Information about a connection, visible to the API.
@@ -88,9 +140,17 @@ impl EngineHandle {
 
     /// Start a processor by name (set enabled=true).
     /// Returns `true` if the processor was found.
+    ///
+    /// Acquires a read lock on properties to synchronize with concurrent
+    /// config updates, ensuring the "config only changes while stopped"
+    /// invariant is maintained.
     pub fn start_processor(&self, name: &str) -> bool {
         for info in self.processors.iter() {
             if info.name == name {
+                // Hold the read lock while setting enabled to synchronize
+                // with update_processor_properties which holds the write lock
+                // before checking state.
+                let _props = info.properties.read();
                 info.metrics
                     .enabled
                     .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -129,5 +189,76 @@ impl EngineHandle {
             }
         }
         false
+    }
+
+    /// Get the processor info for a processor by name.
+    pub fn get_processor_info(&self, name: &str) -> Option<&ProcessorInfo> {
+        self.processors.iter().find(|p| p.name == name)
+    }
+
+    /// Update properties for a processor by name.
+    /// Returns `Ok(())` if successful, or an error describing the failure.
+    pub fn update_processor_properties(
+        &self,
+        name: &str,
+        new_properties: HashMap<String, String>,
+    ) -> Result<(), ConfigUpdateError> {
+        let info = self
+            .processors
+            .iter()
+            .find(|p| p.name == name)
+            .ok_or_else(|| ConfigUpdateError::NotFound(format!("Processor not found: {}", name)))?;
+
+        // Acquire the write lock BEFORE checking state to prevent TOCTOU race
+        // with concurrent start requests.
+        let mut props = info.properties.write();
+
+        // Require processor to be stopped (enabled=false and not active).
+        let enabled = info
+            .metrics
+            .enabled
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let active = info
+            .metrics
+            .active
+            .load(std::sync::atomic::Ordering::Relaxed);
+
+        if enabled || active {
+            return Err(ConfigUpdateError::StateConflict(
+                "Processor must be stopped before updating configuration".to_string(),
+            ));
+        }
+
+        // Validate required properties.
+        for desc in &info.property_descriptors {
+            if desc.required {
+                let has_value = new_properties.contains_key(&desc.name);
+                let has_default = desc.default_value.is_some();
+                if !has_value && !has_default {
+                    return Err(ConfigUpdateError::ValidationError(format!(
+                        "Required property '{}' is missing",
+                        desc.name
+                    )));
+                }
+            }
+        }
+
+        // Validate allowed values.
+        for (key, value) in &new_properties {
+            if let Some(desc) = info.property_descriptors.iter().find(|d| d.name == *key)
+                && let Some(ref allowed) = desc.allowed_values
+                && !allowed.iter().any(|v| v == value)
+            {
+                return Err(ConfigUpdateError::ValidationError(format!(
+                    "Invalid value '{}' for property '{}'. Allowed: {:?}",
+                    value, key, allowed
+                )));
+            }
+        }
+
+        // Apply the new properties.
+        *props = new_properties;
+
+        Ok(())
     }
 }
