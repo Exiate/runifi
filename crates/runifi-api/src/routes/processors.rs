@@ -4,8 +4,6 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 
-use runifi_core::engine::processor_node::SchedulingStrategy;
-
 use crate::dto::{
     CreateProcessorRequest, ProcessorConfigResponse, ProcessorConfigUpdateRequest,
     ProcessorDetailResponse, ProcessorResponse, RelationshipResponse, UpdatePositionRequest,
@@ -117,11 +115,7 @@ async fn create_processor(
 
     let snapshot = info.metrics.snapshot();
     let state_str = snapshot.state.as_str().to_string();
-
-    let scheduling_str = match &info.scheduling {
-        SchedulingStrategy::TimerDriven { interval_ms } => format!("timer ({}ms)", interval_ms),
-        SchedulingStrategy::EventDriven => "event".to_string(),
-    };
+    let scheduling_str = info.scheduling_display.clone();
 
     let relationships: Vec<RelationshipResponse> = info
         .relationships

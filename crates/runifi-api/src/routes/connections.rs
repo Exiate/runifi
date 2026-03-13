@@ -48,8 +48,8 @@ async fn list_connections(State(state): State<ApiState>) -> Json<Vec<ConnectionR
             source_name: info.source_name.clone(),
             relationship: info.relationship.clone(),
             dest_name: info.dest_name.clone(),
-            queued_count: info.connection.count(),
-            queued_bytes: info.connection.bytes(),
+            queued_count: info.connection.queue_count(),
+            queued_bytes: info.connection.queue_size_bytes(),
             back_pressured: info.connection.is_back_pressured(),
         })
         .collect();
@@ -90,8 +90,8 @@ async fn create_connection(
                 source_name: info.source_name.clone(),
                 relationship: info.relationship.clone(),
                 dest_name: info.dest_name.clone(),
-                queued_count: info.connection.count(),
-                queued_bytes: info.connection.bytes(),
+                queued_count: info.connection.queue_count(),
+                queued_bytes: info.connection.queue_size_bytes(),
                 back_pressured: info.connection.is_back_pressured(),
             })
     };

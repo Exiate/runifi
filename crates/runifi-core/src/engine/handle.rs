@@ -11,10 +11,10 @@ use super::bulletin::BulletinBoard;
 use super::metrics::ProcessorMetrics;
 use super::mutation::{MutationCommand, MutationError};
 use super::processor_node::{
-    SchedulingStrategy, SharedInputConnections, SharedInputNotifiers, SharedOutputConnections,
+    SharedInputConnections, SharedInputNotifiers, SharedOutputConnections,
 };
 use crate::connection::back_pressure::BackPressureConfig;
-use crate::connection::flow_connection::FlowConnection;
+use crate::connection::query::ConnectionQuery;
 use crate::repository::content_repo::ContentRepository;
 
 /// Error type for processor configuration updates.
@@ -64,7 +64,9 @@ pub struct RelationshipInfo {
 pub struct ProcessorInfo {
     pub name: String,
     pub type_name: String,
-    pub scheduling: SchedulingStrategy,
+    /// Human-readable scheduling description, e.g. "timer-driven (1000ms)" or "event-driven".
+    /// The concrete `SchedulingStrategy` enum is kept internal to the engine.
+    pub scheduling_display: String,
     pub metrics: Arc<ProcessorMetrics>,
     /// Property descriptors (static metadata from the processor type).
     pub property_descriptors: Vec<PropertyDescriptorInfo>,
@@ -89,7 +91,7 @@ pub struct ConnectionInfo {
     pub source_name: String,
     pub relationship: String,
     pub dest_name: String,
-    pub connection: Arc<FlowConnection>,
+    pub connection: Arc<dyn ConnectionQuery>,
 }
 
 /// Information about a registered plugin type.
