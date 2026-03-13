@@ -322,7 +322,8 @@ impl ProcessorNode {
                     // Use as_process_session_mut() to coerce Box<dyn EngineSession> to
                     // &mut dyn ProcessSession for the supervisor, which only needs the
                     // ProcessSession interface for on_trigger calls.
-                    self.supervisor.invoke(&ctx, session.as_process_session_mut())
+                    self.supervisor
+                        .invoke(&ctx, session.as_process_session_mut())
                 };
 
                 // Sync supervisor metrics to shared atomics.

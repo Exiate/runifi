@@ -10,7 +10,9 @@ use tokio::sync::{mpsc, oneshot};
 use super::bulletin::BulletinBoard;
 use super::metrics::ProcessorMetrics;
 use super::mutation::{MutationCommand, MutationError};
-use super::processor_node::{SharedInputConnections, SharedInputNotifiers, SharedOutputConnections};
+use super::processor_node::{
+    SharedInputConnections, SharedInputNotifiers, SharedOutputConnections,
+};
 use crate::connection::back_pressure::BackPressureConfig;
 use crate::connection::query::ConnectionQuery;
 use crate::repository::content_repo::ContentRepository;

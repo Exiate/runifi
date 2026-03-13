@@ -256,15 +256,14 @@ impl ProcessorConfigResponse {
     pub fn from_info(info: &ProcessorInfo) -> Self {
         // Parse the display string to extract strategy/interval for the config response.
         // Format is "timer-driven (Nms)" or "event-driven".
-        let (strategy, interval_ms) = if let Some(rest) =
-            info.scheduling_display.strip_prefix("timer-driven (")
-        {
-            let ms_str = rest.trim_end_matches("ms)");
-            let interval = ms_str.parse::<u64>().unwrap_or(1000);
-            ("timer".to_string(), Some(interval))
-        } else {
-            ("event".to_string(), None)
-        };
+        let (strategy, interval_ms) =
+            if let Some(rest) = info.scheduling_display.strip_prefix("timer-driven (") {
+                let ms_str = rest.trim_end_matches("ms)");
+                let interval = ms_str.parse::<u64>().unwrap_or(1000);
+                ("timer".to_string(), Some(interval))
+            } else {
+                ("event".to_string(), None)
+            };
 
         let raw_properties = info.properties.read().clone();
 

@@ -76,7 +76,6 @@ impl CoreProcessSession {
             yield_duration_ms,
         }
     }
-
 }
 
 impl ProcessSession for CoreProcessSession {
