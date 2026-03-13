@@ -1,4 +1,5 @@
 use crate::property::PropertyValue;
+use crate::service::ServiceLookup;
 
 /// Provides runtime context to a processor during execution.
 ///
@@ -23,4 +24,17 @@ pub trait ProcessContext: Send + Sync {
 
     /// How long (ms) the engine should wait before re-triggering after a yield.
     fn yield_duration_ms(&self) -> u64;
+
+    /// Access the controller service lookup.
+    ///
+    /// Returns `None` if no services are configured. Processors should use this
+    /// to resolve shared services by name, e.g.:
+    /// ```ignore
+    /// if let Some(lookup) = context.service_lookup() {
+    ///     if let Some(cache) = lookup.get_service("my-cache") { ... }
+    /// }
+    /// ```
+    fn service_lookup(&self) -> Option<&dyn ServiceLookup> {
+        None
+    }
 }

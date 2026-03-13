@@ -142,6 +142,7 @@ impl PluginResponse {
             PluginKind::Processor => "processor",
             PluginKind::Source => "source",
             PluginKind::Sink => "sink",
+            PluginKind::Service => "service",
         };
         Self {
             type_name: type_name.to_string(),
@@ -396,4 +397,46 @@ pub struct ConnectionDetailResponse {
     pub queued_count: usize,
     pub queued_bytes: u64,
     pub back_pressured: bool,
+}
+
+// ── Controller service DTOs ────────────────────────────────────────────
+
+/// Response for a controller service instance.
+#[derive(Serialize)]
+pub struct ServiceResponse {
+    pub name: String,
+    pub type_name: String,
+    pub state: String,
+    pub properties: HashMap<String, String>,
+    pub property_descriptors: Vec<ServicePropertyDescriptorResponse>,
+    pub referencing_processors: Vec<String>,
+}
+
+/// Property descriptor for a controller service.
+#[derive(Serialize)]
+pub struct ServicePropertyDescriptorResponse {
+    pub name: String,
+    pub description: String,
+    pub required: bool,
+    pub default_value: Option<String>,
+    pub sensitive: bool,
+}
+
+/// Request body for `POST /api/v1/services`.
+#[derive(Deserialize)]
+pub struct CreateServiceRequest {
+    /// Service type name (must exist in PluginRegistry).
+    #[serde(rename = "type")]
+    pub type_name: String,
+    /// Unique name for this service instance.
+    pub name: String,
+    /// Initial property values.
+    #[serde(default)]
+    pub properties: HashMap<String, String>,
+}
+
+/// Request body for `PUT /api/v1/services/{name}/config`.
+#[derive(Deserialize)]
+pub struct UpdateServiceConfigRequest {
+    pub properties: HashMap<String, String>,
 }

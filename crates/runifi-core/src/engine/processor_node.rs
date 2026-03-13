@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use runifi_plugin_api::property::PropertyValue;
 use runifi_plugin_api::relationship::Relationship;
+use runifi_plugin_api::service::ServiceLookup;
 use runifi_plugin_api::session::ProcessSession;
 use runifi_plugin_api::{FlowFile, Processor};
 
@@ -16,6 +17,7 @@ use super::metrics::ProcessorMetrics;
 use super::supervisor::{InvocationResult, ProcessorSupervisor};
 use crate::connection::flow_connection::FlowConnection;
 use crate::id::IdGenerator;
+use crate::registry::service_registry::{RegistryServiceLookup, SharedServiceRegistry};
 use crate::repository::content_repo::ContentRepository;
 use crate::repository::flowfile_repo::{FlowFileOp, FlowFileRepository};
 use crate::session::process_session::CoreProcessSession;
@@ -35,6 +37,7 @@ struct NodeProcessContext {
     id: String,
     properties: HashMap<String, String>,
     yield_duration_ms: u64,
+    service_lookup: Option<Box<dyn ServiceLookup>>,
 }
 
 impl runifi_plugin_api::context::ProcessContext for NodeProcessContext {
@@ -59,6 +62,10 @@ impl runifi_plugin_api::context::ProcessContext for NodeProcessContext {
 
     fn yield_duration_ms(&self) -> u64 {
         self.yield_duration_ms
+    }
+
+    fn service_lookup(&self) -> Option<&dyn ServiceLookup> {
+        self.service_lookup.as_deref()
     }
 }
 
@@ -100,6 +107,7 @@ pub struct ProcessorNode {
     metrics: Arc<ProcessorMetrics>,
     bulletin_board: Arc<BulletinBoard>,
     flowfile_repo: Arc<dyn FlowFileRepository>,
+    service_registry: Option<SharedServiceRegistry>,
 }
 
 impl ProcessorNode {
@@ -132,7 +140,13 @@ impl ProcessorNode {
             metrics,
             bulletin_board,
             flowfile_repo,
+            service_registry: None,
         }
+    }
+
+    /// Set the service registry for service lookup during processing.
+    pub fn set_service_registry(&mut self, registry: SharedServiceRegistry) {
+        self.service_registry = Some(registry);
     }
 
     /// Add an input connection and wire its notifier for event-driven wakeup.
@@ -188,12 +202,21 @@ impl ProcessorNode {
     /// until `enabled` is set back to true (or the cancellation token fires).
     pub async fn run(mut self) {
         // Last context, kept for on_stopped after lifecycle loop exits.
+        let make_service_lookup = || -> Option<Box<dyn ServiceLookup>> {
+            self.service_registry
+                .as_ref()
+                .map(|r| -> Box<dyn ServiceLookup> {
+                    Box::new(RegistryServiceLookup::new(r.clone()))
+                })
+        };
+
         #[allow(unused_assignments)]
         let mut last_ctx = NodeProcessContext {
             name: self.name.clone(),
             id: self.id.clone(),
             properties: self.properties.read().clone(),
             yield_duration_ms: 1000,
+            service_lookup: make_service_lookup(),
         };
 
         'lifecycle: loop {
@@ -204,12 +227,14 @@ impl ProcessorNode {
                 id: self.id.clone(),
                 properties: self.properties.read().clone(),
                 yield_duration_ms: 1000,
+                service_lookup: make_service_lookup(),
             };
             last_ctx = NodeProcessContext {
                 name: ctx.name.clone(),
                 id: ctx.id.clone(),
                 properties: ctx.properties.clone(),
                 yield_duration_ms: ctx.yield_duration_ms,
+                service_lookup: make_service_lookup(),
             };
             // Wait until the processor is enabled (or cancelled).
             while !self.metrics.enabled.load(Ordering::Relaxed) {

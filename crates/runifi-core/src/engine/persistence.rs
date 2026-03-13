@@ -28,6 +28,8 @@ pub struct PersistedFlowState {
     pub processors: Vec<PersistedProcessor>,
     pub connections: Vec<PersistedConnection>,
     pub positions: HashMap<String, PersistedPosition>,
+    #[serde(default)]
+    pub services: Vec<PersistedService>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +70,13 @@ pub struct PersistedBackPressure {
 pub struct PersistedPosition {
     pub x: f64,
     pub y: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedService {
+    pub name: String,
+    pub type_name: String,
+    pub properties: HashMap<String, String>,
 }
 
 // ── Snapshot from live engine state ───────────────────────────────────────────
@@ -116,11 +125,22 @@ impl PersistedFlowState {
             );
         }
 
+        let services: Vec<PersistedService> = handle
+            .list_services()
+            .into_iter()
+            .map(|s| PersistedService {
+                name: s.name,
+                type_name: s.type_name,
+                properties: s.properties,
+            })
+            .collect();
+
         Self {
             flow_name: handle.flow_name.clone(),
             processors,
             connections,
             positions,
+            services,
         }
     }
 }
@@ -345,6 +365,11 @@ mod tests {
                 "gen".to_string(),
                 PersistedPosition { x: 100.0, y: 200.0 },
             )]),
+            services: vec![PersistedService {
+                name: "my-cache".to_string(),
+                type_name: "DistributedMapCacheServer".to_string(),
+                properties: HashMap::from([("Port".to_string(), "4557".to_string())]),
+            }],
         };
 
         let json = serde_json::to_string_pretty(&state).unwrap();
@@ -387,6 +412,7 @@ mod tests {
             }],
             connections: vec![],
             positions: HashMap::new(),
+            services: vec![],
         };
 
         // Write.
@@ -403,6 +429,7 @@ mod tests {
             processors: vec![],
             connections: vec![],
             positions: HashMap::new(),
+            services: vec![],
         };
         atomic_write(&conf_dir, &state2).unwrap();
 

@@ -30,6 +30,7 @@ use crate::connection::query::FlowConnectionQuery;
 use crate::error::{Result, RuniFiError};
 use crate::id::IdGenerator;
 use crate::registry::plugin_registry::PluginRegistry;
+use crate::registry::service_registry::SharedServiceRegistry;
 use crate::repository::content_repo::ContentRepository;
 use crate::repository::flowfile_repo::FlowFileRepository;
 
@@ -54,6 +55,7 @@ pub struct FlowEngine {
     flowfile_repo: Arc<dyn FlowFileRepository>,
     persistence: Option<FlowPersistence>,
     audit_logger: Arc<dyn AuditLogger>,
+    service_registry: SharedServiceRegistry,
 
     nodes: Vec<NodeBuilder>,
     connections: Vec<ConnBuilder>,
@@ -98,6 +100,7 @@ impl FlowEngine {
             flowfile_repo,
             persistence: None,
             audit_logger: Arc::new(NullAuditLogger),
+            service_registry: SharedServiceRegistry::new(),
             nodes: Vec::new(),
             connections: Vec::new(),
             next_node_id: 0,
@@ -337,6 +340,7 @@ impl FlowEngine {
                 self.bulletin_board.clone(),
                 self.flowfile_repo.clone(),
             );
+            pn.set_service_registry(self.service_registry.clone());
 
             for (src, rel, dst, fc) in &flow_connections {
                 if *src == node_builder.id {
@@ -412,6 +416,7 @@ impl FlowEngine {
             content_repo: self.content_repo.clone(),
             positions: Arc::new(DashMap::new()),
             audit_logger: self.audit_logger.clone(),
+            service_registry: self.service_registry.clone(),
             mutation_tx,
             persistence: self.persistence.clone(),
         };
@@ -578,6 +583,11 @@ impl FlowEngine {
     /// Get the engine handle for API access. Available after `start()`.
     pub fn handle(&self) -> Option<&EngineHandle> {
         self.handle.as_ref()
+    }
+
+    /// Get a reference to the shared service registry for pre-start configuration.
+    pub fn service_registry(&self) -> &SharedServiceRegistry {
+        &self.service_registry
     }
 
     /// Set the plugin types on the engine handle (called by server after discovery).

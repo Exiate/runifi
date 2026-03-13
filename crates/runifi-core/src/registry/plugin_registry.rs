@@ -83,4 +83,24 @@ impl PluginRegistry {
     pub fn sink_types(&self) -> Vec<&'static str> {
         self.sinks.iter().map(|e| *e.key()).collect()
     }
+
+    /// Create a new controller service instance by type name.
+    pub fn create_service(
+        &self,
+        type_name: &str,
+    ) -> Option<Box<dyn runifi_plugin_api::ControllerService>> {
+        self.services
+            .get(type_name)
+            .map(|desc| (desc.value().factory)())
+    }
+
+    /// List all registered controller service type names.
+    pub fn service_types(&self) -> Vec<&'static str> {
+        self.services.iter().map(|e| *e.key()).collect()
+    }
+
+    /// Get the description for a controller service type.
+    pub fn service_description(&self, type_name: &str) -> Option<&'static str> {
+        self.services.get(type_name).map(|desc| desc.description)
+    }
 }

@@ -12,3 +12,5 @@ pub mod update_attribute;
 pub mod get_file;
 #[cfg(feature = "filesystem")]
 pub mod put_file;
+
+pub mod distributed_map_cache;

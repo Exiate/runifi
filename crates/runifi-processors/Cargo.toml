@@ -19,3 +19,4 @@ tracing = { workspace = true }
 inventory = { workspace = true }
 rand = { workspace = true }
 regex-lite = { workspace = true }
+parking_lot = { workspace = true }

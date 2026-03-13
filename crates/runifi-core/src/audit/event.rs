@@ -103,6 +103,12 @@ pub enum AuditAction {
     QueueInspected,
     ContentDownloaded,
     QueueEmptied,
+    // Controller services
+    ServiceCreated,
+    ServiceRemoved,
+    ServiceEnabled,
+    ServiceDisabled,
+    ServiceConfigured,
     // System
     EngineStarted,
     EngineShutdown,
@@ -129,6 +135,13 @@ impl AuditTarget {
         Self {
             resource_type: "connection".to_string(),
             resource_id: id.into(),
+        }
+    }
+
+    pub fn service(name: impl Into<String>) -> Self {
+        Self {
+            resource_type: "service".to_string(),
+            resource_id: name.into(),
         }
     }
 
