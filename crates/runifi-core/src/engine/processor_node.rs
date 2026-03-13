@@ -20,6 +20,7 @@ use crate::id::IdGenerator;
 use crate::registry::service_registry::{RegistryServiceLookup, SharedServiceRegistry};
 use crate::repository::content_repo::ContentRepository;
 use crate::repository::flowfile_repo::{FlowFileOp, FlowFileRepository};
+use crate::repository::provenance_repo::SharedProvenanceRepository;
 use crate::session::process_session::CoreProcessSession;
 
 /// Scheduling strategy for a processor node.
@@ -91,6 +92,8 @@ pub type SharedInputNotifiers = Arc<RwLock<Vec<Arc<Notify>>>>;
 pub struct ProcessorNode {
     pub name: String,
     pub id: String,
+    /// Processor type name (e.g. "GenerateFlowFile").
+    pub type_name: String,
     pub scheduling: SchedulingStrategy,
     pub properties: Arc<RwLock<HashMap<String, String>>>,
     supervisor: ProcessorSupervisor,
@@ -108,6 +111,7 @@ pub struct ProcessorNode {
     bulletin_board: Arc<BulletinBoard>,
     flowfile_repo: Arc<dyn FlowFileRepository>,
     service_registry: Option<SharedServiceRegistry>,
+    provenance_repo: SharedProvenanceRepository,
 }
 
 impl ProcessorNode {
@@ -128,6 +132,7 @@ impl ProcessorNode {
         Self {
             name,
             id,
+            type_name: String::new(),
             scheduling,
             properties,
             supervisor: ProcessorSupervisor::new(processor),
@@ -141,12 +146,23 @@ impl ProcessorNode {
             bulletin_board,
             flowfile_repo,
             service_registry: None,
+            provenance_repo: Arc::new(crate::repository::provenance_repo::NullProvenanceRepository),
         }
     }
 
     /// Set the service registry for service lookup during processing.
     pub fn set_service_registry(&mut self, registry: SharedServiceRegistry) {
         self.service_registry = Some(registry);
+    }
+
+    /// Set the provenance repository for lineage tracking.
+    pub fn set_provenance_repo(&mut self, repo: SharedProvenanceRepository) {
+        self.provenance_repo = repo;
+    }
+
+    /// Set the processor type name for provenance events.
+    pub fn set_type_name(&mut self, type_name: String) {
+        self.type_name = type_name;
     }
 
     /// Add an input connection and wire its notifier for event-driven wakeup.
@@ -342,6 +358,11 @@ impl ProcessorNode {
                     self.id_gen.clone(),
                     input_conns_snapshot,
                     ctx.yield_duration_ms,
+                );
+                session.set_provenance(
+                    self.provenance_repo.clone(),
+                    self.name.clone(),
+                    self.type_name.clone(),
                 );
 
                 // Invoke with fault isolation via spawn_blocking.

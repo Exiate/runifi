@@ -20,6 +20,7 @@ use crate::id::IdGenerator;
 use crate::registry::plugin_registry::PluginRegistry;
 use crate::repository::content_repo::ContentRepository;
 use crate::repository::flowfile_repo::FlowFileRepository;
+use crate::repository::provenance_repo::SharedProvenanceRepository;
 
 use super::flow_engine::scheduling_display;
 
@@ -40,6 +41,7 @@ pub struct DefaultMutationHandler {
     pub runtime_conn_id: usize,
     pub flowfile_repo: Arc<dyn FlowFileRepository>,
     pub audit_logger: Arc<dyn AuditLogger>,
+    pub provenance_repo: SharedProvenanceRepository,
 }
 
 impl DefaultMutationHandler {
@@ -110,7 +112,7 @@ impl DefaultMutationHandler {
         let shared_props = Arc::new(RwLock::new(properties));
         let child_token = self.parent_cancel.child_token();
 
-        let pn = ProcessorNode::new(
+        let mut pn = ProcessorNode::new(
             name.to_string(),
             format!("runtime-{}", name),
             processor,
@@ -123,6 +125,8 @@ impl DefaultMutationHandler {
             self.bulletin_board.clone(),
             self.flowfile_repo.clone(),
         );
+        pn.set_provenance_repo(self.provenance_repo.clone());
+        pn.set_type_name(type_name.to_string());
 
         let input_h = pn.input_connections_handle();
         let output_h = pn.output_connections_handle();

@@ -6,6 +6,7 @@ pub mod flow;
 pub mod labels;
 pub mod plugins;
 pub mod processors;
+pub mod provenance;
 pub mod services;
 pub mod system;
 pub mod user_groups;

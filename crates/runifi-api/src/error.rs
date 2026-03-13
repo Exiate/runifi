@@ -41,6 +41,9 @@ pub enum ApiError {
 
     #[error("Forbidden: insufficient permissions")]
     Forbidden,
+
+    #[error("Provenance event not found: {0}")]
+    ProvenanceEventNotFound(u64),
 }
 
 impl ApiError {
@@ -58,6 +61,7 @@ impl ApiError {
             ApiError::EngineNotRunning => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
             ApiError::Forbidden => StatusCode::FORBIDDEN,
+            ApiError::ProvenanceEventNotFound(_) => StatusCode::NOT_FOUND,
         }
     }
 
@@ -76,6 +80,7 @@ impl ApiError {
             ApiError::EngineNotRunning => "Service unavailable",
             ApiError::TooManyRequests => "Too many requests",
             ApiError::Forbidden => "Forbidden",
+            ApiError::ProvenanceEventNotFound(_) => "Provenance event not found",
         }
     }
 
