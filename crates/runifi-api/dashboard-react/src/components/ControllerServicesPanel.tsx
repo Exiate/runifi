@@ -1,8 +1,12 @@
-import { memo, useState, useCallback, useEffect } from 'react';
+import { memo, useState, useCallback, useEffect, useMemo } from 'react';
 import type { PluginDescriptor, ServiceResponse } from '../types/api';
 import { useServices } from '../hooks/useServices';
 
 type ToastKind = 'info' | 'success' | 'error';
+
+function toErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 interface ControllerServicesPanelProps {
   plugins: PluginDescriptor[];
@@ -14,6 +18,7 @@ function ControllerServicesPanelInner({ plugins, onToast, onClose }: ControllerS
   const {
     services,
     loading,
+    error,
     refresh,
     createService,
     deleteService,
@@ -30,8 +35,8 @@ function ControllerServicesPanelInner({ plugins, onToast, onClose }: ControllerS
   const [configValues, setConfigValues] = useState<Record<string, string>>({});
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
-  // Filter plugins to only service types
-  const serviceTypes = plugins.filter((p) => p.kind === 'service');
+  // Filter plugins to only service types (memoized to avoid re-renders)
+  const serviceTypes = useMemo(() => plugins.filter((p) => p.kind === 'service'), [plugins]);
 
   // Set default type when service types are available
   useEffect(() => {
@@ -48,8 +53,8 @@ function ControllerServicesPanelInner({ plugins, onToast, onClose }: ControllerS
       onToast('success', `Service "${newServiceName}" created`);
       setNewServiceName('');
       setShowAddForm(false);
-    } catch (err: any) {
-      onToast('error', `Failed to create service: ${err.message}`);
+    } catch (err: unknown) {
+      onToast('error', `Failed to create service: ${toErrorMessage(err)}`);
     } finally {
       setCreating(false);
     }
@@ -59,8 +64,8 @@ function ControllerServicesPanelInner({ plugins, onToast, onClose }: ControllerS
     try {
       await enableService(name);
       onToast('success', `Service "${name}" enabled`);
-    } catch (err: any) {
-      onToast('error', `Failed to enable: ${err.message}`);
+    } catch (err: unknown) {
+      onToast('error', `Failed to enable: ${toErrorMessage(err)}`);
     }
   }, [enableService, onToast]);
 
@@ -68,8 +73,8 @@ function ControllerServicesPanelInner({ plugins, onToast, onClose }: ControllerS
     try {
       await disableService(name);
       onToast('success', `Service "${name}" disabled`);
-    } catch (err: any) {
-      onToast('error', `Failed to disable: ${err.message}`);
+    } catch (err: unknown) {
+      onToast('error', `Failed to disable: ${toErrorMessage(err)}`);
     }
   }, [disableService, onToast]);
 
@@ -78,8 +83,8 @@ function ControllerServicesPanelInner({ plugins, onToast, onClose }: ControllerS
       await deleteService(name);
       onToast('success', `Service "${name}" deleted`);
       setConfirmDelete(null);
-    } catch (err: any) {
-      onToast('error', `Failed to delete: ${err.message}`);
+    } catch (err: unknown) {
+      onToast('error', `Failed to delete: ${toErrorMessage(err)}`);
       setConfirmDelete(null);
     }
   }, [deleteService, onToast]);
@@ -95,8 +100,8 @@ function ControllerServicesPanelInner({ plugins, onToast, onClose }: ControllerS
       await updateServiceConfig(configuringService.name, configValues);
       onToast('success', `Configuration updated for "${configuringService.name}"`);
       setConfiguringService(null);
-    } catch (err: any) {
-      onToast('error', `Failed to update config: ${err.message}`);
+    } catch (err: unknown) {
+      onToast('error', `Failed to update config: ${toErrorMessage(err)}`);
     }
   }, [configuringService, configValues, updateServiceConfig, onToast]);
 
@@ -168,7 +173,11 @@ function ControllerServicesPanelInner({ plugins, onToast, onClose }: ControllerS
         <div className="services-list-wrap">
           {loading && <div className="services-empty">Loading services...</div>}
 
-          {!loading && services.length === 0 && (
+          {!loading && error && (
+            <div className="services-error">Failed to load services: {error}</div>
+          )}
+
+          {!loading && !error && services.length === 0 && (
             <div className="services-empty">
               No controller services configured.
               {serviceTypes.length > 0 && ' Click "Add Service" to create one.'}
@@ -247,13 +256,13 @@ function ControllerServicesPanelInner({ plugins, onToast, onClose }: ControllerS
 
         {/* Delete confirmation */}
         {confirmDelete && (
-          <div className="modal-overlay" style={{ zIndex: 1200 }} onClick={() => setConfirmDelete(null)}>
-            <div className="modal-panel" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 400 }}>
-              <h3 style={{ margin: '0 0 0.75rem', fontSize: '1rem' }}>Delete Service</h3>
-              <p style={{ color: 'var(--text-dim)', fontSize: '0.85rem', margin: '0 0 1rem' }}>
-                Are you sure you want to delete "{confirmDelete}"? This action cannot be undone.
+          <div className="modal-overlay service-submodal" onClick={() => setConfirmDelete(null)}>
+            <div className="modal-panel modal-panel--narrow" onClick={(e) => e.stopPropagation()}>
+              <h3 className="service-dialog-title">Delete Service</h3>
+              <p className="service-dialog-text">
+                Are you sure you want to delete &ldquo;{confirmDelete}&rdquo;? This action cannot be undone.
               </p>
-              <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+              <div className="modal-footer">
                 <button className="btn btn-sm" onClick={() => setConfirmDelete(null)}>Cancel</button>
                 <button className="btn btn-sm btn-danger" onClick={() => handleDelete(confirmDelete)}>Delete</button>
               </div>
@@ -263,11 +272,11 @@ function ControllerServicesPanelInner({ plugins, onToast, onClose }: ControllerS
 
         {/* Service configuration dialog */}
         {configuringService && (
-          <div className="modal-overlay" style={{ zIndex: 1200 }} onClick={() => setConfiguringService(null)}>
-            <div className="modal-panel" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 520, width: '100%' }}>
+          <div className="modal-overlay service-submodal" onClick={() => setConfiguringService(null)}>
+            <div className="modal-panel service-config-dialog" onClick={(e) => e.stopPropagation()}>
               <div className="config-modal-header">
                 <div>
-                  <h3 className="config-modal-title" style={{ fontSize: '1rem' }}>
+                  <h3 className="config-modal-title service-config-title">
                     Configure: {configuringService.name}
                   </h3>
                   <p className="config-modal-subtitle">{configuringService.type_name}</p>
@@ -276,15 +285,7 @@ function ControllerServicesPanelInner({ plugins, onToast, onClose }: ControllerS
               </div>
 
               {configuringService.state.toUpperCase() === 'ENABLED' && (
-                <div style={{
-                  padding: '0.5rem 0.75rem',
-                  background: 'rgba(251, 191, 36, 0.1)',
-                  border: '1px solid var(--warning)',
-                  borderRadius: 6,
-                  color: 'var(--warning)',
-                  fontSize: '0.8rem',
-                  marginBottom: '0.75rem',
-                }}>
+                <div className="service-config-warning">
                   Disable the service before modifying configuration.
                 </div>
               )}
@@ -294,10 +295,10 @@ function ControllerServicesPanelInner({ plugins, onToast, onClose }: ControllerS
               )}
 
               {configuringService.property_descriptors.map((pd) => (
-                <div key={pd.name} className="config-prop-row" style={{ marginBottom: '0.75rem' }}>
+                <div key={pd.name} className="config-prop-row service-config-prop">
                   <label className="config-prop-label">
                     {pd.name}
-                    {pd.required && <span style={{ color: 'var(--danger)', marginLeft: 4 }}>*</span>}
+                    {pd.required && <span className="config-required-mark">*</span>}
                   </label>
                   <input
                     className="config-input"
@@ -308,14 +309,12 @@ function ControllerServicesPanelInner({ plugins, onToast, onClose }: ControllerS
                     placeholder={pd.default_value ?? ''}
                   />
                   {pd.description && (
-                    <span className="config-prop-desc" style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: 2 }}>
-                      {pd.description}
-                    </span>
+                    <span className="config-prop-desc service-config-desc">{pd.description}</span>
                   )}
                 </div>
               ))}
 
-              <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '1rem' }}>
+              <div className="modal-footer">
                 <button className="btn btn-sm" onClick={() => setConfiguringService(null)}>Cancel</button>
                 <button
                   className="btn btn-sm btn-primary"

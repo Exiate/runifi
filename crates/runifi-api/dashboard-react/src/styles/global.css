@@ -2161,6 +2161,74 @@ body {
   font-weight: 600;
 }
 
+.services-error {
+  text-align: center;
+  color: var(--danger);
+  padding: 2rem;
+  font-size: 0.85rem;
+}
+
+/* Sub-modal for delete confirm / service config */
+.service-submodal {
+  z-index: 1200;
+}
+
+.modal-panel--narrow {
+  max-width: 400px;
+}
+
+.service-dialog-title {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+}
+
+.service-dialog-text {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  margin: 0 0 1rem;
+}
+
+.modal-footer {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  margin-top: 1rem;
+}
+
+.service-config-dialog {
+  max-width: 520px;
+  width: 100%;
+}
+
+.service-config-title {
+  font-size: 1rem;
+}
+
+.service-config-warning {
+  padding: 0.5rem 0.75rem;
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid var(--warning);
+  border-radius: 6px;
+  color: var(--warning);
+  font-size: 0.8rem;
+  margin-bottom: 0.75rem;
+}
+
+.service-config-prop {
+  margin-bottom: 0.75rem;
+}
+
+.config-required-mark {
+  color: var(--danger);
+  margin-left: 4px;
+}
+
+.service-config-desc {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+
 /* ── Responsive ─────────────────────────────────────────────── */
 
 @media (max-width: 768px) {

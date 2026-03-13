@@ -47,11 +47,12 @@ function ComponentToolbarInner({ plugins, loading, onDragStart, onAddProcessor }
 
   const categorized = useMemo(() => {
     const q = search.toLowerCase();
-    const filtered = plugins.filter((p) => p.kind !== 'service').filter(
+    const filtered = plugins.filter(
       (p) =>
-        (p.display_name ?? '').toLowerCase().includes(q) ||
+        p.kind !== 'service' &&
+        ((p.display_name ?? '').toLowerCase().includes(q) ||
         (p.type_name ?? '').toLowerCase().includes(q) ||
-        (p.description ?? '').toLowerCase().includes(q),
+        (p.description ?? '').toLowerCase().includes(q)),
     );
 
     const cats = new Map<string, PluginDescriptor[]>();
