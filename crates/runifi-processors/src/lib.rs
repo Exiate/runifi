@@ -14,6 +14,8 @@ pub mod get_file;
 pub mod put_file;
 
 #[cfg(feature = "transformation")]
+pub mod split_content;
+#[cfg(feature = "transformation")]
 pub mod split_json;
 
 pub mod distributed_map_cache;
