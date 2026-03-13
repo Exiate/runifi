@@ -331,6 +331,111 @@ pub struct EngineConfig {
     pub content_repository: ContentRepositoryConfig,
     #[serde(default)]
     pub flowfile_repository: FlowFileRepositoryConfig,
+    /// Repository encryption at rest configuration.
+    ///
+    /// When enabled, encrypts both the content repository and the FlowFile
+    /// WAL repository data at rest using AES-256-GCM.
+    ///
+    /// ```toml
+    /// [engine.encryption]
+    /// enabled = true
+    /// algorithm = "AES-256-GCM"
+    /// [engine.encryption.key_provider]
+    /// type = "file"
+    /// path = "/etc/runifi/keys.json"
+    /// ```
+    #[serde(default)]
+    pub encryption: Option<RepositoryEncryptionConfig>,
+}
+
+/// Configuration for encrypted repositories (content + FlowFile WAL).
+///
+/// Supports multiple key provider types for key management:
+/// - `"file"` — reads keys from a JSON file on disk
+/// - `"env"` — reads keys from environment variables
+/// - `"static"` — single key from config (backward compatible)
+///
+/// All providers support key rotation: new writes use the active key,
+/// old content can still be decrypted using the key ID embedded in the
+/// encrypted envelope.
+#[derive(Debug, Deserialize, Clone)]
+pub struct RepositoryEncryptionConfig {
+    /// Whether encryption is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Encryption algorithm. Currently only "AES-256-GCM" is supported.
+    #[serde(default = "default_algorithm")]
+    pub algorithm: String,
+    /// Key provider configuration.
+    #[serde(default)]
+    pub key_provider: KeyProviderConfig,
+}
+
+fn default_algorithm() -> String {
+    "AES-256-GCM".to_string()
+}
+
+/// Key provider configuration for repository encryption.
+///
+/// ```toml
+/// # File-based key provider
+/// [engine.encryption.key_provider]
+/// type = "file"
+/// path = "/etc/runifi/keys.json"
+///
+/// # Environment variable key provider
+/// [engine.encryption.key_provider]
+/// type = "env"
+/// active_key_id = "key-2024-01"
+/// key_ids = ["key-2024-01", "key-2023-12"]
+/// key_env_prefix = "RUNIFI_ENC_KEY_"
+///
+/// # Static key provider (single key, for simple setups)
+/// [engine.encryption.key_provider]
+/// type = "static"
+/// key = "hex-encoded-256-bit-key"
+/// key_id = "key-2024-01"
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub struct KeyProviderConfig {
+    /// Key provider type: "file", "env", or "static".
+    #[serde(rename = "type", default = "default_key_provider_type")]
+    pub provider_type: String,
+    /// Path to the key file (for "file" provider).
+    pub path: Option<String>,
+    /// Active key ID (for "env" provider).
+    pub active_key_id: Option<String>,
+    /// List of key IDs to load (for "env" provider).
+    pub key_ids: Option<Vec<String>>,
+    /// Environment variable prefix (for "env" provider). Default: "RUNIFI_ENC_KEY_".
+    #[serde(default = "default_key_env_prefix")]
+    pub key_env_prefix: String,
+    /// Hex-encoded key (for "static" provider).
+    pub key: Option<String>,
+    /// Key identifier (for "static" provider).
+    pub key_id: Option<String>,
+}
+
+impl Default for KeyProviderConfig {
+    fn default() -> Self {
+        Self {
+            provider_type: default_key_provider_type(),
+            path: None,
+            active_key_id: None,
+            key_ids: None,
+            key_env_prefix: default_key_env_prefix(),
+            key: None,
+            key_id: None,
+        }
+    }
+}
+
+fn default_key_provider_type() -> String {
+    "static".to_string()
+}
+
+fn default_key_env_prefix() -> String {
+    "RUNIFI_ENC_KEY_".to_string()
 }
 
 fn default_conf_dir() -> PathBuf {
