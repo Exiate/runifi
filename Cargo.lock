@@ -1769,7 +1769,7 @@ dependencies = [
  "bytes",
  "governor",
  "include_dir",
- "rand 0.9.2",
+ "rand 0.10.0",
  "runifi-core",
  "runifi-plugin-api",
  "serde",
@@ -1843,7 +1843,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "inventory",
- "rand 0.9.2",
+ "rand 0.10.0",
  "regex-lite",
  "runifi-plugin-api",
  "tracing",
