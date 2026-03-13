@@ -56,6 +56,7 @@ inventory = "0.3"            # Compile-time plugin registration
 slab = "0.4"                 # Slab allocator for FlowFile IDs
 parking_lot = "0.12"         # Fast synchronization primitives
 smallvec = "2"               # Small-buffer-optimized Vec
+regex-lite = "0.1"           # Lightweight regex for expression language
 
 # Config
 toml = "0.8"
