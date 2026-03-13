@@ -97,7 +97,7 @@ export interface SystemResponse {
 }
 
 // Plugin/processor type registry (GET /api/v1/plugins)
-export type PluginKind = 'processor' | 'source' | 'sink';
+export type PluginKind = 'processor' | 'source' | 'sink' | 'service';
 
 export interface PluginDescriptor {
   type_name: string;
@@ -187,4 +187,33 @@ export interface QueueResponse {
   offset: number;
   limit: number;
   flowfiles: FlowFileEntry[];
+}
+
+// ── Controller service types ──────────────────────────────────────
+
+export interface ServicePropertyDescriptor {
+  name: string;
+  description: string;
+  required: boolean;
+  default_value: string | null;
+  sensitive: boolean;
+}
+
+export interface ServiceResponse {
+  name: string;
+  type_name: string;
+  state: string;
+  properties: Record<string, string>;
+  property_descriptors: ServicePropertyDescriptor[];
+  referencing_processors: string[];
+}
+
+export interface CreateServiceRequest {
+  type: string;
+  name: string;
+  properties: Record<string, string>;
+}
+
+export interface UpdateServiceConfigRequest {
+  properties: Record<string, string>;
 }

@@ -4,6 +4,7 @@ import { SummaryBar } from './components/SummaryBar';
 import { FlowCanvas } from './components/FlowCanvas';
 import { ComponentToolbar } from './components/ComponentToolbar';
 import { ToastNotifier } from './components/ToastNotifier';
+import { ControllerServicesPanel } from './components/ControllerServicesPanel';
 import { BulletinBoard } from './components/BulletinBoard';
 import { useFlowTopology } from './hooks/useFlowTopology';
 import { useSseMetrics } from './hooks/useSseMetrics';
@@ -20,6 +21,7 @@ export function App() {
   const [draggedPlugin, setDraggedPlugin] = useState<PluginDescriptor | null>(null);
   const [addPluginAtCenter, setAddPluginAtCenter] = useState<PluginDescriptor | null>(null);
   const [bulletinOpen, setBulletinOpen] = useState(false);
+  const [controllerServicesOpen, setControllerServicesOpen] = useState(false);
 
   const uptimeSecs = liveMetrics?.uptime_secs ?? 0;
   const flowName = topology?.name ?? '';
@@ -39,7 +41,12 @@ export function App() {
 
   return (
     <div className="app-layout" onDragEnd={handleDragEnd}>
-      <Header flowName={flowName} uptimeSecs={uptimeSecs} sseStatus={sseStatus} />
+      <Header
+        flowName={flowName}
+        uptimeSecs={uptimeSecs}
+        sseStatus={sseStatus}
+        onOpenControllerServices={() => setControllerServicesOpen(true)}
+      />
       <ComponentToolbar
         plugins={plugins}
         loading={pluginsLoading}
@@ -93,6 +100,14 @@ export function App() {
       />
 
       <ToastNotifier toasts={toasts} onDismiss={dismissToast} />
+
+      {controllerServicesOpen && (
+        <ControllerServicesPanel
+          plugins={plugins}
+          onToast={pushToast}
+          onClose={() => setControllerServicesOpen(false)}
+        />
+      )}
     </div>
   );
 }
