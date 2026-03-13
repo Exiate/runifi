@@ -45,6 +45,10 @@ impl runifi_plugin_api::context::ProcessContext for NodeProcessContext {
         }
     }
 
+    fn property_names(&self) -> Vec<String> {
+        self.properties.keys().cloned().collect()
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
