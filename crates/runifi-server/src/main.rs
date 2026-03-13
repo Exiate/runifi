@@ -9,7 +9,9 @@ use runifi_core::engine::flow_engine::FlowEngine;
 use runifi_core::engine::handle::{PluginKind, PluginTypeInfo};
 use runifi_core::engine::processor_node::SchedulingStrategy;
 use runifi_core::registry::plugin_registry::PluginRegistry;
+use runifi_core::repository::content_file::{FileContentRepoConfig, FileContentRepository};
 use runifi_core::repository::content_memory::InMemoryContentRepository;
+use runifi_core::repository::content_repo::ContentRepository;
 
 // Ensure processor registrations are linked in.
 extern crate runifi_processors;
@@ -52,10 +54,37 @@ async fn main() -> Result<()> {
 
     tracing::info!(flow = %config.flow.name, "Loaded flow configuration");
 
-    // Create content repository.
-    let content_repo = Arc::new(InMemoryContentRepository::new());
+    // Create content repository based on config.
+    let content_repo: Arc<dyn ContentRepository> =
+        match config.engine.content_repository.repo_type.as_str() {
+            "file" => {
+                let file_config = match &config.engine.content_repository.file {
+                    Some(fc) => FileContentRepoConfig {
+                        containers: fc.containers.clone(),
+                        max_segment_size: fc.max_segment_size_bytes,
+                        memory_threshold: fc.memory_threshold_bytes,
+                        inline_threshold: fc.inline_threshold_bytes,
+                        cleanup_interval_secs: fc.cleanup_interval_secs,
+                    },
+                    None => FileContentRepoConfig::default(),
+                };
+                let repo = Arc::new(
+                    FileContentRepository::new(file_config)
+                        .context("Failed to create file content repository")?,
+                );
+                // Spawn background cleanup task.
+                runifi_core::repository::cleanup::spawn_cleanup_task(repo.clone());
+                tracing::info!("Using file-based content repository");
+                repo
+            }
+            _ => {
+                tracing::info!("Using in-memory content repository");
+                Arc::new(InMemoryContentRepository::new())
+            }
+        };
 
     // Build the flow engine.
+    let content_repo_ref = content_repo.clone();
     let registry = Arc::new(registry);
     let mut engine = FlowEngine::new(&config.flow.name, content_repo);
     // Provide the registry so the engine can hot-add processors at runtime.
@@ -179,6 +208,7 @@ async fn main() -> Result<()> {
         handle.abort();
     }
     engine.stop().await;
+    content_repo_ref.shutdown();
     tracing::info!("RuniFi stopped");
 
     Ok(())

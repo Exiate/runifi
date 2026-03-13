@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use serde::Deserialize;
 
@@ -8,6 +9,8 @@ pub struct FlowConfig {
     pub flow: FlowDefinition,
     #[serde(default)]
     pub api: ApiConfig,
+    #[serde(default)]
+    pub engine: EngineConfig,
 }
 
 /// Configuration for the web API server.
@@ -114,4 +117,69 @@ pub struct ConnectionConfig {
 pub struct BackPressureConfigToml {
     pub max_count: Option<usize>,
     pub max_bytes: Option<u64>,
+}
+
+/// Engine-level configuration.
+#[derive(Debug, Default, Deserialize)]
+pub struct EngineConfig {
+    #[serde(default)]
+    pub content_repository: ContentRepositoryConfig,
+}
+
+/// Content repository type selection.
+#[derive(Debug, Deserialize)]
+pub struct ContentRepositoryConfig {
+    /// "memory" (default) or "file"
+    #[serde(default = "default_repo_type")]
+    pub repo_type: String,
+    /// File-based repository settings (only used when repo_type = "file").
+    pub file: Option<FileRepoConfigToml>,
+}
+
+impl Default for ContentRepositoryConfig {
+    fn default() -> Self {
+        Self {
+            repo_type: default_repo_type(),
+            file: None,
+        }
+    }
+}
+
+fn default_repo_type() -> String {
+    "memory".to_string()
+}
+
+/// TOML configuration for the file-based content repository.
+#[derive(Debug, Deserialize)]
+pub struct FileRepoConfigToml {
+    /// Container directories for segment files.
+    pub containers: Vec<PathBuf>,
+    /// Max size of a single segment file in bytes (default: 128MB).
+    #[serde(default = "default_max_segment_size")]
+    pub max_segment_size_bytes: u64,
+    /// Memory threshold before eviction starts (default: 256MB).
+    #[serde(default = "default_memory_threshold")]
+    pub memory_threshold_bytes: u64,
+    /// Content <= this size stays in memory (default: 64KB).
+    #[serde(default = "default_inline_threshold")]
+    pub inline_threshold_bytes: u64,
+    /// Background cleanup interval in seconds (default: 30).
+    #[serde(default = "default_cleanup_interval")]
+    pub cleanup_interval_secs: u64,
+}
+
+fn default_max_segment_size() -> u64 {
+    128 * 1024 * 1024
+}
+
+fn default_memory_threshold() -> u64 {
+    256 * 1024 * 1024
+}
+
+fn default_inline_threshold() -> u64 {
+    64 * 1024
+}
+
+fn default_cleanup_interval() -> u64 {
+    30
 }

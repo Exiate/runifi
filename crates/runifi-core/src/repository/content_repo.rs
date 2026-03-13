@@ -19,4 +19,8 @@ pub trait ContentRepository: Send + Sync {
 
     /// Decrement the reference count. If it reaches zero, the content is freed.
     fn decrement_ref(&self, resource_id: u64) -> Result<()>;
+
+    /// Graceful shutdown — flush writers, cancel background tasks.
+    /// Default is a no-op for simple implementations.
+    fn shutdown(&self) {}
 }

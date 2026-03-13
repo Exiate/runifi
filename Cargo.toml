@@ -41,6 +41,7 @@ rustls = "0.23"
 bytes = { version = "1", features = ["serde"] }
 memmap2 = "0.9"              # Memory-mapped files for large transfers
 io-uring = "0.7"             # Linux io_uring for zero-copy IO
+crc32fast = "1"              # Fast CRC32 checksums for content integrity
 
 # Async utilities
 futures = "0.3"
