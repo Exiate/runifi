@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useCallback } from 'react';
 import {
   BaseEdge,
   EdgeLabelRenderer,
@@ -10,6 +10,10 @@ import type { ConnectionEdgeData } from '../types/flow';
 
 export type ConnectionEdgeType = Edge<ConnectionEdgeData, 'connectionEdge'>;
 
+interface ConnectionEdgeInnerProps extends EdgeProps<ConnectionEdgeType> {
+  onQueueClick?: (connectionId: string, label: string) => void;
+}
+
 function ConnectionEdgeInner({
   id,
   sourceX,
@@ -18,8 +22,11 @@ function ConnectionEdgeInner({
   targetY,
   sourcePosition,
   targetPosition,
+  source,
+  target,
   data,
-}: EdgeProps<ConnectionEdgeType>) {
+  // onQueueClick is passed via edge data or through a custom mechanism
+}: ConnectionEdgeInnerProps) {
   const [edgePath, labelX, labelY] = getBezierPath({
     sourceX,
     sourceY,
@@ -32,8 +39,23 @@ function ConnectionEdgeInner({
   const queuedCount = data?.queuedCount ?? 0;
   const backPressured = data?.backPressured ?? false;
   const relationship = data?.relationship ?? '';
+  const connectionId = data?.connectionId ?? '';
+  const onQueueClick = data?.onQueueClick as
+    | ((connectionId: string, label: string) => void)
+    | undefined;
 
   const edgeColor = backPressured ? 'var(--danger)' : 'var(--border)';
+
+  const handleQueueClick = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (onQueueClick && connectionId) {
+        const label = `${source} \u2192 ${relationship} \u2192 ${target}`;
+        onQueueClick(connectionId, label);
+      }
+    },
+    [onQueueClick, connectionId, source, relationship, target],
+  );
 
   return (
     <>
@@ -54,7 +76,23 @@ function ConnectionEdgeInner({
         >
           <span className="conn-edge-rel-badge">{relationship}</span>
           {queuedCount > 0 && (
-            <span className={`conn-edge-queue-badge${backPressured ? ' back-pressured' : ''}`}>
+            <span
+              className={`conn-edge-queue-badge${backPressured ? ' back-pressured' : ''}${connectionId ? ' clickable' : ''}`}
+              onClick={connectionId ? handleQueueClick : undefined}
+              title={connectionId ? 'Click to inspect queue' : undefined}
+              role={connectionId ? 'button' : undefined}
+              tabIndex={connectionId ? 0 : undefined}
+              onKeyDown={
+                connectionId
+                  ? (e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        handleQueueClick(e as unknown as React.MouseEvent);
+                      }
+                    }
+                  : undefined
+              }
+            >
               {queuedCount.toLocaleString()} queued
             </span>
           )}
