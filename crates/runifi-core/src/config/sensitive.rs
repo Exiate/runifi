@@ -1,6 +1,7 @@
 use std::fmt;
 use std::ops::Deref;
 
+use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// A string wrapper that securely zeroes its memory on drop and masks its
@@ -64,7 +65,14 @@ impl From<&str> for SensitiveString {
 
 impl PartialEq for SensitiveString {
     fn eq(&self, other: &Self) -> bool {
-        self.inner == other.inner
+        // Constant-time comparison to prevent timing side-channel attacks.
+        if self.inner.len() != other.inner.len() {
+            return false;
+        }
+        self.inner
+            .as_bytes()
+            .ct_eq(other.inner.as_bytes())
+            .into()
     }
 }
 

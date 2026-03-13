@@ -78,6 +78,20 @@ async fn main() -> Result<()> {
         .map(|enc| hex::decode(&enc.key).context("Invalid hex encryption key in config"))
         .transpose()?;
 
+    // Warn if the encryption key appears to be stored as plaintext in the config file
+    // (i.e. it was not injected via ${ENV_VAR} substitution).
+    if encryption_key.is_some()
+        && let Some(enc) = config.api.encryption.as_ref()
+        && let Ok(raw_config) = std::fs::read_to_string(&config_path)
+        && raw_config.contains(&enc.key)
+    {
+        tracing::warn!(
+            "Encryption key appears to be stored as plaintext in the config file. \
+             Consider using environment variable substitution: \
+             key = \"${{RUNIFI_ENCRYPTION_KEY}}\""
+        );
+    }
+
     tracing::info!(flow = %config.flow.name, "Loaded flow configuration");
 
     // Create content repository, optionally wrapping with encryption.
