@@ -18,7 +18,9 @@ use runifi_core::config::property_encryption::{
 use runifi_core::connection::back_pressure::BackPressureConfig;
 use runifi_core::engine::flow_engine::FlowEngine;
 use runifi_core::engine::handle::{PluginKind, PluginTypeInfo};
-use runifi_core::engine::persistence::{self, FlowPersistence, PersistedFlowState};
+use runifi_core::engine::persistence::{
+    self, FlowPersistence, PersistedFlowState, PersistedProcessGroup,
+};
 use runifi_core::engine::processor_node::SchedulingStrategy;
 use runifi_core::registry::plugin_registry::PluginRegistry;
 use runifi_core::repository::content_encrypted::EncryptedContentRepository;
@@ -385,13 +387,19 @@ async fn main() -> Result<()> {
                 runifi_core::engine::handle::reset_label_id_counter(max_label_id + 1);
             }
         }
+
+        // Restore process groups from persisted state.
+        restore_process_groups(handle, &state.process_groups);
     }
 
-    // On first startup (no runtime flow), trigger an initial persist so the
-    // seed config is saved as the runtime state.
+    // On first startup (no runtime flow), load process groups from seed config
+    // and trigger an initial persist so the seed config is saved as the runtime state.
     if runtime_flow.is_none()
         && let Some(handle) = engine.handle()
     {
+        if !config.flow.process_groups.is_empty() {
+            load_seed_process_groups(handle, &config.flow.process_groups, None);
+        }
         handle.notify_persist();
     }
 
@@ -855,6 +863,130 @@ fn load_from_seed_config(
     }
 
     Ok(())
+}
+
+/// Restore process groups from persisted state directly into the engine handle.
+///
+/// This bypasses the `create_process_group` API (which would generate new IDs
+/// and trigger audit events) and instead populates the handle's process_groups
+/// store directly — preserving original IDs from the persisted state.
+fn restore_process_groups(
+    handle: &runifi_core::engine::handle::EngineHandle,
+    persisted_groups: &[PersistedProcessGroup],
+) {
+    use runifi_core::engine::process_group::{PortInfo, PortType, ProcessGroupInfo};
+
+    if persisted_groups.is_empty() {
+        return;
+    }
+
+    let mut groups = handle.process_groups.write();
+    let mut max_group_id: u64 = 0;
+
+    for pg in persisted_groups {
+        // Extract numeric suffix from "pg-N" for counter reset.
+        if let Some(suffix) = pg.id.strip_prefix("pg-")
+            && let Ok(n) = suffix.parse::<u64>()
+        {
+            max_group_id = max_group_id.max(n);
+        }
+
+        let input_ports: Vec<PortInfo> = pg
+            .input_ports
+            .iter()
+            .map(|p| PortInfo {
+                id: p.id.clone(),
+                name: p.name.clone(),
+                port_type: PortType::Input,
+                group_id: pg.id.clone(),
+            })
+            .collect();
+
+        let output_ports: Vec<PortInfo> = pg
+            .output_ports
+            .iter()
+            .map(|p| PortInfo {
+                id: p.id.clone(),
+                name: p.name.clone(),
+                port_type: PortType::Output,
+                group_id: pg.id.clone(),
+            })
+            .collect();
+
+        groups.push(ProcessGroupInfo {
+            id: pg.id.clone(),
+            name: pg.name.clone(),
+            input_ports,
+            output_ports,
+            processor_names: pg.processor_names.clone(),
+            connection_ids: pg.connection_ids.clone(),
+            child_group_ids: pg.child_group_ids.clone(),
+            parent_group_id: pg.parent_group_id.clone(),
+            variables: pg.variables.clone(),
+        });
+    }
+
+    // Reset the group ID counter so new groups don't collide.
+    if max_group_id > 0 {
+        runifi_core::engine::handle::reset_group_id_counter(max_group_id + 1);
+    }
+
+    tracing::info!(
+        count = persisted_groups.len(),
+        "Restored process groups from persisted state"
+    );
+}
+
+/// Load process groups from the seed TOML configuration into the engine handle.
+///
+/// This is called when starting fresh (no persisted state) and creates the
+/// hierarchical process group structure defined in the config.
+fn load_seed_process_groups(
+    handle: &runifi_core::engine::handle::EngineHandle,
+    groups_config: &[runifi_core::config::flow_config::ProcessGroupConfig],
+    parent_id: Option<String>,
+) {
+    for pg_config in groups_config {
+        let input_ports = pg_config
+            .input_ports
+            .as_ref()
+            .map(|p| p.ports.clone())
+            .unwrap_or_default();
+
+        let output_ports = pg_config
+            .output_ports
+            .as_ref()
+            .map(|p| p.ports.clone())
+            .unwrap_or_default();
+
+        match handle.create_process_group(
+            pg_config.name.clone(),
+            parent_id.clone(),
+            input_ports,
+            output_ports,
+            pg_config.variables.clone(),
+        ) {
+            Ok(group_id) => {
+                tracing::info!(
+                    name = %pg_config.name,
+                    id = %group_id,
+                    "Created process group (from seed config)"
+                );
+
+                // Recursively create child process groups.
+                if !pg_config.process_groups.is_empty() {
+                    load_seed_process_groups(handle, &pg_config.process_groups, Some(group_id));
+                }
+            }
+            Err(e) => {
+                tracing::error!(
+                    name = %pg_config.name,
+                    error = %e,
+                    "Failed to create process group from seed config"
+                );
+            }
+        }
+    }
 }
 
 async fn wait_for_shutdown() {

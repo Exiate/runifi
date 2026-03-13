@@ -109,6 +109,10 @@ pub enum AuditAction {
     ServiceEnabled,
     ServiceDisabled,
     ServiceConfigured,
+    // Process groups
+    ProcessGroupCreated,
+    ProcessGroupUpdated,
+    ProcessGroupRemoved,
     // System
     EngineStarted,
     EngineShutdown,
@@ -142,6 +146,13 @@ impl AuditTarget {
         Self {
             resource_type: "service".to_string(),
             resource_id: name.into(),
+        }
+    }
+
+    pub fn process_group(id: impl Into<String>) -> Self {
+        Self {
+            resource_type: "process_group".to_string(),
+            resource_id: id.into(),
         }
     }
 

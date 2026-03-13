@@ -5,6 +5,7 @@ pub mod events;
 pub mod flow;
 pub mod labels;
 pub mod plugins;
+pub mod process_groups;
 pub mod processors;
 pub mod provenance;
 pub mod services;

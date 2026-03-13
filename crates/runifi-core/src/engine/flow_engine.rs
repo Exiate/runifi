@@ -428,6 +428,9 @@ impl FlowEngine {
         // Shared label store.
         let labels = Arc::new(RwLock::new(Vec::new()));
 
+        // Shared process group store.
+        let process_groups = Arc::new(RwLock::new(Vec::new()));
+
         // Build the EngineHandle.
         let engine_handle = EngineHandle {
             flow_name: self.flow_name.clone(),
@@ -441,6 +444,7 @@ impl FlowEngine {
             audit_logger: self.audit_logger.clone(),
             service_registry: self.service_registry.clone(),
             labels: labels.clone(),
+            process_groups: process_groups.clone(),
             mutation_tx,
             persistence: self.persistence.clone(),
             provenance_repo: self.provenance_repo.clone(),
@@ -456,6 +460,7 @@ impl FlowEngine {
                 positions,
                 self.service_registry.clone(),
                 labels,
+                process_groups,
             );
             let persist_token = self.cancel_token.child_token();
             let persist_clone = persistence.clone();
