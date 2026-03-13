@@ -820,6 +820,78 @@ body {
   background: var(--accent) !important;
 }
 
+/* ── NiFi-style center connection handle ───────────────────── */
+
+/* Per-relationship handles: invisible but present for edge anchoring */
+.react-flow__handle.edge-anchor-handle {
+  width: 1px !important;
+  height: 1px !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* Center connection handle: invisible by default, drag point on hover */
+.react-flow__handle.center-connect-handle {
+  width: 28px !important;
+  height: 28px !important;
+  top: 50% !important;
+  right: 50% !important;
+  transform: translate(50%, -50%) !important;
+  background: transparent !important;
+  border: none !important;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 10;
+  transition: opacity 0.15s;
+  border-radius: 50% !important;
+}
+
+.processor-node:hover .react-flow__handle.center-connect-handle {
+  opacity: 1;
+  pointer-events: all;
+  background: rgba(79, 143, 247, 0.15) !important;
+  border: 2px solid var(--accent) !important;
+}
+
+.processor-node:hover .react-flow__handle.center-connect-handle:hover {
+  background: rgba(79, 143, 247, 0.3) !important;
+  box-shadow: 0 0 8px rgba(79, 143, 247, 0.4);
+  cursor: crosshair;
+}
+
+/* Center connection indicator (arrow icon overlay) */
+.center-connect-indicator {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 11;
+  color: var(--accent);
+}
+
+.processor-node:hover .center-connect-indicator {
+  opacity: 1;
+}
+
+/* Connection line style during drag */
+.react-flow__connection-path {
+  stroke: var(--accent) !important;
+  stroke-width: 2 !important;
+  stroke-dasharray: 6 3 !important;
+}
+
+.react-flow__connection {
+  z-index: 1001 !important;
+}
+
 /* ── Canvas drop hint ───────────────────────────────────────── */
 
 .canvas-drop-hint {
