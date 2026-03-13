@@ -115,6 +115,13 @@ pub struct FlowResponse {
     pub connections: Vec<FlowEdgeResponse>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<FlowLabelResponse>,
+    /// Number of process groups in the flow.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub process_group_count: usize,
+}
+
+fn is_zero(v: &usize) -> bool {
+    *v == 0
 }
 
 /// A label in the flow topology response.

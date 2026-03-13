@@ -24,6 +24,7 @@ tokio-util = { version = "0.7", features = ["codec", "io"] }
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+csv = "1"                     # CSV reader/writer for record processing
 
 # Error handling
 thiserror = "2"
@@ -36,6 +37,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # Networking
 quinn = "0.11"                # QUIC transport
 rustls = "0.23"
+rcgen = "0.13"                # X.509 certificate generation
+rustls-pemfile = "2"          # PEM file parsing for certs/keys
+blake3 = "1"                  # BLAKE3 hash for content integrity
 
 # IO
 bytes = { version = "1", features = ["serde"] }

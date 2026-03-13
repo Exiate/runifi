@@ -92,6 +92,7 @@ pub fn create_router_with_registry(
         .merge(routes::labels::routes())
         .merge(routes::provenance::routes())
         .merge(routes::versions::routes())
+        .merge(routes::process_groups::routes())
         .merge(dashboard::routes())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

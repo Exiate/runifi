@@ -18,17 +18,23 @@ use runifi_core::config::property_encryption::{
 use runifi_core::connection::back_pressure::BackPressureConfig;
 use runifi_core::engine::flow_engine::FlowEngine;
 use runifi_core::engine::handle::{PluginKind, PluginTypeInfo};
-use runifi_core::engine::persistence::{self, FlowPersistence, PersistedFlowState};
+use runifi_core::engine::persistence::{
+    self, FlowPersistence, PersistedFlowState, PersistedProcessGroup,
+};
 use runifi_core::engine::processor_node::SchedulingStrategy;
 use runifi_core::registry::plugin_registry::PluginRegistry;
 use runifi_core::repository::content_encrypted::EncryptedContentRepository;
 use runifi_core::repository::content_file::{FileContentRepoConfig, FileContentRepository};
 use runifi_core::repository::content_memory::InMemoryContentRepository;
 use runifi_core::repository::content_repo::ContentRepository;
+use runifi_core::repository::encrypted_wal::{EncryptedWalConfig, EncryptedWalFlowFileRepository};
+use runifi_core::repository::env_key_provider::EnvKeyProvider;
+use runifi_core::repository::file_key_provider::FileKeyProvider;
 use runifi_core::repository::flowfile_repo::{FlowFileRepository, InMemoryFlowFileRepository};
 use runifi_core::repository::flowfile_wal::{
     FsyncMode, WalFlowFileRepoConfig, WalFlowFileRepository,
 };
+use runifi_core::repository::key_provider::KeyProvider;
 use runifi_core::repository::static_key_provider::StaticKeyProvider;
 use runifi_core::versioning::FlowVersionStore;
 
@@ -150,6 +156,7 @@ async fn main() -> Result<()> {
     apply_cli_overrides(&mut config, &cli);
 
     // Resolve the encryption key from config (needed for ENC() decryption).
+    // First check api.encryption (legacy), then engine.encryption (new).
     let encryption_key: Option<Vec<u8>> = config
         .api
         .encryption
@@ -170,6 +177,9 @@ async fn main() -> Result<()> {
              key = \"${{RUNIFI_ENCRYPTION_KEY}}\""
         );
     }
+
+    // Build the engine-level key provider for repository encryption (if configured).
+    let repo_key_provider: Option<Arc<dyn KeyProvider>> = build_key_provider(&config)?;
 
     // Check for persisted runtime flow state.
     let conf_dir = config.engine.conf_dir.clone();
@@ -222,13 +232,13 @@ async fn main() -> Result<()> {
                 runifi_core::repository::cleanup::spawn_cleanup_task(file_repo.clone());
                 tracing::info!("Using file-based content repository");
                 // Wrap with encryption if configured.
-                wrap_with_encryption(file_repo, &config)?
+                wrap_with_encryption(file_repo, &config, repo_key_provider.clone())?
             }
             _ => {
                 let base_repo: Arc<dyn ContentRepository> =
                     Arc::new(InMemoryContentRepository::new());
                 tracing::info!("Using in-memory content repository");
-                wrap_with_encryption(base_repo, &config)?
+                wrap_with_encryption(base_repo, &config, repo_key_provider.clone())?
             }
         };
 
@@ -236,26 +246,44 @@ async fn main() -> Result<()> {
     let flowfile_repo: Arc<dyn FlowFileRepository> =
         match config.engine.flowfile_repository.repo_type.as_str() {
             "wal" => {
-                let wal_config = match &config.engine.flowfile_repository.wal {
-                    Some(wc) => {
-                        let fsync = match wc.fsync_mode.as_str() {
-                            "never" => FsyncMode::Never,
-                            _ => FsyncMode::Always,
-                        };
-                        WalFlowFileRepoConfig {
-                            dir: wc.dir.clone(),
-                            fsync_mode: fsync,
-                            checkpoint_interval_secs: wc.checkpoint_interval_secs,
-                        }
-                    }
-                    None => WalFlowFileRepoConfig::default(),
+                let wal_toml = config.engine.flowfile_repository.wal.as_ref();
+                let fsync = match wal_toml.map(|wc| wc.fsync_mode.as_str()) {
+                    Some("never") => FsyncMode::Never,
+                    _ => FsyncMode::Always,
                 };
-                let repo = Arc::new(
-                    WalFlowFileRepository::new(wal_config)
-                        .context("Failed to create WAL FlowFile repository")?,
-                );
-                tracing::info!("Using WAL-based FlowFile repository");
-                repo
+                let dir = wal_toml
+                    .map(|wc| wc.dir.clone())
+                    .unwrap_or_else(|| PathBuf::from("data/flowfile-repo"));
+                let checkpoint_secs = wal_toml
+                    .map(|wc| wc.checkpoint_interval_secs)
+                    .unwrap_or(120);
+
+                // Use encrypted WAL if engine.encryption is configured.
+                if let Some(ref kp) = repo_key_provider {
+                    let enc_config = EncryptedWalConfig {
+                        dir,
+                        fsync_mode: fsync,
+                        checkpoint_interval_secs: checkpoint_secs,
+                    };
+                    let repo = Arc::new(
+                        EncryptedWalFlowFileRepository::new(enc_config, kp.clone())
+                            .context("Failed to create encrypted WAL FlowFile repository")?,
+                    );
+                    tracing::info!("Using encrypted WAL-based FlowFile repository");
+                    repo
+                } else {
+                    let wal_config = WalFlowFileRepoConfig {
+                        dir,
+                        fsync_mode: fsync,
+                        checkpoint_interval_secs: checkpoint_secs,
+                    };
+                    let repo = Arc::new(
+                        WalFlowFileRepository::new(wal_config)
+                            .context("Failed to create WAL FlowFile repository")?,
+                    );
+                    tracing::info!("Using WAL-based FlowFile repository");
+                    repo
+                }
             }
             _ => {
                 tracing::info!("Using in-memory FlowFile repository (no crash recovery)");
@@ -364,13 +392,19 @@ async fn main() -> Result<()> {
                 runifi_core::engine::handle::reset_label_id_counter(max_label_id + 1);
             }
         }
+
+        // Restore process groups from persisted state.
+        restore_process_groups(handle, &state.process_groups);
     }
 
-    // On first startup (no runtime flow), trigger an initial persist so the
-    // seed config is saved as the runtime state.
+    // On first startup (no runtime flow), load process groups from seed config
+    // and trigger an initial persist so the seed config is saved as the runtime state.
     if runtime_flow.is_none()
         && let Some(handle) = engine.handle()
     {
+        if !config.flow.process_groups.is_empty() {
+            load_seed_process_groups(handle, &config.flow.process_groups, None);
+        }
         handle.notify_persist();
     }
 
@@ -527,18 +561,98 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Build a key provider from the engine-level encryption config.
+fn build_key_provider(config: &FlowConfig) -> Result<Option<Arc<dyn KeyProvider>>> {
+    let enc = match &config.engine.encryption {
+        Some(enc) if enc.enabled => enc,
+        _ => return Ok(None),
+    };
+
+    if enc.algorithm != "AES-256-GCM" {
+        return Err(anyhow::anyhow!(
+            "Unsupported encryption algorithm: '{}'. Only 'AES-256-GCM' is supported.",
+            enc.algorithm
+        ));
+    }
+
+    let kp = &enc.key_provider;
+    let provider: Arc<dyn KeyProvider> = match kp.provider_type.as_str() {
+        "file" => {
+            let path = kp.path.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("engine.encryption.key_provider.path is required for file provider")
+            })?;
+            let provider = FileKeyProvider::from_file(std::path::Path::new(path))
+                .map_err(|e| anyhow::anyhow!("Failed to load key file: {}", e))?;
+            tracing::info!(path = %path, "Loaded encryption keys from file");
+            Arc::new(provider)
+        }
+        "env" => {
+            let active_id = kp.active_key_id.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "engine.encryption.key_provider.active_key_id is required for env provider"
+                )
+            })?;
+            let key_ids = kp.key_ids.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "engine.encryption.key_provider.key_ids is required for env provider"
+                )
+            })?;
+            let provider = EnvKeyProvider::new(active_id.clone(), key_ids, &kp.key_env_prefix)
+                .map_err(|e| anyhow::anyhow!("Failed to load encryption keys from env: {}", e))?;
+            tracing::info!(
+                active_key_id = %active_id,
+                key_count = key_ids.len(),
+                "Loaded encryption keys from environment variables"
+            );
+            Arc::new(provider)
+        }
+        "static" => {
+            let key_hex = kp.key.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "engine.encryption.key_provider.key is required for static provider"
+                )
+            })?;
+            let key_id = kp.key_id.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "engine.encryption.key_provider.key_id is required for static provider"
+                )
+            })?;
+            let provider = StaticKeyProvider::from_hex(key_id.clone(), key_hex)
+                .map_err(|e| anyhow::anyhow!("Invalid static encryption key: {}", e))?;
+            tracing::info!(key_id = %key_id, "Using static encryption key");
+            Arc::new(provider)
+        }
+        other => {
+            return Err(anyhow::anyhow!(
+                "Unknown key provider type: '{}'. Supported types: file, env, static",
+                other
+            ));
+        }
+    };
+
+    Ok(Some(provider))
+}
+
 /// Optionally wrap a content repository with encryption based on config.
 fn wrap_with_encryption(
     base_repo: Arc<dyn ContentRepository>,
     config: &FlowConfig,
+    repo_key_provider: Option<Arc<dyn KeyProvider>>,
 ) -> Result<Arc<dyn ContentRepository>> {
+    // First, try engine-level encryption (new config path).
+    if let Some(kp) = repo_key_provider {
+        tracing::info!("Content encryption at rest enabled (engine.encryption)");
+        return Ok(Arc::new(EncryptedContentRepository::new(base_repo, kp)));
+    }
+
+    // Fall back to legacy api.encryption config.
     match &config.api.encryption {
         Some(enc) if enc.enabled => {
             let key_provider = Arc::new(
                 StaticKeyProvider::from_hex(enc.key_id.clone(), &enc.key)
                     .context("Invalid encryption configuration")?,
             );
-            tracing::info!(key_id = %enc.key_id, "Content encryption at rest enabled");
+            tracing::info!(key_id = %enc.key_id, "Content encryption at rest enabled (api.encryption)");
             Ok(Arc::new(EncryptedContentRepository::new(
                 base_repo,
                 key_provider,
@@ -788,6 +902,130 @@ fn dirs_default_version_path() -> PathBuf {
         PathBuf::from(home).join(".runifi").join("flow-versions")
     } else {
         PathBuf::from("./data/flow-versions")
+    }
+}
+
+/// Restore process groups from persisted state directly into the engine handle.
+///
+/// This bypasses the `create_process_group` API (which would generate new IDs
+/// and trigger audit events) and instead populates the handle's process_groups
+/// store directly — preserving original IDs from the persisted state.
+fn restore_process_groups(
+    handle: &runifi_core::engine::handle::EngineHandle,
+    persisted_groups: &[PersistedProcessGroup],
+) {
+    use runifi_core::engine::process_group::{PortInfo, PortType, ProcessGroupInfo};
+
+    if persisted_groups.is_empty() {
+        return;
+    }
+
+    let mut groups = handle.process_groups.write();
+    let mut max_group_id: u64 = 0;
+
+    for pg in persisted_groups {
+        // Extract numeric suffix from "pg-N" for counter reset.
+        if let Some(suffix) = pg.id.strip_prefix("pg-")
+            && let Ok(n) = suffix.parse::<u64>()
+        {
+            max_group_id = max_group_id.max(n);
+        }
+
+        let input_ports: Vec<PortInfo> = pg
+            .input_ports
+            .iter()
+            .map(|p| PortInfo {
+                id: p.id.clone(),
+                name: p.name.clone(),
+                port_type: PortType::Input,
+                group_id: pg.id.clone(),
+            })
+            .collect();
+
+        let output_ports: Vec<PortInfo> = pg
+            .output_ports
+            .iter()
+            .map(|p| PortInfo {
+                id: p.id.clone(),
+                name: p.name.clone(),
+                port_type: PortType::Output,
+                group_id: pg.id.clone(),
+            })
+            .collect();
+
+        groups.push(ProcessGroupInfo {
+            id: pg.id.clone(),
+            name: pg.name.clone(),
+            input_ports,
+            output_ports,
+            processor_names: pg.processor_names.clone(),
+            connection_ids: pg.connection_ids.clone(),
+            child_group_ids: pg.child_group_ids.clone(),
+            parent_group_id: pg.parent_group_id.clone(),
+            variables: pg.variables.clone(),
+        });
+    }
+
+    // Reset the group ID counter so new groups don't collide.
+    if max_group_id > 0 {
+        runifi_core::engine::handle::reset_group_id_counter(max_group_id + 1);
+    }
+
+    tracing::info!(
+        count = persisted_groups.len(),
+        "Restored process groups from persisted state"
+    );
+}
+
+/// Load process groups from the seed TOML configuration into the engine handle.
+///
+/// This is called when starting fresh (no persisted state) and creates the
+/// hierarchical process group structure defined in the config.
+fn load_seed_process_groups(
+    handle: &runifi_core::engine::handle::EngineHandle,
+    groups_config: &[runifi_core::config::flow_config::ProcessGroupConfig],
+    parent_id: Option<String>,
+) {
+    for pg_config in groups_config {
+        let input_ports = pg_config
+            .input_ports
+            .as_ref()
+            .map(|p| p.ports.clone())
+            .unwrap_or_default();
+
+        let output_ports = pg_config
+            .output_ports
+            .as_ref()
+            .map(|p| p.ports.clone())
+            .unwrap_or_default();
+
+        match handle.create_process_group(
+            pg_config.name.clone(),
+            parent_id.clone(),
+            input_ports,
+            output_ports,
+            pg_config.variables.clone(),
+        ) {
+            Ok(group_id) => {
+                tracing::info!(
+                    name = %pg_config.name,
+                    id = %group_id,
+                    "Created process group (from seed config)"
+                );
+
+                // Recursively create child process groups.
+                if !pg_config.process_groups.is_empty() {
+                    load_seed_process_groups(handle, &pg_config.process_groups, Some(group_id));
+                }
+            }
+            Err(e) => {
+                tracing::error!(
+                    name = %pg_config.name,
+                    error = %e,
+                    "Failed to create process group from seed config"
+                );
+            }
+        }
     }
 }
 

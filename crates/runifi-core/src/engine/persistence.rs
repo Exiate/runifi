@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
 use super::handle::{ConnectionInfo, LabelInfo, Position, ProcessorInfo};
+use super::process_group::ProcessGroupInfo;
 
 /// File names for persisted flow state.
 const FLOW_STATE_FILE: &str = "flow.json";
@@ -42,6 +43,8 @@ pub struct PersistedFlowState {
     pub services: Vec<PersistedService>,
     #[serde(default)]
     pub labels: Vec<PersistedLabel>,
+    #[serde(default)]
+    pub process_groups: Vec<PersistedProcessGroup>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,6 +122,36 @@ fn default_font_size() -> f64 {
     14.0
 }
 
+/// Persisted process group data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedProcessGroup {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub input_ports: Vec<PersistedPort>,
+    #[serde(default)]
+    pub output_ports: Vec<PersistedPort>,
+    #[serde(default)]
+    pub processor_names: Vec<String>,
+    #[serde(default)]
+    pub connection_ids: Vec<String>,
+    #[serde(default)]
+    pub child_group_ids: Vec<String>,
+    #[serde(default)]
+    pub parent_group_id: Option<String>,
+    #[serde(default)]
+    pub variables: HashMap<String, String>,
+}
+
+/// Persisted port data for a process group.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedPort {
+    pub id: String,
+    pub name: String,
+    /// "input" or "output"
+    pub port_type: String,
+}
+
 // ── Snapshot source — breaks the Arc cycle ────────────────────────────────────
 
 /// The subset of engine state needed for persistence snapshotting.
@@ -133,6 +166,7 @@ pub(crate) struct SnapshotSource {
     pub positions: Arc<DashMap<String, Position>>,
     pub service_registry: crate::registry::service_registry::SharedServiceRegistry,
     pub labels: Arc<RwLock<Vec<LabelInfo>>>,
+    pub process_groups: Arc<RwLock<Vec<ProcessGroupInfo>>>,
 }
 
 // ── Snapshot from live engine state ───────────────────────────────────────────
@@ -209,6 +243,43 @@ impl PersistedFlowState {
             })
             .collect();
 
+        let process_groups: Vec<PersistedProcessGroup> = source
+            .process_groups
+            .read()
+            .iter()
+            .map(|g| {
+                let input_ports: Vec<PersistedPort> = g
+                    .input_ports
+                    .iter()
+                    .map(|p| PersistedPort {
+                        id: p.id.clone(),
+                        name: p.name.clone(),
+                        port_type: "input".to_string(),
+                    })
+                    .collect();
+                let output_ports: Vec<PersistedPort> = g
+                    .output_ports
+                    .iter()
+                    .map(|p| PersistedPort {
+                        id: p.id.clone(),
+                        name: p.name.clone(),
+                        port_type: "output".to_string(),
+                    })
+                    .collect();
+                PersistedProcessGroup {
+                    id: g.id.clone(),
+                    name: g.name.clone(),
+                    input_ports,
+                    output_ports,
+                    processor_names: g.processor_names.clone(),
+                    connection_ids: g.connection_ids.clone(),
+                    child_group_ids: g.child_group_ids.clone(),
+                    parent_group_id: g.parent_group_id.clone(),
+                    variables: g.variables.clone(),
+                }
+            })
+            .collect();
+
         Self {
             version: CURRENT_VERSION,
             flow_name: source.flow_name.clone(),
@@ -217,6 +288,7 @@ impl PersistedFlowState {
             positions,
             services,
             labels,
+            process_groups,
         }
     }
 }
@@ -361,6 +433,7 @@ impl FlowPersistence {
     ///
     /// This intentionally does **not** accept an `EngineHandle` to avoid
     /// creating a circular `Arc` reference.
+    #[allow(clippy::too_many_arguments)]
     pub fn set_source(
         &self,
         flow_name: String,
@@ -369,6 +442,7 @@ impl FlowPersistence {
         positions: Arc<DashMap<String, Position>>,
         service_registry: crate::registry::service_registry::SharedServiceRegistry,
         labels: Arc<RwLock<Vec<LabelInfo>>>,
+        process_groups: Arc<RwLock<Vec<ProcessGroupInfo>>>,
     ) {
         *self.inner.source.write() = Some(SnapshotSource {
             flow_name,
@@ -377,6 +451,7 @@ impl FlowPersistence {
             positions,
             service_registry,
             labels,
+            process_groups,
         });
     }
 
@@ -474,6 +549,7 @@ mod tests {
             positions: HashMap::new(),
             services: vec![],
             labels: vec![],
+            process_groups: vec![],
         }
     }
 
@@ -530,6 +606,7 @@ mod tests {
                 background_color: "#3b82f6".to_string(),
                 font_size: 14.0,
             }],
+            process_groups: vec![],
         };
 
         let json = serde_json::to_string_pretty(&state).unwrap();
@@ -580,6 +657,7 @@ mod tests {
             positions: HashMap::new(),
             services: vec![],
             labels: vec![],
+            process_groups: vec![],
         };
         atomic_write(&conf_dir, &state2).unwrap();
 
@@ -679,6 +757,7 @@ mod tests {
             positions: HashMap::new(),
             services: vec![],
             labels: vec![],
+            process_groups: vec![],
         };
 
         atomic_write(&conf_dir, &state).unwrap();
@@ -720,6 +799,7 @@ mod tests {
         let positions = Arc::new(DashMap::new());
         let service_registry = crate::registry::service_registry::SharedServiceRegistry::new();
         let labels = Arc::new(RwLock::new(Vec::new()));
+        let process_groups = Arc::new(RwLock::new(Vec::new()));
         persistence.set_source(
             "debounce-test".to_string(),
             processors,
@@ -727,6 +807,7 @@ mod tests {
             positions,
             service_registry,
             labels,
+            process_groups,
         );
 
         let cancel = tokio_util::sync::CancellationToken::new();

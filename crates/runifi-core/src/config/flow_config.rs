@@ -3,6 +3,9 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
+use crate::cluster::config::ClusterConfig;
+use crate::cluster::load_balance::LoadBalanceConfig;
+
 /// Top-level flow configuration, loaded from TOML.
 #[derive(Debug, Default, Deserialize)]
 pub struct FlowConfig {
@@ -16,6 +19,8 @@ pub struct FlowConfig {
     pub audit: AuditConfig,
     #[serde(default)]
     pub auth: AuthConfig,
+    #[serde(default)]
+    pub cluster: ClusterConfig,
 }
 
 /// Configuration for the web API server.
@@ -220,6 +225,9 @@ pub struct FlowDefinition {
     pub connections: Vec<ConnectionConfig>,
     #[serde(default)]
     pub services: Vec<ServiceConfig>,
+    /// Process Groups for hierarchical flow organization.
+    #[serde(default)]
+    pub process_groups: Vec<ProcessGroupConfig>,
 }
 
 impl Default for FlowDefinition {
@@ -229,8 +237,65 @@ impl Default for FlowDefinition {
             processors: Vec::new(),
             connections: Vec::new(),
             services: Vec::new(),
+            process_groups: Vec::new(),
         }
     }
+}
+
+/// Configuration for a Process Group — a hierarchical container for
+/// processors, connections, ports, and child process groups.
+///
+/// ```toml
+/// [[flow.process_groups]]
+/// name = "data-enrichment"
+///
+/// [flow.process_groups.input_ports]
+/// ports = ["raw-data"]
+///
+/// [flow.process_groups.output_ports]
+/// ports = ["enriched-data"]
+///
+/// [[flow.process_groups.processors]]
+/// name = "lookup"
+/// type = "InvokeHTTP"
+///
+/// [[flow.process_groups.connections]]
+/// source = "raw-data"
+/// relationship = "success"
+/// destination = "lookup"
+///
+/// [flow.process_groups.variables]
+/// "api.url" = "https://example.com"
+/// ```
+#[derive(Debug, Deserialize)]
+pub struct ProcessGroupConfig {
+    /// Unique name for this process group.
+    pub name: String,
+    /// Input ports that receive FlowFiles from the parent group.
+    #[serde(default)]
+    pub input_ports: Option<PortsConfig>,
+    /// Output ports that send FlowFiles to the parent group.
+    #[serde(default)]
+    pub output_ports: Option<PortsConfig>,
+    /// Processors within this process group.
+    #[serde(default)]
+    pub processors: Vec<ProcessorConfig>,
+    /// Connections within this process group.
+    #[serde(default)]
+    pub connections: Vec<ConnectionConfig>,
+    /// Nested child process groups.
+    #[serde(default)]
+    pub process_groups: Vec<ProcessGroupConfig>,
+    /// Group-scoped variables. Child groups inherit and can override.
+    #[serde(default)]
+    pub variables: HashMap<String, String>,
+}
+
+/// Port name list for Process Group input or output ports.
+#[derive(Debug, Deserialize)]
+pub struct PortsConfig {
+    /// List of port names.
+    pub ports: Vec<String>,
 }
 
 /// Configuration for a controller service instance in the flow.
@@ -312,6 +377,9 @@ pub struct ConnectionConfig {
     /// Back-pressure config (optional).
     #[serde(default)]
     pub back_pressure: Option<BackPressureConfigToml>,
+    /// Load balancing config for cluster distribution (optional).
+    #[serde(default)]
+    pub load_balancing: Option<LoadBalanceConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -331,6 +399,111 @@ pub struct EngineConfig {
     pub content_repository: ContentRepositoryConfig,
     #[serde(default)]
     pub flowfile_repository: FlowFileRepositoryConfig,
+    /// Repository encryption at rest configuration.
+    ///
+    /// When enabled, encrypts both the content repository and the FlowFile
+    /// WAL repository data at rest using AES-256-GCM.
+    ///
+    /// ```toml
+    /// [engine.encryption]
+    /// enabled = true
+    /// algorithm = "AES-256-GCM"
+    /// [engine.encryption.key_provider]
+    /// type = "file"
+    /// path = "/etc/runifi/keys.json"
+    /// ```
+    #[serde(default)]
+    pub encryption: Option<RepositoryEncryptionConfig>,
+}
+
+/// Configuration for encrypted repositories (content + FlowFile WAL).
+///
+/// Supports multiple key provider types for key management:
+/// - `"file"` — reads keys from a JSON file on disk
+/// - `"env"` — reads keys from environment variables
+/// - `"static"` — single key from config (backward compatible)
+///
+/// All providers support key rotation: new writes use the active key,
+/// old content can still be decrypted using the key ID embedded in the
+/// encrypted envelope.
+#[derive(Debug, Deserialize, Clone)]
+pub struct RepositoryEncryptionConfig {
+    /// Whether encryption is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Encryption algorithm. Currently only "AES-256-GCM" is supported.
+    #[serde(default = "default_algorithm")]
+    pub algorithm: String,
+    /// Key provider configuration.
+    #[serde(default)]
+    pub key_provider: KeyProviderConfig,
+}
+
+fn default_algorithm() -> String {
+    "AES-256-GCM".to_string()
+}
+
+/// Key provider configuration for repository encryption.
+///
+/// ```toml
+/// # File-based key provider
+/// [engine.encryption.key_provider]
+/// type = "file"
+/// path = "/etc/runifi/keys.json"
+///
+/// # Environment variable key provider
+/// [engine.encryption.key_provider]
+/// type = "env"
+/// active_key_id = "key-2024-01"
+/// key_ids = ["key-2024-01", "key-2023-12"]
+/// key_env_prefix = "RUNIFI_ENC_KEY_"
+///
+/// # Static key provider (single key, for simple setups)
+/// [engine.encryption.key_provider]
+/// type = "static"
+/// key = "hex-encoded-256-bit-key"
+/// key_id = "key-2024-01"
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub struct KeyProviderConfig {
+    /// Key provider type: "file", "env", or "static".
+    #[serde(rename = "type", default = "default_key_provider_type")]
+    pub provider_type: String,
+    /// Path to the key file (for "file" provider).
+    pub path: Option<String>,
+    /// Active key ID (for "env" provider).
+    pub active_key_id: Option<String>,
+    /// List of key IDs to load (for "env" provider).
+    pub key_ids: Option<Vec<String>>,
+    /// Environment variable prefix (for "env" provider). Default: "RUNIFI_ENC_KEY_".
+    #[serde(default = "default_key_env_prefix")]
+    pub key_env_prefix: String,
+    /// Hex-encoded key (for "static" provider).
+    pub key: Option<String>,
+    /// Key identifier (for "static" provider).
+    pub key_id: Option<String>,
+}
+
+impl Default for KeyProviderConfig {
+    fn default() -> Self {
+        Self {
+            provider_type: default_key_provider_type(),
+            path: None,
+            active_key_id: None,
+            key_ids: None,
+            key_env_prefix: default_key_env_prefix(),
+            key: None,
+            key_id: None,
+        }
+    }
+}
+
+fn default_key_provider_type() -> String {
+    "static".to_string()
+}
+
+fn default_key_env_prefix() -> String {
+    "RUNIFI_ENC_KEY_".to_string()
 }
 
 fn default_conf_dir() -> PathBuf {
@@ -569,5 +742,88 @@ mod tests {
         assert_eq!(config.flow.name, "my-flow");
         assert!(config.flow.processors.is_empty());
         assert!(config.flow.connections.is_empty());
+    }
+
+    #[test]
+    fn process_group_config_deserializes() {
+        let toml_str = r#"
+            [flow]
+            name = "grouped-flow"
+
+            [[flow.process_groups]]
+            name = "data-enrichment"
+
+            [flow.process_groups.input_ports]
+            ports = ["raw-data"]
+
+            [flow.process_groups.output_ports]
+            ports = ["enriched-data"]
+
+            [flow.process_groups.variables]
+            "api.url" = "https://example.com"
+
+            [[flow.process_groups.processors]]
+            name = "lookup"
+            type = "GenerateFlowFile"
+
+            [[flow.process_groups.connections]]
+            source = "raw-data"
+            relationship = "success"
+            destination = "lookup"
+        "#;
+
+        let config: FlowConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.flow.process_groups.len(), 1);
+
+        let pg = &config.flow.process_groups[0];
+        assert_eq!(pg.name, "data-enrichment");
+
+        let input_ports = pg.input_ports.as_ref().unwrap();
+        assert_eq!(input_ports.ports, vec!["raw-data"]);
+
+        let output_ports = pg.output_ports.as_ref().unwrap();
+        assert_eq!(output_ports.ports, vec!["enriched-data"]);
+
+        assert_eq!(pg.processors.len(), 1);
+        assert_eq!(pg.processors[0].name, "lookup");
+
+        assert_eq!(pg.connections.len(), 1);
+        assert_eq!(pg.connections[0].source, "raw-data");
+
+        assert_eq!(pg.variables.get("api.url").unwrap(), "https://example.com");
+    }
+
+    #[test]
+    fn default_config_has_empty_process_groups() {
+        let config = FlowConfig::default();
+        assert!(config.flow.process_groups.is_empty());
+    }
+
+    #[test]
+    fn nested_process_groups_deserialize() {
+        let toml_str = r#"
+            [flow]
+            name = "nested-flow"
+
+            [[flow.process_groups]]
+            name = "outer-group"
+
+            [[flow.process_groups.process_groups]]
+            name = "inner-group"
+
+            [flow.process_groups.process_groups.input_ports]
+            ports = ["in"]
+        "#;
+
+        let config: FlowConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.flow.process_groups.len(), 1);
+
+        let outer = &config.flow.process_groups[0];
+        assert_eq!(outer.name, "outer-group");
+        assert_eq!(outer.process_groups.len(), 1);
+
+        let inner = &outer.process_groups[0];
+        assert_eq!(inner.name, "inner-group");
+        assert_eq!(inner.input_ports.as_ref().unwrap().ports, vec!["in"]);
     }
 }

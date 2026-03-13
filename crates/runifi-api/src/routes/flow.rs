@@ -57,10 +57,13 @@ async fn get_flow(State(state): State<ApiState>) -> Json<FlowResponse> {
         })
         .collect();
 
+    let process_group_count = handle.process_groups.read().len();
+
     Json(FlowResponse {
         name: handle.flow_name.clone(),
         processors,
         connections,
         labels,
+        process_group_count,
     })
 }

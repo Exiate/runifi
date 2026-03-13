@@ -350,6 +350,7 @@ mod tests {
             positions: HashMap::new(),
             services: vec![],
             labels: vec![],
+            process_groups: vec![],
         }
     }
 
