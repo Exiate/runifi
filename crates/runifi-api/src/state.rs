@@ -1,7 +1,9 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
-use runifi_core::config::flow_config::SecurityConfig;
+use runifi_core::auth::jwt::JwtConfig;
+use runifi_core::auth::store::UserStore;
+use runifi_core::config::flow_config::{AuthConfig, SecurityConfig};
 use runifi_core::engine::handle::EngineHandle;
 use runifi_core::registry::plugin_registry::PluginRegistry;
 
@@ -20,6 +22,12 @@ pub struct ApiState {
     pub security: SecurityConfig,
     /// Plugin registry for creating service instances at runtime.
     pub plugin_registry: Option<Arc<PluginRegistry>>,
+    /// User store for identity management.
+    pub user_store: Arc<UserStore>,
+    /// JWT configuration for token generation/validation.
+    pub jwt_config: Option<Arc<JwtConfig>>,
+    /// Auth configuration.
+    pub auth_config: AuthConfig,
 }
 
 impl ApiState {
@@ -32,6 +40,9 @@ impl ApiState {
             detailed_errors: false,
             security: SecurityConfig::default(),
             plugin_registry: None,
+            user_store: Arc::new(UserStore::new()),
+            jwt_config: None,
+            auth_config: AuthConfig::default(),
         }
     }
 
@@ -49,12 +60,32 @@ impl ApiState {
             detailed_errors,
             security,
             plugin_registry: None,
+            user_store: Arc::new(UserStore::new()),
+            jwt_config: None,
+            auth_config: AuthConfig::default(),
         }
     }
 
     /// Set the plugin registry (called during API server setup).
     pub fn set_plugin_registry(&mut self, registry: Arc<PluginRegistry>) {
         self.plugin_registry = Some(registry);
+    }
+
+    /// Set the user store and JWT config for identity-based auth.
+    pub fn set_auth(
+        &mut self,
+        user_store: Arc<UserStore>,
+        jwt_config: JwtConfig,
+        auth_config: AuthConfig,
+    ) {
+        self.user_store = user_store;
+        self.jwt_config = Some(Arc::new(jwt_config));
+        self.auth_config = auth_config;
+    }
+
+    /// Returns `true` if JWT-based user auth is enabled.
+    pub fn user_auth_enabled(&self) -> bool {
+        self.auth_config.enabled && self.jwt_config.is_some()
     }
 
     /// Create a controller service instance by type name.

@@ -8,6 +8,8 @@ use tracing_subscriber::EnvFilter;
 use runifi_core::audit::{
     AuditLogger, CompositeAuditLogger, FileAuditLogger, NullAuditLogger, TracingAuditLogger,
 };
+use runifi_core::auth::jwt::JwtConfig;
+use runifi_core::auth::store::UserStore;
 use runifi_core::config::flow_config::FlowConfig;
 use runifi_core::config::permissions::check_config_permissions;
 use runifi_core::config::property_encryption::{
@@ -372,6 +374,50 @@ async fn main() -> Result<()> {
     }
     engine.set_plugin_types(plugin_types);
 
+    // Initialize user management if auth is enabled.
+    let user_store = Arc::new(UserStore::new());
+    let jwt_config = if config.auth.enabled {
+        if config.auth.jwt_secret == "change-me-in-production" {
+            tracing::warn!(
+                "Using default JWT secret. Set auth.jwt_secret or RUNIFI_JWT_SECRET for production."
+            );
+        }
+        let jwt = JwtConfig::new(&config.auth.jwt_secret, config.auth.jwt_expiry_secs);
+
+        // Single-user mode: bootstrap a default admin if no users exist.
+        if config.auth.single_user_mode && user_store.user_count() == 0 {
+            match user_store.create_user(
+                config.auth.default_admin_username.clone(),
+                &config.auth.default_admin_password,
+            ) {
+                Ok(user) => {
+                    tracing::info!(
+                        username = %user.username,
+                        "Single-user mode: default admin account created"
+                    );
+                    if config.auth.default_admin_password == "admin" {
+                        tracing::warn!(
+                            "Default admin password is 'admin'. Change it immediately in production."
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to create default admin user");
+                }
+            }
+        }
+
+        tracing::info!(
+            expiry_secs = config.auth.jwt_expiry_secs,
+            single_user_mode = config.auth.single_user_mode,
+            "JWT user authentication enabled"
+        );
+        Some(jwt)
+    } else {
+        tracing::info!("User authentication is disabled");
+        None
+    };
+
     // Start the API server if enabled.
     let api_handle = if config.api.enabled {
         let engine_handle = engine
@@ -381,12 +427,22 @@ async fn main() -> Result<()> {
 
         let api_config = config.api.clone();
         let api_registry = registry.clone();
+        let api_user_store = user_store.clone();
+        let api_jwt_config = jwt_config.clone();
+        let api_auth_config = config.auth.clone();
 
         Some(tokio::spawn(async move {
             if let Err(e) = runifi_api::start_api_server_with_registry(
                 engine_handle,
                 &api_config,
                 Some(api_registry),
+                if api_auth_config.enabled {
+                    Some(api_user_store)
+                } else {
+                    None
+                },
+                api_jwt_config,
+                Some(api_auth_config),
             )
             .await
             {

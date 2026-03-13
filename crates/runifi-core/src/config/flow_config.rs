@@ -14,6 +14,8 @@ pub struct FlowConfig {
     pub engine: EngineConfig,
     #[serde(default)]
     pub audit: AuditConfig,
+    #[serde(default)]
+    pub auth: AuthConfig,
 }
 
 /// Configuration for the web API server.
@@ -463,6 +465,76 @@ fn default_audit_enabled() -> bool {
 
 fn default_audit_log_to_tracing() -> bool {
     true
+}
+
+/// Configuration for user management and JWT authentication.
+///
+/// ```toml
+/// [auth]
+/// enabled = true
+/// single_user_mode = true
+/// jwt_secret = "${RUNIFI_JWT_SECRET}"
+/// jwt_expiry_secs = 3600
+/// default_admin_username = "admin"
+/// default_admin_password = "admin"
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub struct AuthConfig {
+    /// Whether JWT-based user authentication is enabled.
+    /// When disabled, all requests bypass user auth (existing API key auth still applies).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Single-user mode: auto-create a default admin account on first boot
+    /// if no users exist. Intended for development and testing.
+    #[serde(default = "default_single_user_mode")]
+    pub single_user_mode: bool,
+    /// HMAC secret for signing JWT tokens. **Must** be set when auth is enabled.
+    /// Use env var substitution: `"${RUNIFI_JWT_SECRET}"`.
+    #[serde(default = "default_jwt_secret")]
+    pub jwt_secret: String,
+    /// JWT token lifetime in seconds. Default: 3600 (1 hour).
+    #[serde(default = "default_jwt_expiry")]
+    pub jwt_expiry_secs: i64,
+    /// Default admin username for single-user mode.
+    #[serde(default = "default_admin_username")]
+    pub default_admin_username: String,
+    /// Default admin password for single-user mode.
+    /// **Change this in production.**
+    #[serde(default = "default_admin_password")]
+    pub default_admin_password: String,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            single_user_mode: default_single_user_mode(),
+            jwt_secret: default_jwt_secret(),
+            jwt_expiry_secs: default_jwt_expiry(),
+            default_admin_username: default_admin_username(),
+            default_admin_password: default_admin_password(),
+        }
+    }
+}
+
+fn default_single_user_mode() -> bool {
+    true
+}
+
+fn default_jwt_secret() -> String {
+    "change-me-in-production".to_string()
+}
+
+fn default_jwt_expiry() -> i64 {
+    3600
+}
+
+fn default_admin_username() -> String {
+    "admin".to_string()
+}
+
+fn default_admin_password() -> String {
+    "admin".to_string()
 }
 
 #[cfg(test)]

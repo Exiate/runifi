@@ -1,3 +1,4 @@
+pub mod auth_routes;
 pub mod bulletins;
 pub mod connections;
 pub mod events;
@@ -6,3 +7,5 @@ pub mod plugins;
 pub mod processors;
 pub mod services;
 pub mod system;
+pub mod user_groups;
+pub mod users;

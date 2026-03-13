@@ -1,9 +1,15 @@
-//! API key authentication and CSRF protection middleware.
+//! API key authentication, JWT authentication, and CSRF protection middleware.
 //!
-//! When API keys are configured in `[api.security]`, all API endpoints require
-//! a valid bearer token in the `Authorization` header or an `api_key` query
-//! parameter. Dashboard static files (`/`, `/assets/*`) are always exempt from
-//! authentication.
+//! Supports two authentication modes:
+//!
+//! 1. **API key auth** (legacy): Bearer token or `api_key` query param matched
+//!    against configured API keys. Enabled when `[api.security].api_keys` is non-empty.
+//!
+//! 2. **JWT user auth**: Bearer token containing a JWT signed by the server.
+//!    Enabled when `[auth].enabled = true`. Takes precedence over API key auth.
+//!
+//! Dashboard static files (`/`, `/assets/*`) and auth endpoints
+//! (`/api/v1/auth/*`) are always exempt from authentication.
 //!
 //! CSRF protection uses the double-submit cookie pattern: mutating requests
 //! (POST, PUT, DELETE) must include an `X-CSRF-Token` header whose value matches
@@ -39,8 +45,9 @@ const CSRF_TOKEN_HEX_LEN: usize = 64; // 32 bytes -> 64 hex chars
 /// Exempt paths are:
 ///   - `/` (dashboard index)
 ///   - `/assets/*` (dashboard static assets)
+///   - `/api/v1/auth/login` (login endpoint)
 pub fn is_exempt_path(path: &str) -> bool {
-    path == "/" || path.starts_with("/assets/")
+    path == "/" || path.starts_with("/assets/") || path == "/api/v1/auth/login"
 }
 
 /// Generate a cryptographically random CSRF token (hex-encoded).
@@ -54,39 +61,75 @@ pub fn generate_csrf_token() -> String {
 // Authentication middleware
 // ---------------------------------------------------------------------------
 
-/// Axum middleware that enforces API key authentication and attaches the
-/// caller's [`Role`] to request extensions for downstream permission checks.
+/// Axum middleware that enforces authentication (API key or JWT) and attaches
+/// the caller's [`Role`] to request extensions for downstream permission checks.
 ///
-/// If no API keys are configured, all requests are allowed through (no role
-/// is attached — handlers default to `Admin`).
-/// Dashboard static paths (`/`, `/assets/*`) are always exempt.
+/// Authentication order:
+/// 1. If JWT user auth is enabled, try JWT validation first.
+/// 2. Fall back to API key validation if configured.
+/// 3. If neither auth mode is enabled, pass through (defaults to Admin).
 ///
-/// Valid authentication methods:
-///   1. `Authorization: Bearer <key>` header
-///   2. `?api_key=<key>` query parameter (useful for SSE EventSource)
+/// Dashboard static paths (`/`, `/assets/*`) and `/api/v1/auth/login` are
+/// always exempt.
 pub async fn auth_middleware(
     State(state): State<ApiState>,
     mut req: Request,
     next: Next,
 ) -> Response {
-    // If auth is not enabled, pass through (no role set — defaults to Admin).
-    if !state.security.auth_enabled() {
-        return next.run(req).await;
-    }
-
     let path = req.uri().path().to_string();
 
-    // Dashboard static assets are always exempt.
+    // Dashboard static assets and auth login are always exempt.
     if is_exempt_path(&path) {
         return next.run(req).await;
     }
 
-    // Try to extract API key from Authorization header or query param.
+    // --- JWT user auth ---
+    if state.user_auth_enabled()
+        && let Some(jwt_config) = &state.jwt_config
+    {
+        if let Some(token) = extract_bearer_token(&req) {
+            match jwt_config.validate_token(&token) {
+                Ok(claims) => {
+                    // Check token revocation.
+                    if state.user_store.is_token_revoked(&claims.jti) {
+                        let body = serde_json::json!({ "error": "Token has been revoked" });
+                        return (StatusCode::UNAUTHORIZED, axum::Json(body)).into_response();
+                    }
+                    // JWT-authenticated users get Admin role for now.
+                    // Phase 2 will add per-user role resolution.
+                    req.extensions_mut().insert(Role::Admin);
+                    // Store claims for downstream use (e.g., /auth/me).
+                    req.extensions_mut().insert(claims);
+                    return next.run(req).await;
+                }
+                Err(_) => {
+                    // If JWT auth is the primary mode and the bearer token
+                    // is present but invalid, reject immediately.
+                    let body = serde_json::json!({ "error": "Invalid or expired token" });
+                    return (StatusCode::UNAUTHORIZED, axum::Json(body)).into_response();
+                }
+            }
+        }
+
+        // No bearer token present — if API key auth is also not enabled,
+        // reject the request.
+        if !state.security.auth_enabled() {
+            let body = serde_json::json!({ "error": "Authentication required" });
+            return (StatusCode::UNAUTHORIZED, axum::Json(body)).into_response();
+        }
+        // Fall through to API key auth below.
+    }
+
+    // --- API key auth (legacy) ---
+    if !state.security.auth_enabled() {
+        // Neither auth mode is active — pass through.
+        return next.run(req).await;
+    }
+
     let provided_key = extract_api_key(&req);
 
     match provided_key {
         Some(ref key) if validate_api_key(key, &state.security) => {
-            // Look up the role for this key and attach it to extensions.
             if let Some(role) = resolve_role(key, &state.security) {
                 req.extensions_mut().insert(role);
             }
@@ -104,21 +147,9 @@ pub async fn auth_middleware(
 // ---------------------------------------------------------------------------
 
 /// Axum middleware that enforces CSRF double-submit cookie protection.
-///
-/// For mutating HTTP methods (POST, PUT, DELETE), the request must include
-/// both:
-///   - A `runifi_csrf` cookie
-///   - An `X-CSRF-Token` header with a value that matches the cookie
-///
-/// Requests that already carry a valid `Authorization: Bearer` header are
-/// exempt from CSRF checks, because bearer tokens are never sent
-/// automatically by browsers.
-///
-/// GET/HEAD/OPTIONS requests are always exempt (safe methods).
-/// If auth is disabled entirely, CSRF is also disabled.
 pub async fn csrf_middleware(State(state): State<ApiState>, req: Request, next: Next) -> Response {
-    // CSRF only matters when auth is enabled.
-    if !state.security.auth_enabled() {
+    // CSRF only matters when some form of auth is enabled.
+    if !state.security.auth_enabled() && !state.user_auth_enabled() {
         return next.run(req).await;
     }
 
@@ -127,7 +158,6 @@ pub async fn csrf_middleware(State(state): State<ApiState>, req: Request, next: 
     // Safe methods and exempt paths skip CSRF.
     if is_safe_method(&method) || is_exempt_path(req.uri().path()) {
         let mut response = next.run(req).await;
-        // Set CSRF cookie on safe-method responses so the browser has it.
         ensure_csrf_cookie(&mut response);
         return response;
     }
@@ -158,6 +188,19 @@ pub async fn csrf_middleware(State(state): State<ApiState>, req: Request, next: 
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+/// Extract a bearer token from the Authorization header.
+fn extract_bearer_token(req: &Request) -> Option<String> {
+    let auth = req.headers().get(header::AUTHORIZATION)?;
+    let value = auth.to_str().ok()?;
+    let trimmed = value.trim();
+    let token = trimmed.strip_prefix("Bearer ")?.trim();
+    if token.is_empty() {
+        None
+    } else {
+        Some(token.to_string())
+    }
+}
+
 /// Extract the API key from the request (header or query param).
 fn extract_api_key(req: &Request) -> Option<String> {
     // 1. Check Authorization: Bearer <key>
@@ -179,7 +222,6 @@ fn extract_api_key(req: &Request) -> Option<String> {
             if let Some((key, value)) = pair.split_once('=')
                 && key == "api_key"
             {
-                // URL-decode the value (e.g. %20 -> space).
                 let decoded = urlencoding::decode(value).unwrap_or_default();
                 let decoded = decoded.trim();
                 if !decoded.is_empty() {
@@ -208,9 +250,6 @@ fn validate_api_key(
 }
 
 /// Resolve the [`Role`] for a validated API key.
-///
-/// Simple string keys (backward compat) are treated as `Admin`.
-/// Structured keys use the configured role. Unknown role strings default to `Viewer`.
 fn resolve_role(
     provided: &str,
     security: &runifi_core::config::flow_config::SecurityConfig,
@@ -258,7 +297,6 @@ fn extract_csrf_cookie(req: &Request) -> Option<String> {
 
 /// Ensure the response has a CSRF cookie set.
 fn ensure_csrf_cookie(response: &mut Response) {
-    // Only set if not already present in the response.
     let has_csrf_cookie = response
         .headers()
         .get_all(header::SET_COOKIE)
@@ -299,8 +337,11 @@ mod tests {
         assert!(is_exempt_path("/"));
         assert!(is_exempt_path("/assets/main.js"));
         assert!(is_exempt_path("/assets/css/style.css"));
+        assert!(is_exempt_path("/api/v1/auth/login"));
         assert!(!is_exempt_path("/api/v1/processors"));
         assert!(!is_exempt_path("/api/v1/events"));
+        assert!(!is_exempt_path("/api/v1/auth/me"));
+        assert!(!is_exempt_path("/api/v1/auth/logout"));
     }
 
     #[test]
@@ -326,7 +367,7 @@ mod tests {
         assert!(validate_api_key("key-def456", &security));
         assert!(!validate_api_key("key-invalid", &security));
         assert!(!validate_api_key("", &security));
-        assert!(!validate_api_key("key-abc12", &security)); // partial match
+        assert!(!validate_api_key("key-abc12", &security));
     }
 
     #[test]
@@ -357,7 +398,6 @@ mod tests {
             api_keys: vec![ApiKeyEntry::Simple("key-abc123".to_string())],
             ..SecurityConfig::default()
         };
-        // Simple keys default to Admin.
         assert_eq!(resolve_role("key-abc123", &security), Some(Role::Admin));
         assert_eq!(resolve_role("unknown", &security), None);
     }
@@ -398,7 +438,6 @@ mod tests {
             })],
             ..SecurityConfig::default()
         };
-        // Unknown role strings default to Viewer for safety.
         assert_eq!(resolve_role("bad-role-key", &security), Some(Role::Viewer));
     }
 
@@ -406,9 +445,7 @@ mod tests {
     fn test_generate_csrf_token() {
         let token = generate_csrf_token();
         assert_eq!(token.len(), CSRF_TOKEN_HEX_LEN);
-        // Should be valid hex.
         assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
-        // Two tokens should be different.
         let token2 = generate_csrf_token();
         assert_ne!(token, token2);
     }
@@ -431,7 +468,6 @@ mod tests {
 
     #[test]
     fn test_extract_csrf_cookie_exact_name() {
-        // Should match "runifi_csrf=token" exactly, not "runifi_csrf_other=token".
         let mut req = Request::builder()
             .header(header::COOKIE, "runifi_csrf_other=bad; runifi_csrf=good")
             .body(axum::body::Body::empty())
@@ -439,7 +475,6 @@ mod tests {
         let token = extract_csrf_cookie(&req);
         assert_eq!(token.as_deref(), Some("good"));
 
-        // Only the prefixed name should NOT match.
         req = Request::builder()
             .header(header::COOKIE, "runifi_csrf_other=bad")
             .body(axum::body::Body::empty())
@@ -449,28 +484,24 @@ mod tests {
 
     #[test]
     fn test_extract_api_key_from_query() {
-        // Basic query parameter.
         let req = Request::builder()
             .uri("/api/v1/events?api_key=my-secret")
             .body(axum::body::Body::empty())
             .unwrap();
         assert_eq!(extract_api_key(&req).as_deref(), Some("my-secret"));
 
-        // With other params before and after.
         let req = Request::builder()
             .uri("/api/v1/events?foo=bar&api_key=my-key&baz=qux")
             .body(axum::body::Body::empty())
             .unwrap();
         assert_eq!(extract_api_key(&req).as_deref(), Some("my-key"));
 
-        // URL-encoded value.
         let req = Request::builder()
             .uri("/api/v1/events?api_key=key%20with%20spaces")
             .body(axum::body::Body::empty())
             .unwrap();
         assert_eq!(extract_api_key(&req).as_deref(), Some("key with spaces"));
 
-        // No api_key param.
         let req = Request::builder()
             .uri("/api/v1/events?other=val")
             .body(axum::body::Body::empty())
@@ -486,11 +517,28 @@ mod tests {
             .unwrap();
         assert_eq!(extract_api_key(&req).as_deref(), Some("my-token"));
 
-        // Empty bearer should return None.
         let req = Request::builder()
             .header(header::AUTHORIZATION, "Bearer ")
             .body(axum::body::Body::empty())
             .unwrap();
         assert!(extract_api_key(&req).is_none());
+    }
+
+    #[test]
+    fn test_extract_bearer_token() {
+        let req = Request::builder()
+            .header(header::AUTHORIZATION, "Bearer eyJ0eXA...")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(extract_bearer_token(&req).as_deref(), Some("eyJ0eXA..."));
+
+        let req = Request::builder()
+            .header(header::AUTHORIZATION, "Bearer ")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert!(extract_bearer_token(&req).is_none());
+
+        let req = Request::builder().body(axum::body::Body::empty()).unwrap();
+        assert!(extract_bearer_token(&req).is_none());
     }
 }
