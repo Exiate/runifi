@@ -1963,6 +1963,272 @@ body {
   padding: 0;
 }
 
+/* ── Header settings menu ──────────────────────────────────────── */
+
+.header-settings-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.header-settings-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  transition: color 0.15s;
+}
+
+.header-settings-btn:hover {
+  color: var(--text);
+}
+
+.header-settings-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.25rem 0;
+  min-width: 200px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  z-index: 1100;
+}
+
+.header-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.5rem 1rem;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.header-menu-item:hover {
+  background: var(--surface-hover);
+}
+
+/* ── Controller Services panel ─────────────────────────────────── */
+
+.services-panel {
+  max-width: 720px;
+  width: 100%;
+  max-height: 85vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.services-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 0.75rem;
+  gap: 0.5rem;
+}
+
+.services-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.services-table th {
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.services-table td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  vertical-align: middle;
+}
+
+.services-table tr:hover td {
+  background: var(--surface-hover);
+}
+
+.service-state-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 3px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.service-state-badge.enabled {
+  background: rgba(52, 211, 153, 0.15);
+  color: var(--success);
+}
+
+.service-state-badge.disabled {
+  background: rgba(251, 191, 36, 0.15);
+  color: var(--warning);
+}
+
+.service-state-badge.created {
+  background: rgba(139, 144, 160, 0.15);
+  color: var(--text-dim);
+}
+
+.service-actions {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.service-action-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-family: var(--font);
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.service-action-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.service-action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.service-action-btn.danger:hover:not(:disabled) {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.service-refs {
+  color: var(--text-dim);
+  font-size: 0.75rem;
+}
+
+.services-empty {
+  text-align: center;
+  color: var(--text-dim);
+  padding: 2rem;
+  font-size: 0.85rem;
+}
+
+.services-list-wrap {
+  overflow-y: auto;
+  flex: 1;
+  max-height: 60vh;
+}
+
+.add-service-form {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-end;
+  padding: 0.75rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 0.75rem;
+}
+
+.add-service-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  flex: 1;
+}
+
+.add-service-field label {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.services-error {
+  text-align: center;
+  color: var(--danger);
+  padding: 2rem;
+  font-size: 0.85rem;
+}
+
+/* Sub-modal for delete confirm / service config */
+.service-submodal {
+  z-index: 1200;
+}
+
+.modal-panel--narrow {
+  max-width: 400px;
+}
+
+.service-dialog-title {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+}
+
+.service-dialog-text {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  margin: 0 0 1rem;
+}
+
+.modal-footer {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  margin-top: 1rem;
+}
+
+.service-config-dialog {
+  max-width: 520px;
+  width: 100%;
+}
+
+.service-config-title {
+  font-size: 1rem;
+}
+
+.service-config-warning {
+  padding: 0.5rem 0.75rem;
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid var(--warning);
+  border-radius: 6px;
+  color: var(--warning);
+  font-size: 0.8rem;
+  margin-bottom: 0.75rem;
+}
+
+.service-config-prop {
+  margin-bottom: 0.75rem;
+}
+
+.config-required-mark {
+  color: var(--danger);
+  margin-left: 4px;
+}
+
+.service-config-desc {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+
 /* ── Responsive ─────────────────────────────────────────────── */
 
 @media (max-width: 768px) {
