@@ -66,6 +66,7 @@ base64 = "0.22"              # Base64 encoding for encrypted properties
 argon2 = "0.5"               # Password hashing
 jsonwebtoken = "9"           # JWT token generation/validation
 jsonschema = "0.45"          # JSON Schema validation
+git2 = "0.20"                # Git operations for flow versioning
 
 # CLI
 clap = { version = "4", features = ["derive"] }

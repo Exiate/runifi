@@ -22,6 +22,7 @@ use runifi_core::auth::store::UserStore;
 use runifi_core::config::flow_config::{ApiConfig, AuthConfig};
 use runifi_core::engine::handle::EngineHandle;
 use runifi_core::registry::plugin_registry::PluginRegistry;
+use runifi_core::versioning::FlowVersionStore;
 use state::ApiState;
 
 /// Per-IP rate limiter type.
@@ -30,7 +31,7 @@ type IpRateLimiter =
 
 /// Create the API router with all routes and security middleware.
 pub fn create_router(handle: EngineHandle, api_config: &ApiConfig) -> Router {
-    create_router_with_registry(handle, api_config, None, None, None, None)
+    create_router_with_registry(handle, api_config, None, None, None, None, None)
 }
 
 /// Create the API router with an optional plugin registry for service creation.
@@ -41,6 +42,7 @@ pub fn create_router_with_registry(
     user_store: Option<Arc<UserStore>>,
     jwt_config: Option<JwtConfig>,
     auth_config: Option<AuthConfig>,
+    version_store: Option<Arc<FlowVersionStore>>,
 ) -> Router {
     let mut state = ApiState::with_config(
         handle,
@@ -56,6 +58,9 @@ pub fn create_router_with_registry(
     {
         let ac = auth_config.unwrap_or_default();
         state.set_auth(store, jwt, ac);
+    }
+    if let Some(vs) = version_store {
+        state.set_version_store(vs);
     }
 
     // -- CORS --
@@ -85,6 +90,7 @@ pub fn create_router_with_registry(
         .merge(routes::users::routes())
         .merge(routes::user_groups::routes())
         .merge(routes::labels::routes())
+        .merge(routes::versions::routes())
         .merge(dashboard::routes())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -223,10 +229,10 @@ fn validate_security_config(api_config: &ApiConfig) -> Result<(), std::io::Error
 /// When TLS is configured, the server uses `axum-server` with rustls. Otherwise
 /// it falls back to plain-text HTTP via `tokio::net::TcpListener`.
 pub async fn start_api_server(handle: EngineHandle, api_config: &ApiConfig) -> std::io::Result<()> {
-    start_api_server_with_registry(handle, api_config, None, None, None, None).await
+    start_api_server_with_registry(handle, api_config, None, None, None, None, None).await
 }
 
-/// Start the API server with optional plugin registry and auth support.
+/// Start the API server with optional plugin registry, auth, and versioning support.
 pub async fn start_api_server_with_registry(
     handle: EngineHandle,
     api_config: &ApiConfig,
@@ -234,6 +240,7 @@ pub async fn start_api_server_with_registry(
     user_store: Option<Arc<UserStore>>,
     jwt_config: Option<JwtConfig>,
     auth_config: Option<AuthConfig>,
+    version_store: Option<Arc<FlowVersionStore>>,
 ) -> std::io::Result<()> {
     // Validate security posture before binding.
     validate_security_config(api_config)?;
@@ -245,6 +252,7 @@ pub async fn start_api_server_with_registry(
         user_store,
         jwt_config,
         auth_config,
+        version_store,
     );
     let addr: SocketAddr = format!("{}:{}", api_config.bind_address, api_config.port)
         .parse()

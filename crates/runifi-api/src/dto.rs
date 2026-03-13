@@ -521,3 +521,59 @@ pub struct UpdateLabelRequest {
     pub background_color: Option<String>,
     pub font_size: Option<f64>,
 }
+
+// ── Flow versioning DTOs ──────────────────────────────────────────────
+
+/// Response for a single flow version.
+#[derive(Serialize)]
+pub struct FlowVersionResponse {
+    pub id: String,
+    pub full_id: String,
+    pub comment: String,
+    pub timestamp: i64,
+    pub processor_count: usize,
+    pub connection_count: usize,
+}
+
+/// Response for listing all flow versions.
+#[derive(Serialize)]
+pub struct FlowVersionListResponse {
+    pub versions: Vec<FlowVersionResponse>,
+    pub total: usize,
+}
+
+/// Request body for `POST /api/v1/flow/versions` — save a new version.
+#[derive(Deserialize)]
+pub struct SaveVersionRequest {
+    /// Version comment / description.
+    pub comment: String,
+}
+
+/// Response for a flow diff between the current state and a version.
+#[derive(Serialize)]
+pub struct FlowDiffResponse {
+    pub version_id: String,
+    pub processors_added: Vec<String>,
+    pub processors_removed: Vec<String>,
+    pub processors_changed: Vec<FlowDiffEntryResponse>,
+    pub connections_added: Vec<String>,
+    pub connections_removed: Vec<String>,
+    pub services_added: Vec<String>,
+    pub services_removed: Vec<String>,
+    pub services_changed: Vec<FlowDiffEntryResponse>,
+}
+
+/// A single changed component in a diff.
+#[derive(Serialize)]
+pub struct FlowDiffEntryResponse {
+    pub name: String,
+    pub changes: Vec<String>,
+}
+
+/// Response after reverting to a version.
+#[derive(Serialize)]
+pub struct RevertResponse {
+    pub reverted_to: String,
+    pub comment: String,
+    pub message: String,
+}

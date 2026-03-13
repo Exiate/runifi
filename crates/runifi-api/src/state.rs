@@ -6,6 +6,7 @@ use runifi_core::auth::store::UserStore;
 use runifi_core::config::flow_config::{AuthConfig, SecurityConfig};
 use runifi_core::engine::handle::EngineHandle;
 use runifi_core::registry::plugin_registry::PluginRegistry;
+use runifi_core::versioning::FlowVersionStore;
 
 /// Shared API state, cheap to clone via Arc.
 #[derive(Clone)]
@@ -28,6 +29,8 @@ pub struct ApiState {
     pub jwt_config: Option<Arc<JwtConfig>>,
     /// Auth configuration.
     pub auth_config: AuthConfig,
+    /// Flow version store for git-based versioning.
+    pub version_store: Option<Arc<FlowVersionStore>>,
 }
 
 impl ApiState {
@@ -43,6 +46,7 @@ impl ApiState {
             user_store: Arc::new(UserStore::new()),
             jwt_config: None,
             auth_config: AuthConfig::default(),
+            version_store: None,
         }
     }
 
@@ -63,6 +67,7 @@ impl ApiState {
             user_store: Arc::new(UserStore::new()),
             jwt_config: None,
             auth_config: AuthConfig::default(),
+            version_store: None,
         }
     }
 
@@ -86,6 +91,11 @@ impl ApiState {
     /// Returns `true` if JWT-based user auth is enabled.
     pub fn user_auth_enabled(&self) -> bool {
         self.auth_config.enabled && self.jwt_config.is_some()
+    }
+
+    /// Set the flow version store for git-based versioning.
+    pub fn set_version_store(&mut self, store: Arc<FlowVersionStore>) {
+        self.version_store = Some(store);
     }
 
     /// Create a controller service instance by type name.

@@ -223,7 +223,7 @@ impl PersistedFlowState {
 
 /// Parse a scheduling display string (e.g. "timer-driven (1000ms)", "event-driven")
 /// back into a `PersistedScheduling`.
-fn scheduling_display_to_persisted(display: &str) -> PersistedScheduling {
+pub fn scheduling_display_to_persisted(display: &str) -> PersistedScheduling {
     if display.starts_with("timer-driven") {
         // Parse "timer-driven (1000ms)" → interval_ms = 1000
         let interval_ms = display
