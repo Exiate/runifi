@@ -34,6 +34,9 @@ pub enum ApiError {
 
     #[error("Too many requests")]
     TooManyRequests,
+
+    #[error("Forbidden: insufficient permissions")]
+    Forbidden,
 }
 
 impl ApiError {
@@ -49,6 +52,7 @@ impl ApiError {
             ApiError::Conflict(_) => StatusCode::CONFLICT,
             ApiError::EngineNotRunning => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
+            ApiError::Forbidden => StatusCode::FORBIDDEN,
         }
     }
 
@@ -65,6 +69,7 @@ impl ApiError {
             ApiError::Conflict(_) => "Conflict",
             ApiError::EngineNotRunning => "Service unavailable",
             ApiError::TooManyRequests => "Too many requests",
+            ApiError::Forbidden => "Forbidden",
         }
     }
 

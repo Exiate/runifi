@@ -17,6 +17,7 @@ use axum::response::{IntoResponse, Response};
 use rand::Rng;
 use subtle::ConstantTimeEq;
 
+use crate::rbac::Role;
 use crate::state::ApiState;
 
 /// Name of the CSRF cookie set on dashboard pages.
@@ -53,16 +54,22 @@ pub fn generate_csrf_token() -> String {
 // Authentication middleware
 // ---------------------------------------------------------------------------
 
-/// Axum middleware that enforces API key authentication.
+/// Axum middleware that enforces API key authentication and attaches the
+/// caller's [`Role`] to request extensions for downstream permission checks.
 ///
-/// If no API keys are configured, all requests are allowed through.
+/// If no API keys are configured, all requests are allowed through (no role
+/// is attached — handlers default to `Admin`).
 /// Dashboard static paths (`/`, `/assets/*`) are always exempt.
 ///
 /// Valid authentication methods:
 ///   1. `Authorization: Bearer <key>` header
 ///   2. `?api_key=<key>` query parameter (useful for SSE EventSource)
-pub async fn auth_middleware(State(state): State<ApiState>, req: Request, next: Next) -> Response {
-    // If auth is not enabled, pass through.
+pub async fn auth_middleware(
+    State(state): State<ApiState>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    // If auth is not enabled, pass through (no role set — defaults to Admin).
     if !state.security.auth_enabled() {
         return next.run(req).await;
     }
@@ -78,7 +85,13 @@ pub async fn auth_middleware(State(state): State<ApiState>, req: Request, next: 
     let provided_key = extract_api_key(&req);
 
     match provided_key {
-        Some(key) if validate_api_key(&key, &state.security.api_keys) => next.run(req).await,
+        Some(ref key) if validate_api_key(key, &state.security) => {
+            // Look up the role for this key and attach it to extensions.
+            if let Some(role) = resolve_role(key, &state.security) {
+                req.extensions_mut().insert(role);
+            }
+            next.run(req).await
+        }
         _ => {
             let body = serde_json::json!({ "error": "Unauthorized" });
             (StatusCode::UNAUTHORIZED, axum::Json(body)).into_response()
@@ -180,14 +193,30 @@ fn extract_api_key(req: &Request) -> Option<String> {
 }
 
 /// Validate an API key against the configured keys using constant-time comparison.
-fn validate_api_key(provided: &str, configured_keys: &[String]) -> bool {
+fn validate_api_key(
+    provided: &str,
+    security: &runifi_core::config::flow_config::SecurityConfig,
+) -> bool {
+    let configured_keys = security.key_strings();
     let provided_bytes = provided.as_bytes();
     for key in configured_keys {
-        if constant_time_eq(provided, key.as_str()) && provided_bytes.len() == key.len() {
+        if constant_time_eq(provided, key) && provided_bytes.len() == key.len() {
             return true;
         }
     }
     false
+}
+
+/// Resolve the [`Role`] for a validated API key.
+///
+/// Simple string keys (backward compat) are treated as `Admin`.
+/// Structured keys use the configured role. Unknown role strings default to `Viewer`.
+fn resolve_role(
+    provided: &str,
+    security: &runifi_core::config::flow_config::SecurityConfig,
+) -> Option<Role> {
+    let role_str = security.role_for_key(provided)?;
+    Some(Role::parse(role_str).unwrap_or(Role::Viewer))
 }
 
 /// Constant-time string comparison to prevent timing attacks.
@@ -284,13 +313,93 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_api_key() {
-        let keys = vec!["key-abc123".to_string(), "key-def456".to_string()];
-        assert!(validate_api_key("key-abc123", &keys));
-        assert!(validate_api_key("key-def456", &keys));
-        assert!(!validate_api_key("key-invalid", &keys));
-        assert!(!validate_api_key("", &keys));
-        assert!(!validate_api_key("key-abc12", &keys)); // partial match
+    fn test_validate_api_key_simple() {
+        use runifi_core::config::flow_config::{ApiKeyEntry, SecurityConfig};
+        let security = SecurityConfig {
+            api_keys: vec![
+                ApiKeyEntry::Simple("key-abc123".to_string()),
+                ApiKeyEntry::Simple("key-def456".to_string()),
+            ],
+            ..SecurityConfig::default()
+        };
+        assert!(validate_api_key("key-abc123", &security));
+        assert!(validate_api_key("key-def456", &security));
+        assert!(!validate_api_key("key-invalid", &security));
+        assert!(!validate_api_key("", &security));
+        assert!(!validate_api_key("key-abc12", &security)); // partial match
+    }
+
+    #[test]
+    fn test_validate_api_key_with_roles() {
+        use runifi_core::config::flow_config::{ApiKeyEntry, ApiKeyWithRole, SecurityConfig};
+        let security = SecurityConfig {
+            api_keys: vec![
+                ApiKeyEntry::WithRole(ApiKeyWithRole {
+                    key: "admin-key".to_string(),
+                    role: "admin".to_string(),
+                }),
+                ApiKeyEntry::WithRole(ApiKeyWithRole {
+                    key: "viewer-key".to_string(),
+                    role: "viewer".to_string(),
+                }),
+            ],
+            ..SecurityConfig::default()
+        };
+        assert!(validate_api_key("admin-key", &security));
+        assert!(validate_api_key("viewer-key", &security));
+        assert!(!validate_api_key("unknown", &security));
+    }
+
+    #[test]
+    fn test_resolve_role_simple_keys() {
+        use runifi_core::config::flow_config::{ApiKeyEntry, SecurityConfig};
+        let security = SecurityConfig {
+            api_keys: vec![ApiKeyEntry::Simple("key-abc123".to_string())],
+            ..SecurityConfig::default()
+        };
+        // Simple keys default to Admin.
+        assert_eq!(resolve_role("key-abc123", &security), Some(Role::Admin));
+        assert_eq!(resolve_role("unknown", &security), None);
+    }
+
+    #[test]
+    fn test_resolve_role_with_roles() {
+        use runifi_core::config::flow_config::{ApiKeyEntry, ApiKeyWithRole, SecurityConfig};
+        let security = SecurityConfig {
+            api_keys: vec![
+                ApiKeyEntry::WithRole(ApiKeyWithRole {
+                    key: "admin-key".to_string(),
+                    role: "admin".to_string(),
+                }),
+                ApiKeyEntry::WithRole(ApiKeyWithRole {
+                    key: "op-key".to_string(),
+                    role: "operator".to_string(),
+                }),
+                ApiKeyEntry::WithRole(ApiKeyWithRole {
+                    key: "view-key".to_string(),
+                    role: "viewer".to_string(),
+                }),
+            ],
+            ..SecurityConfig::default()
+        };
+        assert_eq!(resolve_role("admin-key", &security), Some(Role::Admin));
+        assert_eq!(resolve_role("op-key", &security), Some(Role::Operator));
+        assert_eq!(resolve_role("view-key", &security), Some(Role::Viewer));
+        assert_eq!(resolve_role("missing", &security), None);
+    }
+
+    #[test]
+    fn test_resolve_role_unknown_role_string() {
+        use runifi_core::config::flow_config::{ApiKeyEntry, ApiKeyWithRole, SecurityConfig};
+        let security = SecurityConfig {
+            api_keys: vec![ApiKeyEntry::WithRole(ApiKeyWithRole {
+                key: "bad-role-key".to_string(),
+                role: "superadmin".to_string(),
+            })],
+            ..SecurityConfig::default()
+        };
+        // Unknown role strings default to Viewer for safety.
+        assert_eq!(resolve_role("bad-role-key", &security), Some(Role::Viewer));
     }
 
     #[test]

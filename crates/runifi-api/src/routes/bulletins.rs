@@ -7,6 +7,7 @@ use runifi_core::engine::bulletin::BulletinSeverity;
 
 use crate::dto::BulletinResponse;
 use crate::error::ApiError;
+use crate::rbac;
 use crate::state::ApiState;
 
 pub fn routes() -> Router<ApiState> {
@@ -16,6 +17,7 @@ pub fn routes() -> Router<ApiState> {
             "/api/v1/processors/{name}/bulletins",
             get(list_processor_bulletins),
         )
+        .layer(axum::middleware::from_fn(rbac::require_view_flow))
 }
 
 #[derive(Deserialize)]

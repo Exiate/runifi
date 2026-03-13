@@ -50,18 +50,35 @@ pub struct ApiConfig {
 
 /// Security configuration for API authentication and TLS.
 ///
+/// Supports two formats for `api_keys`:
+///
+/// **Simple format** (backward compatible — all keys get `Admin` role):
 /// ```toml
 /// [api.security]
 /// api_keys = ["key-abc123", "key-def456"]
-/// tls_enabled = false
-/// tls_cert_path = "/etc/runifi/cert.pem"
-/// tls_key_path = "/etc/runifi/key.pem"
+/// ```
+///
+/// **Role-based format**:
+/// ```toml
+/// [api.security]
+/// [[api.security.api_keys]]
+/// key = "admin-key-abc123"
+/// role = "admin"
+///
+/// [[api.security.api_keys]]
+/// key = "operator-key-def456"
+/// role = "operator"
+///
+/// [[api.security.api_keys]]
+/// key = "viewer-key-ghi789"
+/// role = "viewer"
 /// ```
 #[derive(Debug, Default, Deserialize, Clone)]
 pub struct SecurityConfig {
     /// API keys for bearer-token authentication. If empty, auth is disabled.
+    /// Supports both simple string keys (all Admin) and structured key-role mappings.
     #[serde(default)]
-    pub api_keys: Vec<String>,
+    pub api_keys: Vec<ApiKeyEntry>,
     /// Whether TLS is enabled for the API server.
     #[serde(default)]
     pub tls_enabled: bool,
@@ -78,6 +95,50 @@ impl SecurityConfig {
     pub fn auth_enabled(&self) -> bool {
         !self.api_keys.is_empty()
     }
+
+    /// Get the plain key strings for authentication validation.
+    pub fn key_strings(&self) -> Vec<&str> {
+        self.api_keys
+            .iter()
+            .map(|entry| match entry {
+                ApiKeyEntry::Simple(key) => key.as_str(),
+                ApiKeyEntry::WithRole(akr) => akr.key.as_str(),
+            })
+            .collect()
+    }
+
+    /// Look up the role name for a given key. Returns `None` if the key is not found.
+    /// Simple string keys return `"admin"`.
+    pub fn role_for_key(&self, provided: &str) -> Option<&str> {
+        for entry in &self.api_keys {
+            match entry {
+                ApiKeyEntry::Simple(key) if key == provided => return Some("admin"),
+                ApiKeyEntry::WithRole(akr) if akr.key == provided => return Some(&akr.role),
+                _ => {}
+            }
+        }
+        None
+    }
+}
+
+/// An API key entry that supports both simple string keys (backward compatible)
+/// and structured key-role mappings.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum ApiKeyEntry {
+    /// Simple string key — treated as Admin role for backward compatibility.
+    Simple(String),
+    /// Structured key with an explicit role assignment.
+    WithRole(ApiKeyWithRole),
+}
+
+/// A structured API key with an explicit role assignment.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApiKeyWithRole {
+    /// The API key string.
+    pub key: String,
+    /// The role assigned to this key (e.g. "admin", "operator", "viewer").
+    pub role: String,
 }
 
 /// Configuration for content encryption at rest.
