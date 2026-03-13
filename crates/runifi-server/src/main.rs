@@ -38,6 +38,7 @@ use runifi_core::repository::flowfile_wal::{
 };
 use runifi_core::repository::key_provider::KeyProvider;
 use runifi_core::repository::static_key_provider::StaticKeyProvider;
+use runifi_core::versioning::FlowVersionStore;
 
 // Ensure processor registrations are linked in.
 extern crate runifi_processors;
@@ -72,6 +73,10 @@ struct Cli {
     /// WAL FlowFile repository directory (overrides config file).
     #[arg(long)]
     wal_dir: Option<PathBuf>,
+
+    /// Flow version repository directory (default: ~/.runifi/flow-versions/).
+    #[arg(long)]
+    version_dir: Option<PathBuf>,
 }
 
 /// Apply CLI overrides to the loaded config.
@@ -481,6 +486,30 @@ async fn main() -> Result<()> {
         None
     };
 
+    // Initialize flow version store.
+    let version_repo_path = cli
+        .version_dir
+        .clone()
+        .unwrap_or_else(dirs_default_version_path);
+    let version_store: Option<Arc<FlowVersionStore>> =
+        match FlowVersionStore::open(&version_repo_path) {
+            Ok(store) => {
+                tracing::info!(
+                    path = %version_repo_path.display(),
+                    "Flow version store initialized"
+                );
+                Some(Arc::new(store))
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    path = %version_repo_path.display(),
+                    "Failed to initialize flow version store — versioning will be disabled"
+                );
+                None
+            }
+        };
+
     // Start the API server if enabled.
     let api_handle = if config.api.enabled {
         let engine_handle = engine
@@ -493,6 +522,7 @@ async fn main() -> Result<()> {
         let api_user_store = user_store.clone();
         let api_jwt_config = jwt_config.clone();
         let api_auth_config = config.auth.clone();
+        let api_version_store = version_store.clone();
 
         Some(tokio::spawn(async move {
             if let Err(e) = runifi_api::start_api_server_with_registry(
@@ -506,6 +536,7 @@ async fn main() -> Result<()> {
                 },
                 api_jwt_config,
                 Some(api_auth_config),
+                api_version_store,
             )
             .await
             {
@@ -912,6 +943,15 @@ fn load_from_seed_config(
     }
 
     Ok(())
+}
+
+/// Default path for the flow version repository: `~/.runifi/flow-versions/`.
+fn dirs_default_version_path() -> PathBuf {
+    if let Some(home) = std::env::var_os("HOME") {
+        PathBuf::from(home).join(".runifi").join("flow-versions")
+    } else {
+        PathBuf::from("./data/flow-versions")
+    }
 }
 
 /// Restore process groups from persisted state directly into the engine handle.

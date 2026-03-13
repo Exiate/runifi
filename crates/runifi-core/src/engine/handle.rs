@@ -12,7 +12,11 @@ use tokio::sync::{mpsc, oneshot};
 use super::bulletin::BulletinBoard;
 use super::metrics::ProcessorMetrics;
 use super::mutation::{MutationCommand, MutationError};
-use super::persistence::FlowPersistence;
+use super::persistence::{
+    FlowPersistence, PersistedBackPressure, PersistedConnection, PersistedFlowState,
+    PersistedLabel, PersistedPort, PersistedPosition, PersistedProcessGroup, PersistedProcessor,
+    PersistedService, scheduling_display_to_persisted,
+};
 use super::process_group::{PortInfo, PortType, ProcessGroupId, ProcessGroupInfo};
 use super::processor_node::{
     SharedInputConnections, SharedInputNotifiers, SharedOutputConnections,
@@ -728,6 +732,162 @@ impl EngineHandle {
     /// List all labels.
     pub fn list_labels(&self) -> Vec<LabelInfo> {
         self.labels.read().clone()
+    }
+
+    // ── Flow state snapshot ────────────────────────────────────────────
+
+    /// Capture a point-in-time snapshot of the entire flow state.
+    ///
+    /// Used by the versioning system to save the current flow as a named version.
+    /// Builds the snapshot directly from the handle's live data references.
+    pub fn snapshot_flow_state(&self) -> PersistedFlowState {
+        let processors: Vec<PersistedProcessor> = self
+            .processors
+            .read()
+            .iter()
+            .map(|p| PersistedProcessor {
+                name: p.name.clone(),
+                type_name: p.type_name.clone(),
+                scheduling: scheduling_display_to_persisted(&p.scheduling_display),
+                properties: p.properties.read().clone(),
+            })
+            .collect();
+
+        let connections: Vec<PersistedConnection> = self
+            .connections
+            .read()
+            .iter()
+            .map(|c| {
+                let bp = c.connection.back_pressure_config();
+                // Persist expiration and priority from the underlying FlowConnection.
+                let (expiration, priority, priority_attribute) =
+                    if let Some(fc) = c.connection.flow_connection() {
+                        let exp = fc.expiration().map(|d| {
+                            let secs = d.as_secs();
+                            if secs >= 86400 && secs % 86400 == 0 {
+                                format!("{}d", secs / 86400)
+                            } else if secs >= 3600 && secs % 3600 == 0 {
+                                format!("{}h", secs / 3600)
+                            } else if secs >= 60 && secs % 60 == 0 {
+                                format!("{}m", secs / 60)
+                            } else {
+                                format!("{}s", secs)
+                            }
+                        });
+                        let (prio, prio_attr) = match fc.queue_priority() {
+                            crate::connection::flow_connection::QueuePriority::Fifo => (None, None),
+                            crate::connection::flow_connection::QueuePriority::NewestFirst => {
+                                (Some("NewestFirst".to_string()), None)
+                            }
+                            crate::connection::flow_connection::QueuePriority::PriorityAttribute(
+                                attr,
+                            ) => (Some("PriorityAttribute".to_string()), Some(attr.clone())),
+                        };
+                        (exp, prio, prio_attr)
+                    } else {
+                        (None, None, None)
+                    };
+                PersistedConnection {
+                    source: c.source_name.clone(),
+                    relationship: c.relationship.clone(),
+                    destination: c.dest_name.clone(),
+                    back_pressure: Some(PersistedBackPressure {
+                        max_count: Some(bp.max_count),
+                        max_bytes: Some(bp.max_bytes),
+                    }),
+                    expiration,
+                    priority,
+                    priority_attribute,
+                }
+            })
+            .collect();
+
+        let mut positions = HashMap::new();
+        for entry in self.positions.iter() {
+            positions.insert(
+                entry.key().clone(),
+                PersistedPosition {
+                    x: entry.value().x,
+                    y: entry.value().y,
+                },
+            );
+        }
+
+        let services: Vec<PersistedService> = self
+            .service_registry
+            .read()
+            .list_services()
+            .into_iter()
+            .map(|s| PersistedService {
+                name: s.name,
+                type_name: s.type_name,
+                properties: s.properties,
+            })
+            .collect();
+
+        let labels: Vec<PersistedLabel> = self
+            .labels
+            .read()
+            .iter()
+            .map(|l| PersistedLabel {
+                id: l.id.clone(),
+                text: l.text.clone(),
+                x: l.x,
+                y: l.y,
+                width: l.width,
+                height: l.height,
+                background_color: l.background_color.clone(),
+                font_size: l.font_size,
+            })
+            .collect();
+
+        let process_groups: Vec<PersistedProcessGroup> = self
+            .process_groups
+            .read()
+            .iter()
+            .map(|g| {
+                let input_ports: Vec<PersistedPort> = g
+                    .input_ports
+                    .iter()
+                    .map(|p| PersistedPort {
+                        id: p.id.clone(),
+                        name: p.name.clone(),
+                        port_type: "input".to_string(),
+                    })
+                    .collect();
+                let output_ports: Vec<PersistedPort> = g
+                    .output_ports
+                    .iter()
+                    .map(|p| PersistedPort {
+                        id: p.id.clone(),
+                        name: p.name.clone(),
+                        port_type: "output".to_string(),
+                    })
+                    .collect();
+                PersistedProcessGroup {
+                    id: g.id.clone(),
+                    name: g.name.clone(),
+                    input_ports,
+                    output_ports,
+                    processor_names: g.processor_names.clone(),
+                    connection_ids: g.connection_ids.clone(),
+                    child_group_ids: g.child_group_ids.clone(),
+                    parent_group_id: g.parent_group_id.clone(),
+                    variables: g.variables.clone(),
+                }
+            })
+            .collect();
+
+        PersistedFlowState {
+            version: 1,
+            flow_name: self.flow_name.clone(),
+            processors,
+            connections,
+            positions,
+            services,
+            labels,
+            process_groups,
+        }
     }
 
     // ── Process group management ──────────────────────────────────────────

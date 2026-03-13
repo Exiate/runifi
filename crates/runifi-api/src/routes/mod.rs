@@ -12,3 +12,4 @@ pub mod services;
 pub mod system;
 pub mod user_groups;
 pub mod users;
+pub mod versions;
