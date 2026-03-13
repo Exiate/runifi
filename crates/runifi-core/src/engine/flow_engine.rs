@@ -22,6 +22,9 @@ use super::processor_node::{
     ProcessorNode, SchedulingStrategy, SharedInputConnections, SharedInputNotifiers,
     SharedOutputConnections,
 };
+use crate::audit::{
+    AuditAction, AuditEvent, AuditLogger, AuditTarget, NullAuditLogger,
+};
 use crate::connection::back_pressure::BackPressureConfig;
 use crate::connection::flow_connection::FlowConnection;
 use crate::connection::query::FlowConnectionQuery;
@@ -48,6 +51,7 @@ pub struct FlowEngine {
     cancel_token: CancellationToken,
     bulletin_board: Arc<BulletinBoard>,
     registry: Option<Arc<PluginRegistry>>,
+    audit_logger: Arc<dyn AuditLogger>,
 
     nodes: Vec<NodeBuilder>,
     connections: Vec<ConnBuilder>,
@@ -85,6 +89,7 @@ impl FlowEngine {
             cancel_token: CancellationToken::new(),
             bulletin_board: Arc::new(BulletinBoard::default()),
             registry: None,
+            audit_logger: Arc::new(NullAuditLogger),
             nodes: Vec::new(),
             connections: Vec::new(),
             next_node_id: 0,
@@ -93,6 +98,11 @@ impl FlowEngine {
             running: false,
             handle: None,
         }
+    }
+
+    /// Set the audit logger for compliance event tracking.
+    pub fn set_audit_logger(&mut self, logger: Arc<dyn AuditLogger>) {
+        self.audit_logger = logger;
     }
 
     /// Provide a plugin registry for hot-add type validation.
@@ -346,6 +356,7 @@ impl FlowEngine {
             bulletin_board: self.bulletin_board.clone(),
             content_repo: self.content_repo.clone(),
             positions: Arc::new(DashMap::new()),
+            audit_logger: self.audit_logger.clone(),
             mutation_tx,
         };
         self.handle = Some(engine_handle);
@@ -399,6 +410,7 @@ impl FlowEngine {
             let shared_tokens: Arc<parking_lot::Mutex<HashMap<String, CancellationToken>>> =
                 Arc::new(parking_lot::Mutex::new(proc_tokens));
 
+            let audit_logger = self.audit_logger.clone();
             let mutation_handle = tokio::spawn(run_mutation_handler(
                 mutation_rx,
                 mutation_cancel,
@@ -410,6 +422,7 @@ impl FlowEngine {
                 registry,
                 parent_cancel,
                 shared_tokens,
+                audit_logger,
             ));
             self.task_handles.push(mutation_handle);
         }
@@ -420,6 +433,16 @@ impl FlowEngine {
             connection_count = self.connections.len(),
             "Flow engine started"
         );
+
+        self.audit_logger.log(&AuditEvent::success_with_details(
+            AuditAction::EngineStarted,
+            AuditTarget::system(),
+            format!(
+                "nodes={}, connections={}",
+                self.nodes.len(),
+                self.connections.len()
+            ),
+        ));
 
         Ok(())
     }
@@ -438,6 +461,10 @@ impl FlowEngine {
         }
 
         self.running = false;
+        self.audit_logger.log(&AuditEvent::success(
+            AuditAction::EngineShutdown,
+            AuditTarget::system(),
+        ));
         tracing::info!("Flow engine stopped");
     }
 
@@ -492,6 +519,7 @@ async fn run_mutation_handler(
     registry: Option<Arc<PluginRegistry>>,
     parent_cancel: CancellationToken,
     proc_tokens: Arc<parking_lot::Mutex<HashMap<String, CancellationToken>>>,
+    audit_logger: Arc<dyn AuditLogger>,
 ) {
     let mut handler = DefaultMutationHandler {
         live_procs,
@@ -503,6 +531,7 @@ async fn run_mutation_handler(
         parent_cancel,
         proc_tokens,
         runtime_conn_id: 0,
+        audit_logger,
     };
 
     loop {

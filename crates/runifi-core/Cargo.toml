@@ -20,6 +20,10 @@ slab = { workspace = true }
 parking_lot = { workspace = true }
 tokio-util = { workspace = true }
 futures = { workspace = true }
+chrono = { workspace = true }
+aes-gcm = { workspace = true }
+zeroize = { workspace = true }
+hex = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

@@ -7,6 +7,7 @@ use axum::routing::{delete, get};
 use axum::{Json, Router};
 use serde::Deserialize;
 
+use runifi_core::audit::{AuditAction, AuditEvent, AuditTarget};
 use runifi_core::connection::back_pressure::BackPressureConfig;
 
 use crate::dto::{
@@ -181,6 +182,12 @@ async fn list_queue(
         })
         .collect();
 
+    state.handle.audit_logger.log(&AuditEvent::success_with_details(
+        AuditAction::QueueInspected,
+        AuditTarget::queue(&id),
+        format!("total_count={}, offset={}, limit={}", total_count, offset, limit),
+    ));
+
     Ok(Json(QueueListingResponse {
         connection_id: id,
         total_count,
@@ -290,6 +297,12 @@ async fn download_content(
         safe_filename
     };
 
+    state.handle.audit_logger.log(&AuditEvent::success_with_details(
+        AuditAction::ContentDownloaded,
+        AuditTarget::queue(&id),
+        format!("flowfile_id={}, size={}", flowfile_id, content.len()),
+    ));
+
     Ok((
         StatusCode::OK,
         [
@@ -317,6 +330,12 @@ async fn empty_queue(
         .ok_or(ApiError::ConnectionNotFound(id.clone()))?;
 
     let removed = conn_info.connection.clear_queue();
+
+    state.handle.audit_logger.log(&AuditEvent::success_with_details(
+        AuditAction::QueueEmptied,
+        AuditTarget::queue(&id),
+        format!("removed_count={}", removed),
+    ));
 
     Ok(Json(serde_json::json!({
         "connection_id": id,

@@ -15,6 +15,7 @@ use super::processor_node::{ProcessorNode, SchedulingStrategy};
 use crate::connection::back_pressure::BackPressureConfig;
 use crate::connection::flow_connection::FlowConnection;
 use crate::connection::query::FlowConnectionQuery;
+use crate::audit::{AuditAction, AuditEvent, AuditLogger, AuditTarget};
 use crate::id::IdGenerator;
 use crate::registry::plugin_registry::PluginRegistry;
 use crate::repository::content_repo::ContentRepository;
@@ -36,6 +37,7 @@ pub struct DefaultMutationHandler {
     pub parent_cancel: CancellationToken,
     pub proc_tokens: Arc<parking_lot::Mutex<HashMap<String, CancellationToken>>>,
     pub runtime_conn_id: usize,
+    pub audit_logger: Arc<dyn AuditLogger>,
 }
 
 impl DefaultMutationHandler {
@@ -142,6 +144,11 @@ impl DefaultMutationHandler {
         });
 
         tracing::info!(name, type_name, "Hot-added processor");
+        self.audit_logger.log(&AuditEvent::success_with_details(
+            AuditAction::ProcessorCreated,
+            AuditTarget::processor(name),
+            format!("type={}", type_name),
+        ));
         Ok(())
     }
 
@@ -188,6 +195,10 @@ impl DefaultMutationHandler {
         procs.retain(|p| p.name != name);
 
         tracing::info!(name, "Hot-removed processor");
+        self.audit_logger.log(&AuditEvent::success(
+            AuditAction::ProcessorRemoved,
+            AuditTarget::processor(name),
+        ));
         Ok(())
     }
 
@@ -281,6 +292,11 @@ impl DefaultMutationHandler {
             destination = dest_name,
             "Hot-added connection"
         );
+        self.audit_logger.log(&AuditEvent::success_with_details(
+            AuditAction::ConnectionCreated,
+            AuditTarget::connection(&conn_id),
+            format!("{} -[{}]-> {}", source_name, relationship, dest_name),
+        ));
         Ok(conn_id)
     }
 
@@ -318,6 +334,10 @@ impl DefaultMutationHandler {
         self.live_conns.write().retain(|c| c.id != id);
 
         tracing::info!(id, "Hot-removed connection");
+        self.audit_logger.log(&AuditEvent::success(
+            AuditAction::ConnectionRemoved,
+            AuditTarget::connection(id),
+        ));
         Ok(())
     }
 }
