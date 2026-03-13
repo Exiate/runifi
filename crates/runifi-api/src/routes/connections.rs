@@ -18,7 +18,10 @@ use crate::state::ApiState;
 
 pub fn routes() -> Router<ApiState> {
     Router::new()
-        .route("/api/v1/connections", get(list_connections).post(create_connection))
+        .route(
+            "/api/v1/connections",
+            get(list_connections).post(create_connection),
+        )
         .route("/api/v1/connections/{id}", delete(delete_connection))
         .route(
             "/api/v1/connections/{id}/queue",
