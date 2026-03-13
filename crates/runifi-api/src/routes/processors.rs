@@ -59,7 +59,6 @@ async fn get_processor(
     Ok(Json(ProcessorResponse::from_info(&info)))
 }
 
-/// Validate a processor name: non-empty, max 128 chars, only `[a-zA-Z0-9_-]`.
 fn validate_processor_name(name: &str) -> Result<(), ApiError> {
     if name.is_empty() {
         return Err(ApiError::BadRequest(
@@ -138,8 +137,6 @@ async fn create_processor(
     validate_processor_name(&body.name)?;
 
     // Look up the processor type to get its property descriptors for validation.
-    // We create a temporary instance just to extract descriptors, then discard it.
-    // The engine will create the real instance via add_processor.
     let plugin_types = &state.handle.plugin_types;
     let type_exists = plugin_types.iter().any(|p| p.type_name == body.type_name);
     if !type_exists {
@@ -151,12 +148,6 @@ async fn create_processor(
 
     // Get property descriptors from an existing processor of the same type,
     // or validate after creation using the info that comes back.
-    // Since we cannot access the plugin registry directly from here,
-    // we validate properties after the processor is successfully created
-    // using the property descriptors stored in ProcessorInfo.
-    //
-    // However, to avoid creating a processor with bad properties, we first
-    // try to look up descriptors from an existing processor of the same type.
     let descriptors: Vec<runifi_plugin_api::PropertyDescriptor> = state
         .handle
         .processors
@@ -248,7 +239,6 @@ async fn create_processor(
         state.handle.set_position(&body.name, pos.x, pos.y);
     }
 
-    // Build detailed response.
     let info = state
         .handle
         .get_processor_info(&body.name)
@@ -283,7 +273,6 @@ async fn create_processor(
     Ok((StatusCode::CREATED, Json(detail)).into_response())
 }
 
-/// Remove a processor at runtime.
 async fn delete_processor(
     State(state): State<ApiState>,
     Path(name): Path<String>,
@@ -294,19 +283,16 @@ async fn delete_processor(
         .await
         .map_err(ApiError::from)?;
 
-    // Remove stored position.
     state.handle.positions.remove(&name);
 
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Update the canvas position for a processor.
 async fn update_position(
     State(state): State<ApiState>,
     Path(name): Path<String>,
     Json(body): Json<UpdatePositionRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    // Validate processor exists.
     if state.handle.get_processor_info(&name).is_none() {
         return Err(ApiError::ProcessorNotFound(name));
     }

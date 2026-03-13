@@ -121,9 +121,9 @@ impl From<MutationError> for ApiError {
                 "Processor has active connections: {}. Remove them first.",
                 ids
             )),
-            MutationError::UnknownRelationship(rel, proc) => ApiError::BadRequest(format!(
+            MutationError::UnknownRelationship(rel, proc_name) => ApiError::BadRequest(format!(
                 "Processor '{}' does not have a relationship named '{}'",
-                proc, rel
+                proc_name, rel
             )),
             MutationError::DuplicateConnection(src, rel, dst) => ApiError::Conflict(format!(
                 "Connection from '{}' via '{}' to '{}' already exists",
