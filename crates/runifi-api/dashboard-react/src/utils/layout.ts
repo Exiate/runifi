@@ -91,7 +91,7 @@ export function computeLayout(
   return processors.map((p): LayoutNode => ({
     id: p.name,
     type: p.type_name === 'Funnel' ? 'funnelNode' : 'processorNode',
-    position: positions.get(p.name) ?? { x: PADDING_X, y: PADDING_Y },
+    position: p.position ?? positions.get(p.name) ?? { x: PADDING_X, y: PADDING_Y },
     data: {
       label: p.name,
       typeName: p.type_name,

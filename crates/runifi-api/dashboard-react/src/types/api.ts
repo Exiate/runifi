@@ -47,6 +47,7 @@ export interface ConnectionResponse {
 export interface FlowNodeResponse {
   name: string;
   type_name: string;
+  position?: { x: number; y: number };
 }
 
 export interface FlowEdgeResponse {
