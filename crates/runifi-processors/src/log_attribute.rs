@@ -6,9 +6,11 @@ use runifi_plugin_api::result::ProcessResult;
 use runifi_plugin_api::session::ProcessSession;
 use runifi_plugin_api::{REL_FAILURE, REL_SUCCESS};
 
-const PROP_LOG_LEVEL: PropertyDescriptor =
-    PropertyDescriptor::new("Log Level", "Logging level: 'info', 'debug', or 'trace'")
-        .default_value("info");
+const PROP_LOG_LEVEL: PropertyDescriptor = PropertyDescriptor::new(
+    "Log Level",
+    "Logging level: 'trace', 'debug', 'info', 'warn', or 'error'",
+)
+.default_value("info");
 
 const PROP_LOG_PAYLOAD: PropertyDescriptor = PropertyDescriptor::new(
     "Log Payload",
@@ -38,6 +40,10 @@ impl Processor for LogAttribute {
         session: &mut dyn ProcessSession,
     ) -> ProcessResult {
         let log_payload = context.get_property("Log Payload").unwrap_or("false") == "true";
+        let log_level = context
+            .get_property("Log Level")
+            .unwrap_or("info")
+            .to_string();
 
         while let Some(flowfile) = session.get() {
             let mut attrs = String::new();
@@ -64,13 +70,42 @@ impl Processor for LogAttribute {
                 format!("  content: {} bytes", flowfile.size)
             };
 
-            tracing::info!(
-                processor = context.name(),
-                flowfile_id = flowfile.id,
-                "FlowFile attributes:\n{}{}",
-                attrs,
-                content_info
-            );
+            let message = format!("FlowFile attributes:\n{}{}", attrs, content_info);
+            let processor_name = context.name();
+            let ff_id = flowfile.id;
+
+            match log_level.as_str() {
+                "trace" => tracing::trace!(
+                    processor = processor_name,
+                    flowfile_id = ff_id,
+                    "{}",
+                    message
+                ),
+                "debug" => tracing::debug!(
+                    processor = processor_name,
+                    flowfile_id = ff_id,
+                    "{}",
+                    message
+                ),
+                "warn" => tracing::warn!(
+                    processor = processor_name,
+                    flowfile_id = ff_id,
+                    "{}",
+                    message
+                ),
+                "error" => tracing::error!(
+                    processor = processor_name,
+                    flowfile_id = ff_id,
+                    "{}",
+                    message
+                ),
+                _ => tracing::info!(
+                    processor = processor_name,
+                    flowfile_id = ff_id,
+                    "{}",
+                    message
+                ),
+            }
 
             session.transfer(flowfile, &REL_SUCCESS);
         }
@@ -104,10 +139,16 @@ mod tests {
     use runifi_plugin_api::property::PropertyValue;
     use std::sync::Arc;
 
-    struct TestContext;
+    struct TestContext {
+        log_level: String,
+    }
+
     impl ProcessContext for TestContext {
-        fn get_property(&self, _name: &str) -> PropertyValue {
-            PropertyValue::Unset
+        fn get_property(&self, name: &str) -> PropertyValue {
+            match name {
+                "Log Level" => PropertyValue::String(self.log_level.clone()),
+                _ => PropertyValue::Unset,
+            }
         }
         fn name(&self) -> &str {
             "test-log"
@@ -155,11 +196,7 @@ mod tests {
         fn rollback(&mut self) {}
     }
 
-    #[test]
-    fn logs_and_transfers() {
-        let mut proc = LogAttribute::new();
-        let ctx = TestContext;
-
+    fn make_test_ff() -> FlowFile {
         let mut ff = FlowFile {
             id: 42,
             attributes: Vec::new(),
@@ -170,14 +207,57 @@ mod tests {
             penalized_until_nanos: 0,
         };
         ff.set_attribute(Arc::from("filename"), Arc::from("test.txt"));
+        ff
+    }
+
+    #[test]
+    fn logs_and_transfers() {
+        let mut proc = LogAttribute::new();
+        let ctx = TestContext {
+            log_level: "info".to_string(),
+        };
 
         let mut session = OneFlowFileSession {
-            input: Some(ff),
+            input: Some(make_test_ff()),
             transferred: Vec::new(),
         };
 
         proc.on_trigger(&ctx, &mut session).unwrap();
 
+        assert_eq!(session.transferred.len(), 1);
+        assert_eq!(session.transferred[0].1, "success");
+    }
+
+    #[test]
+    fn supports_debug_level() {
+        let mut proc = LogAttribute::new();
+        let ctx = TestContext {
+            log_level: "debug".to_string(),
+        };
+
+        let mut session = OneFlowFileSession {
+            input: Some(make_test_ff()),
+            transferred: Vec::new(),
+        };
+
+        proc.on_trigger(&ctx, &mut session).unwrap();
+        assert_eq!(session.transferred.len(), 1);
+        assert_eq!(session.transferred[0].1, "success");
+    }
+
+    #[test]
+    fn supports_warn_level() {
+        let mut proc = LogAttribute::new();
+        let ctx = TestContext {
+            log_level: "warn".to_string(),
+        };
+
+        let mut session = OneFlowFileSession {
+            input: Some(make_test_ff()),
+            transferred: Vec::new(),
+        };
+
+        proc.on_trigger(&ctx, &mut session).unwrap();
         assert_eq!(session.transferred.len(), 1);
         assert_eq!(session.transferred[0].1, "success");
     }

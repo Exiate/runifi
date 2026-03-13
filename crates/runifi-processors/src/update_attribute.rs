@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use regex_lite::Regex;
 use runifi_plugin_api::context::ProcessContext;
 use runifi_plugin_api::processor::{Processor, ProcessorDescriptor};
 use runifi_plugin_api::property::PropertyDescriptor;
@@ -13,10 +14,18 @@ const PROP_DELETE_ATTRIBUTES: PropertyDescriptor = PropertyDescriptor::new(
     "Regex pattern — matching attributes will be removed",
 );
 
+/// The set of property names that are owned by this processor
+/// and should not be treated as attribute assignments.
+const OWN_PROPERTY_NAMES: &[&str] = &["Delete Attributes Regex"];
+
 /// Sets or modifies FlowFile attributes based on configured properties.
 ///
 /// Any property not in the processor's own descriptor list is treated as
-/// an attribute to set: property name → attribute key, property value → attribute value.
+/// an attribute to set: property name becomes the attribute key, property
+/// value becomes the attribute value.
+///
+/// Uses `ProcessContext::property_names()` to dynamically enumerate all
+/// configured properties rather than relying on a hardcoded whitelist.
 pub struct UpdateAttribute;
 
 impl UpdateAttribute {
@@ -37,34 +46,52 @@ impl Processor for UpdateAttribute {
         context: &dyn ProcessContext,
         session: &mut dyn ProcessSession,
     ) -> ProcessResult {
-        while let Some(mut flowfile) = session.get() {
-            // The engine passes all configured properties through the context.
-            // Properties not in our own descriptor list are attribute assignments.
-            // Since we can't enumerate context properties, we rely on the engine
-            // to pass attribute mappings via a special convention:
-            // properties prefixed with "attr." are treated as attribute setters.
-            //
-            // For simplicity, we check common attribute names from the context.
-            // A more sophisticated implementation would have the engine pass
-            // the raw property map.
-
-            // Check for delete pattern (not yet implemented — placeholder for regex support).
-            let _delete_regex = context.get_property("Delete Attributes Regex");
-
-            // All other properties are attribute assignments.
-            // Convention: properties named "attr.<key>" set attribute <key>.
-            // We'll check a reasonable set of common attribute names.
-            for prefix_key in &[
-                "attr.filename",
-                "attr.mime.type",
-                "attr.path",
-                "attr.uuid",
-                "attr.priority",
-            ] {
-                if let Some(value) = context.get_property(prefix_key).as_str() {
-                    let attr_key = &prefix_key[5..]; // strip "attr." prefix
-                    flowfile.set_attribute(Arc::from(attr_key), Arc::from(value));
+        // Compile the delete regex if configured.
+        let delete_regex = context
+            .get_property("Delete Attributes Regex")
+            .as_str()
+            .and_then(|pattern| {
+                if pattern.is_empty() {
+                    return None;
                 }
+                match Regex::new(pattern) {
+                    Ok(re) => Some(re),
+                    Err(e) => {
+                        tracing::error!(
+                            pattern = pattern,
+                            error = %e,
+                            "Invalid delete attributes regex"
+                        );
+                        None
+                    }
+                }
+            });
+
+        // Enumerate all configured properties to find attribute assignments.
+        // Any property not in OWN_PROPERTY_NAMES is an attribute assignment.
+        let all_names = context.property_names();
+        let attr_assignments: Vec<(String, String)> = all_names
+            .into_iter()
+            .filter(|name| !OWN_PROPERTY_NAMES.contains(&name.as_str()))
+            .filter_map(|name| {
+                context
+                    .get_property(&name)
+                    .as_str()
+                    .map(|v| (name, v.to_string()))
+            })
+            .collect();
+
+        while let Some(mut flowfile) = session.get() {
+            // Apply attribute assignments.
+            for (key, value) in &attr_assignments {
+                flowfile.set_attribute(Arc::from(key.as_str()), Arc::from(value.as_str()));
+            }
+
+            // Apply delete regex if configured.
+            if let Some(ref re) = delete_regex {
+                flowfile
+                    .attributes
+                    .retain(|(key, _)| !re.is_match(key.as_ref()));
             }
 
             session.transfer(flowfile, &REL_SUCCESS);
@@ -98,13 +125,21 @@ mod tests {
     use runifi_plugin_api::FlowFile;
     use runifi_plugin_api::property::PropertyValue;
 
-    struct TestContext;
+    struct TestContext {
+        properties: Vec<(String, String)>,
+    }
+
     impl ProcessContext for TestContext {
         fn get_property(&self, name: &str) -> PropertyValue {
-            match name {
-                "attr.filename" => PropertyValue::String("updated.txt".to_string()),
-                _ => PropertyValue::Unset,
+            for (k, v) in &self.properties {
+                if k == name {
+                    return PropertyValue::String(v.clone());
+                }
             }
+            PropertyValue::Unset
+        }
+        fn property_names(&self) -> Vec<String> {
+            self.properties.iter().map(|(k, _)| k.clone()).collect()
         }
         fn name(&self) -> &str {
             "test-update"
@@ -152,12 +187,8 @@ mod tests {
         fn rollback(&mut self) {}
     }
 
-    #[test]
-    fn updates_attributes() {
-        let mut proc = UpdateAttribute::new();
-        let ctx = TestContext;
-
-        let ff = FlowFile {
+    fn make_ff() -> FlowFile {
+        FlowFile {
             id: 1,
             attributes: Vec::new(),
             content_claim: None,
@@ -165,7 +196,59 @@ mod tests {
             created_at_nanos: 0,
             lineage_start_id: 1,
             penalized_until_nanos: 0,
+        }
+    }
+
+    #[test]
+    fn sets_arbitrary_attributes() {
+        let mut proc = UpdateAttribute::new();
+        let ctx = TestContext {
+            properties: vec![
+                ("filename".to_string(), "updated.txt".to_string()),
+                ("custom.tag".to_string(), "important".to_string()),
+                ("priority".to_string(), "high".to_string()),
+            ],
         };
+
+        let mut session = OneFlowFileSession {
+            input: Some(make_ff()),
+            transferred: Vec::new(),
+        };
+
+        proc.on_trigger(&ctx, &mut session).unwrap();
+
+        assert_eq!(session.transferred.len(), 1);
+        let (ff, _) = &session.transferred[0];
+        assert_eq!(
+            ff.get_attribute("filename").map(|v| v.as_ref().to_string()),
+            Some("updated.txt".to_string())
+        );
+        assert_eq!(
+            ff.get_attribute("custom.tag")
+                .map(|v| v.as_ref().to_string()),
+            Some("important".to_string())
+        );
+        assert_eq!(
+            ff.get_attribute("priority").map(|v| v.as_ref().to_string()),
+            Some("high".to_string())
+        );
+    }
+
+    #[test]
+    fn delete_attributes_regex() {
+        let mut proc = UpdateAttribute::new();
+        let ctx = TestContext {
+            properties: vec![(
+                "Delete Attributes Regex".to_string(),
+                "^temp\\..*".to_string(),
+            )],
+        };
+
+        let mut ff = make_ff();
+        ff.set_attribute(Arc::from("filename"), Arc::from("test.txt"));
+        ff.set_attribute(Arc::from("temp.scratch"), Arc::from("value1"));
+        ff.set_attribute(Arc::from("temp.debug"), Arc::from("value2"));
+        ff.set_attribute(Arc::from("keep.this"), Arc::from("value3"));
 
         let mut session = OneFlowFileSession {
             input: Some(ff),
@@ -176,9 +259,40 @@ mod tests {
 
         assert_eq!(session.transferred.len(), 1);
         let (ff, _) = &session.transferred[0];
+
+        // temp.* attributes should be deleted.
+        assert!(ff.get_attribute("temp.scratch").is_none());
+        assert!(ff.get_attribute("temp.debug").is_none());
+
+        // Non-matching attributes should be preserved.
+        assert!(ff.get_attribute("filename").is_some());
+        assert!(ff.get_attribute("keep.this").is_some());
+    }
+
+    #[test]
+    fn skips_own_properties() {
+        let mut proc = UpdateAttribute::new();
+        let ctx = TestContext {
+            properties: vec![
+                ("Delete Attributes Regex".to_string(), "".to_string()),
+                ("my-attr".to_string(), "my-value".to_string()),
+            ],
+        };
+
+        let mut session = OneFlowFileSession {
+            input: Some(make_ff()),
+            transferred: Vec::new(),
+        };
+
+        proc.on_trigger(&ctx, &mut session).unwrap();
+
+        let (ff, _) = &session.transferred[0];
+        // "Delete Attributes Regex" should NOT be set as an attribute.
+        assert!(ff.get_attribute("Delete Attributes Regex").is_none());
+        // "my-attr" should be set.
         assert_eq!(
-            ff.get_attribute("filename").map(|v| v.as_ref()),
-            Some("updated.txt")
+            ff.get_attribute("my-attr").map(|v| v.as_ref().to_string()),
+            Some("my-value".to_string())
         );
     }
 }

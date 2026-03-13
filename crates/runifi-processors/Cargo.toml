@@ -17,3 +17,5 @@ runifi-plugin-api = { workspace = true }
 bytes = { workspace = true }
 tracing = { workspace = true }
 inventory = { workspace = true }
+rand = { workspace = true }
+regex-lite = { workspace = true }
