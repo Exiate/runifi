@@ -132,7 +132,12 @@ fn parse_function_call(tokens: &[Token], pos: &mut usize) -> Result<FunctionCall
 
 /// Parse argument list: `(arg1, arg2, ...)`.
 fn parse_args(tokens: &[Token], pos: &mut usize) -> Result<Vec<Argument>, ParseError> {
-    assert_eq!(tokens[*pos], Token::LParen);
+    if *pos >= tokens.len() || tokens[*pos] != Token::LParen {
+        return Err(ParseError::Expected {
+            expected: "'('",
+            got: tokens.get(*pos).cloned().unwrap_or(Token::ExprClose),
+        });
+    }
     *pos += 1; // skip `(`
 
     let mut args = Vec::new();

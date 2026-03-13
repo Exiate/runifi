@@ -16,11 +16,11 @@
 /// let result = expr.evaluate(&attrs).unwrap();
 /// assert_eq!(result, "pdf");
 /// ```
-pub mod ast;
-pub mod evaluator;
-pub mod functions;
-pub mod lexer;
-pub mod parser;
+pub(crate) mod ast;
+pub(crate) mod evaluator;
+pub(crate) mod functions;
+pub(crate) mod lexer;
+pub(crate) mod parser;
 
 use std::sync::Arc;
 

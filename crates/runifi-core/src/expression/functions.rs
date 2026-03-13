@@ -47,14 +47,14 @@ pub fn evaluate_function(
         "substring" => {
             check_arity_range(name, args, 1, 2)?;
             let start = parse_usize_arg(name, &args[0])?;
+            let char_count = subject.chars().count();
+            let start = start.min(char_count);
             let end = if args.len() == 2 {
-                parse_usize_arg(name, &args[1])?
+                parse_usize_arg(name, &args[1])?.min(char_count).max(start)
             } else {
-                subject.len()
+                char_count
             };
-            let start = start.min(subject.len());
-            let end = end.min(subject.len()).max(start);
-            Ok(subject[start..end].to_string())
+            Ok(subject.chars().skip(start).take(end - start).collect())
         }
         "substringBefore" => {
             check_arity(name, args, 1)?;
@@ -107,7 +107,7 @@ pub fn evaluate_function(
         }
         "length" => {
             check_arity(name, args, 0)?;
-            Ok(subject.len().to_string())
+            Ok(subject.chars().count().to_string())
         }
 
         // --- Boolean functions ---
@@ -468,7 +468,25 @@ mod tests {
         );
         assert_eq!(
             evaluate_function("Héllo", "length", &[]).unwrap(),
-            "6" // byte length
+            "5" // character count, not byte length
+        );
+    }
+
+    #[test]
+    fn test_substring_unicode() {
+        // "Héllo" — 'é' is 2 bytes but 1 character. substring must use char indices.
+        assert_eq!(
+            evaluate_function("Héllo", "substring", &["1".into(), "3".into()]).unwrap(),
+            "él"
+        );
+        assert_eq!(
+            evaluate_function("Héllo", "substring", &["0".into(), "1".into()]).unwrap(),
+            "H"
+        );
+        // CJK characters (3 bytes each)
+        assert_eq!(
+            evaluate_function("\u{4e16}\u{754c}", "substring", &["0".into(), "1".into()]).unwrap(),
+            "\u{4e16}"
         );
     }
 

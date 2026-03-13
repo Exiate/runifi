@@ -34,17 +34,19 @@ pub fn evaluate(expr: &Expression, attrs: &[(Arc<str>, Arc<str>)]) -> Result<Str
 /// Evaluate a dynamic expression.
 fn eval_dynamic(expr: &DynamicExpr, attrs: &[(Arc<str>, Arc<str>)]) -> Result<String, EvalError> {
     // Resolve the subject.
-    let (mut value, is_null) = eval_subject(&expr.subject, attrs)?;
+    let (mut value, mut is_null) = eval_subject(&expr.subject, attrs)?;
 
     // Apply chained functions.
     for func in &expr.chain {
-        // Special handling for isNull — check the null flag before the first function.
+        // Special handling for isNull — check the null flag.
         if func.name == "isNull" {
             value = is_null.to_string();
+            is_null = false; // Result of isNull() is always a valid string.
             continue;
         }
 
-        // If the attribute was null, treat as empty string for all other functions.
+        // After any function processes, the value is no longer null.
+        is_null = false;
         let resolved_args = eval_args(&func.args, attrs)?;
         value = evaluate_function(&value, &func.name, &resolved_args)?;
     }
@@ -239,6 +241,14 @@ mod tests {
     fn test_multiple_expressions() {
         let a = attrs(&[("first", "Hello"), ("last", "World")]);
         assert_eq!(eval("${first} ${last}", &a), "Hello World");
+    }
+
+    #[test]
+    fn test_is_null_after_function_chain() {
+        // After a function transforms the value, isNull should be false.
+        assert_eq!(eval("${missing:toLower():isNull()}", &[]), "false");
+        // Direct isNull on missing attribute is still true.
+        assert_eq!(eval("${missing:isNull()}", &[]), "true");
     }
 
     #[test]
