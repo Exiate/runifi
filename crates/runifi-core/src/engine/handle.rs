@@ -13,6 +13,7 @@ use super::bulletin::BulletinBoard;
 use super::metrics::ProcessorMetrics;
 use super::mutation::{MutationCommand, MutationError};
 use super::persistence::FlowPersistence;
+use super::process_group::{PortInfo, PortType, ProcessGroupId, ProcessGroupInfo};
 use super::processor_node::{
     SharedInputConnections, SharedInputNotifiers, SharedOutputConnections,
 };
@@ -171,6 +172,14 @@ pub fn reset_label_id_counter(next_id: u64) {
     LABEL_ID_COUNTER.store(next_id, Ordering::Relaxed);
 }
 
+/// Auto-incrementing process group ID counter.
+static GROUP_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Reset the process group ID counter to a specific value (used when restoring persisted state).
+pub fn reset_group_id_counter(next_id: u64) {
+    GROUP_ID_COUNTER.store(next_id, Ordering::Relaxed);
+}
+
 /// A Clone-able, Send+Sync handle for API queries and mutations against a running engine.
 ///
 /// Created by `FlowEngine::start()`. The processor and connection lists use
@@ -198,6 +207,8 @@ pub struct EngineHandle {
     pub service_registry: SharedServiceRegistry,
     /// Canvas labels — text annotations, no data flow impact.
     pub labels: Arc<RwLock<Vec<LabelInfo>>>,
+    /// Process groups for hierarchical flow organization.
+    pub process_groups: Arc<RwLock<Vec<ProcessGroupInfo>>>,
     /// Sender half of the engine mutation command channel.
     pub(crate) mutation_tx: mpsc::Sender<MutationCommand>,
     /// Flow persistence layer (debounced background writer).
@@ -695,5 +706,400 @@ impl EngineHandle {
     /// List all labels.
     pub fn list_labels(&self) -> Vec<LabelInfo> {
         self.labels.read().clone()
+    }
+
+    // ── Process group management ──────────────────────────────────────────
+
+    /// Auto-incrementing process group ID counter.
+    fn next_group_id() -> ProcessGroupId {
+        let id = GROUP_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+        format!("pg-{}", id)
+    }
+
+    /// Create a new process group. Returns the generated group ID.
+    ///
+    /// If `parent_group_id` is `Some`, the group is nested inside the parent.
+    /// Input/output port names are converted to `PortInfo` entries.
+    pub fn create_process_group(
+        &self,
+        name: String,
+        parent_group_id: Option<ProcessGroupId>,
+        input_port_names: Vec<String>,
+        output_port_names: Vec<String>,
+        variables: HashMap<String, String>,
+    ) -> Result<ProcessGroupId, String> {
+        let mut groups = self.process_groups.write();
+
+        // Validate parent exists if specified.
+        if let Some(ref parent_id) = parent_group_id
+            && !groups.iter().any(|g| g.id == *parent_id)
+        {
+            return Err(format!("Parent process group not found: {}", parent_id));
+        }
+
+        // Check for duplicate name within the same parent scope.
+        let duplicate = groups
+            .iter()
+            .any(|g| g.name == name && g.parent_group_id == parent_group_id);
+        if duplicate {
+            return Err(format!(
+                "A process group named '{}' already exists in this scope",
+                name
+            ));
+        }
+
+        let group_id = Self::next_group_id();
+
+        let input_ports: Vec<PortInfo> = input_port_names
+            .into_iter()
+            .enumerate()
+            .map(|(i, port_name)| PortInfo {
+                id: format!("{}-in-{}", group_id, i),
+                name: port_name,
+                port_type: PortType::Input,
+                group_id: group_id.clone(),
+            })
+            .collect();
+
+        let output_ports: Vec<PortInfo> = output_port_names
+            .into_iter()
+            .enumerate()
+            .map(|(i, port_name)| PortInfo {
+                id: format!("{}-out-{}", group_id, i),
+                name: port_name,
+                port_type: PortType::Output,
+                group_id: group_id.clone(),
+            })
+            .collect();
+
+        let group_info = ProcessGroupInfo {
+            id: group_id.clone(),
+            name,
+            input_ports,
+            output_ports,
+            processor_names: Vec::new(),
+            connection_ids: Vec::new(),
+            child_group_ids: Vec::new(),
+            parent_group_id: parent_group_id.clone(),
+            variables,
+        };
+
+        groups.push(group_info);
+
+        // Register this group as a child of its parent.
+        if let Some(ref parent_id) = parent_group_id
+            && let Some(parent) = groups.iter_mut().find(|g| g.id == *parent_id)
+        {
+            parent.child_group_ids.push(group_id.clone());
+        }
+
+        drop(groups);
+
+        self.audit_logger.log(&AuditEvent::success(
+            AuditAction::ProcessGroupCreated,
+            AuditTarget::process_group(&group_id),
+        ));
+        self.notify_persist();
+
+        Ok(group_id)
+    }
+
+    /// Get a process group by ID.
+    pub fn get_process_group(&self, id: &str) -> Option<ProcessGroupInfo> {
+        self.process_groups
+            .read()
+            .iter()
+            .find(|g| g.id == id)
+            .cloned()
+    }
+
+    /// List all process groups.
+    pub fn list_process_groups(&self) -> Vec<ProcessGroupInfo> {
+        self.process_groups.read().clone()
+    }
+
+    /// List top-level process groups (those with no parent).
+    pub fn list_root_process_groups(&self) -> Vec<ProcessGroupInfo> {
+        self.process_groups
+            .read()
+            .iter()
+            .filter(|g| g.parent_group_id.is_none())
+            .cloned()
+            .collect()
+    }
+
+    /// Update a process group's name and/or variables.
+    pub fn update_process_group(
+        &self,
+        id: &str,
+        name: Option<String>,
+        variables: Option<HashMap<String, String>>,
+    ) -> Result<(), String> {
+        let mut groups = self.process_groups.write();
+        let group = groups
+            .iter_mut()
+            .find(|g| g.id == id)
+            .ok_or_else(|| format!("Process group not found: {}", id))?;
+
+        if let Some(new_name) = name {
+            group.name = new_name;
+        }
+        if let Some(new_vars) = variables {
+            group.variables = new_vars;
+        }
+
+        drop(groups);
+        self.audit_logger.log(&AuditEvent::success(
+            AuditAction::ProcessGroupUpdated,
+            AuditTarget::process_group(id),
+        ));
+        self.notify_persist();
+        Ok(())
+    }
+
+    /// Remove a process group by ID.
+    ///
+    /// The group must be empty (no processors, connections, or child groups).
+    pub fn remove_process_group(&self, id: &str) -> Result<(), String> {
+        let mut groups = self.process_groups.write();
+        let group = groups
+            .iter()
+            .find(|g| g.id == id)
+            .ok_or_else(|| format!("Process group not found: {}", id))?;
+
+        if !group.processor_names.is_empty() {
+            return Err(format!(
+                "Process group '{}' still contains {} processor(s). Remove them first.",
+                id,
+                group.processor_names.len()
+            ));
+        }
+        if !group.connection_ids.is_empty() {
+            return Err(format!(
+                "Process group '{}' still contains {} connection(s). Remove them first.",
+                id,
+                group.connection_ids.len()
+            ));
+        }
+        if !group.child_group_ids.is_empty() {
+            return Err(format!(
+                "Process group '{}' still contains {} child group(s). Remove them first.",
+                id,
+                group.child_group_ids.len()
+            ));
+        }
+
+        let parent_id = group.parent_group_id.clone();
+        let group_id = group.id.clone();
+
+        // Remove from parent's child list.
+        if let Some(ref parent_id) = parent_id
+            && let Some(parent) = groups.iter_mut().find(|g| g.id == *parent_id)
+        {
+            parent.child_group_ids.retain(|cid| cid != &group_id);
+        }
+
+        groups.retain(|g| g.id != id);
+        drop(groups);
+
+        self.audit_logger.log(&AuditEvent::success(
+            AuditAction::ProcessGroupRemoved,
+            AuditTarget::process_group(id),
+        ));
+        self.notify_persist();
+        Ok(())
+    }
+
+    /// Add a processor to a process group by name.
+    pub fn add_processor_to_group(
+        &self,
+        group_id: &str,
+        processor_name: &str,
+    ) -> Result<(), String> {
+        // Verify the processor exists.
+        if self.get_processor_info(processor_name).is_none() {
+            return Err(format!("Processor not found: {}", processor_name));
+        }
+
+        let mut groups = self.process_groups.write();
+        let group = groups
+            .iter_mut()
+            .find(|g| g.id == group_id)
+            .ok_or_else(|| format!("Process group not found: {}", group_id))?;
+
+        if group.processor_names.contains(&processor_name.to_string()) {
+            return Err(format!(
+                "Processor '{}' is already in group '{}'",
+                processor_name, group_id
+            ));
+        }
+
+        group.processor_names.push(processor_name.to_string());
+        drop(groups);
+        self.notify_persist();
+        Ok(())
+    }
+
+    /// Remove a processor from a process group.
+    pub fn remove_processor_from_group(
+        &self,
+        group_id: &str,
+        processor_name: &str,
+    ) -> Result<(), String> {
+        let mut groups = self.process_groups.write();
+        let group = groups
+            .iter_mut()
+            .find(|g| g.id == group_id)
+            .ok_or_else(|| format!("Process group not found: {}", group_id))?;
+
+        let len_before = group.processor_names.len();
+        group.processor_names.retain(|n| n != processor_name);
+        if group.processor_names.len() == len_before {
+            return Err(format!(
+                "Processor '{}' is not in group '{}'",
+                processor_name, group_id
+            ));
+        }
+
+        drop(groups);
+        self.notify_persist();
+        Ok(())
+    }
+
+    /// Add a connection to a process group by connection ID.
+    pub fn add_connection_to_group(
+        &self,
+        group_id: &str,
+        connection_id: &str,
+    ) -> Result<(), String> {
+        let mut groups = self.process_groups.write();
+        let group = groups
+            .iter_mut()
+            .find(|g| g.id == group_id)
+            .ok_or_else(|| format!("Process group not found: {}", group_id))?;
+
+        if group.connection_ids.contains(&connection_id.to_string()) {
+            return Err(format!(
+                "Connection '{}' is already in group '{}'",
+                connection_id, group_id
+            ));
+        }
+
+        group.connection_ids.push(connection_id.to_string());
+        drop(groups);
+        self.notify_persist();
+        Ok(())
+    }
+
+    /// Remove a connection from a process group.
+    pub fn remove_connection_from_group(
+        &self,
+        group_id: &str,
+        connection_id: &str,
+    ) -> Result<(), String> {
+        let mut groups = self.process_groups.write();
+        let group = groups
+            .iter_mut()
+            .find(|g| g.id == group_id)
+            .ok_or_else(|| format!("Process group not found: {}", group_id))?;
+
+        let len_before = group.connection_ids.len();
+        group.connection_ids.retain(|c| c != connection_id);
+        if group.connection_ids.len() == len_before {
+            return Err(format!(
+                "Connection '{}' is not in group '{}'",
+                connection_id, group_id
+            ));
+        }
+
+        drop(groups);
+        self.notify_persist();
+        Ok(())
+    }
+
+    /// Add an input port to a process group.
+    pub fn add_input_port(&self, group_id: &str, port_name: String) -> Result<String, String> {
+        let mut groups = self.process_groups.write();
+        let group = groups
+            .iter_mut()
+            .find(|g| g.id == group_id)
+            .ok_or_else(|| format!("Process group not found: {}", group_id))?;
+
+        if group.input_ports.iter().any(|p| p.name == port_name) {
+            return Err(format!(
+                "Input port '{}' already exists in group '{}'",
+                port_name, group_id
+            ));
+        }
+
+        let port_id = format!("{}-in-{}", group_id, group.input_ports.len());
+        group.input_ports.push(PortInfo {
+            id: port_id.clone(),
+            name: port_name,
+            port_type: PortType::Input,
+            group_id: group_id.to_string(),
+        });
+
+        drop(groups);
+        self.notify_persist();
+        Ok(port_id)
+    }
+
+    /// Add an output port to a process group.
+    pub fn add_output_port(&self, group_id: &str, port_name: String) -> Result<String, String> {
+        let mut groups = self.process_groups.write();
+        let group = groups
+            .iter_mut()
+            .find(|g| g.id == group_id)
+            .ok_or_else(|| format!("Process group not found: {}", group_id))?;
+
+        if group.output_ports.iter().any(|p| p.name == port_name) {
+            return Err(format!(
+                "Output port '{}' already exists in group '{}'",
+                port_name, group_id
+            ));
+        }
+
+        let port_id = format!("{}-out-{}", group_id, group.output_ports.len());
+        group.output_ports.push(PortInfo {
+            id: port_id.clone(),
+            name: port_name,
+            port_type: PortType::Output,
+            group_id: group_id.to_string(),
+        });
+
+        drop(groups);
+        self.notify_persist();
+        Ok(port_id)
+    }
+
+    /// Remove a port from a process group by port ID.
+    pub fn remove_port(&self, group_id: &str, port_id: &str) -> Result<(), String> {
+        let mut groups = self.process_groups.write();
+        let group = groups
+            .iter_mut()
+            .find(|g| g.id == group_id)
+            .ok_or_else(|| format!("Process group not found: {}", group_id))?;
+
+        let in_len = group.input_ports.len();
+        group.input_ports.retain(|p| p.id != port_id);
+        if group.input_ports.len() < in_len {
+            drop(groups);
+            self.notify_persist();
+            return Ok(());
+        }
+
+        let out_len = group.output_ports.len();
+        group.output_ports.retain(|p| p.id != port_id);
+        if group.output_ports.len() < out_len {
+            drop(groups);
+            self.notify_persist();
+            return Ok(());
+        }
+
+        Err(format!(
+            "Port '{}' not found in group '{}'",
+            port_id, group_id
+        ))
     }
 }
