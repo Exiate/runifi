@@ -35,6 +35,8 @@ pub struct SourceDescriptor {
     pub type_name: &'static str,
     pub description: &'static str,
     pub factory: fn() -> Box<dyn Source>,
+    /// Category tags for UI grouping (e.g., &["File System", "Data Generation"]).
+    pub tags: &'static [&'static str],
 }
 
 inventory::collect!(SourceDescriptor);

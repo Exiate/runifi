@@ -94,6 +94,7 @@ export interface PluginDescriptor {
   kind: PluginKind;
   relationships?: string[];
   properties?: PropertyDescriptor[];
+  tags?: string[];
 }
 
 export interface PropertyDescriptor {

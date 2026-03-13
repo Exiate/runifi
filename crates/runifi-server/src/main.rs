@@ -346,24 +346,28 @@ async fn main() -> Result<()> {
         plugin_types.push(PluginTypeInfo {
             type_name: name.to_string(),
             kind: PluginKind::Processor,
+            tags: registry.processor_tags(name),
         });
     }
     for name in registry.source_types() {
         plugin_types.push(PluginTypeInfo {
             type_name: name.to_string(),
             kind: PluginKind::Source,
+            tags: registry.source_tags(name),
         });
     }
     for name in registry.sink_types() {
         plugin_types.push(PluginTypeInfo {
             type_name: name.to_string(),
             kind: PluginKind::Sink,
+            tags: registry.sink_tags(name),
         });
     }
     for name in registry.service_types() {
         plugin_types.push(PluginTypeInfo {
             type_name: name.to_string(),
             kind: PluginKind::Service,
+            tags: Vec::new(),
         });
     }
     engine.set_plugin_types(plugin_types);

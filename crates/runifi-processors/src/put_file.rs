@@ -160,6 +160,7 @@ inventory::submit! {
         type_name: "PutFile",
         description: "Writes FlowFile content to files in a directory",
         factory: || Box::new(PutFile::new()),
+        tags: &["File System", "Output"],
     }
 }
 

@@ -114,6 +114,7 @@ inventory::submit! {
         type_name: "GenerateFlowFile",
         description: "Generates FlowFiles with synthetic content for testing and benchmarking",
         factory: || Box::new(GenerateFlowFile::new()),
+        tags: &["Data Generation", "Testing"],
     }
 }
 

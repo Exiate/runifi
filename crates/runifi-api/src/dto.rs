@@ -134,10 +134,12 @@ pub struct FlowEdgeResponse {
 pub struct PluginResponse {
     pub type_name: String,
     pub kind: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 impl PluginResponse {
-    pub fn from_kind(type_name: &str, kind: PluginKind) -> Self {
+    pub fn from_kind(type_name: &str, kind: PluginKind, tags: Vec<String>) -> Self {
         let kind_str = match kind {
             PluginKind::Processor => "processor",
             PluginKind::Source => "source",
@@ -147,6 +149,7 @@ impl PluginResponse {
         Self {
             type_name: type_name.to_string(),
             kind: kind_str.to_string(),
+            tags,
         }
     }
 }

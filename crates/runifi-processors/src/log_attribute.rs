@@ -128,6 +128,7 @@ inventory::submit! {
         type_name: "LogAttribute",
         description: "Logs FlowFile attributes and optionally content for debugging",
         factory: || Box::new(LogAttribute::new()),
+        tags: &["Debug", "Logging"],
     }
 }
 

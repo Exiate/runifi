@@ -1,5 +1,5 @@
 import { memo, useState, useMemo, useCallback, useRef, useEffect } from 'react';
-import type { PluginDescriptor, PluginKind } from '../types/api';
+import type { PluginDescriptor } from '../types/api';
 
 interface ComponentToolbarProps {
   plugins: PluginDescriptor[];
@@ -16,7 +16,8 @@ const COMPONENT_TYPES = [
   { id: 'label', label: 'Label', icon: '\u25A1' },
 ] as const;
 
-const CATEGORY_MAP: Record<string, string> = {
+// Fallback category map used when backend does not provide tags.
+const CATEGORY_MAP_FALLBACK: Record<string, string> = {
   GenerateFlowFile: 'Data Generation',
   GetFile: 'File System',
   PutFile: 'File System',
@@ -25,9 +26,12 @@ const CATEGORY_MAP: Record<string, string> = {
   UpdateAttribute: 'Attribute Manipulation',
 };
 
-function getCategory(typeName: string, kind: PluginKind): string {
-  if (CATEGORY_MAP[typeName]) return CATEGORY_MAP[typeName];
-  switch (kind) {
+function getCategory(plugin: PluginDescriptor): string {
+  // Prefer backend-provided tags (use the first tag as category)
+  if (plugin.tags && plugin.tags.length > 0) return plugin.tags[0];
+  // Fall back to hardcoded map
+  if (CATEGORY_MAP_FALLBACK[plugin.type_name]) return CATEGORY_MAP_FALLBACK[plugin.type_name];
+  switch (plugin.kind) {
     case 'source': return 'Data Sources';
     case 'sink': return 'Data Sinks';
     default: return 'General';
@@ -52,7 +56,7 @@ function ComponentToolbarInner({ plugins, loading, onDragStart, onAddProcessor }
 
     const cats = new Map<string, PluginDescriptor[]>();
     for (const p of filtered) {
-      const cat = getCategory(p.type_name, p.kind);
+      const cat = getCategory(p);
       if (!cats.has(cat)) cats.set(cat, []);
       cats.get(cat)!.push(p);
     }

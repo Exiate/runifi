@@ -1,6 +1,6 @@
 import { memo, useMemo } from 'react';
 import type { SseMetricsEvent } from '../types/api';
-import { formatBytes } from '../utils/format';
+import { formatBytes, formatRate } from '../utils/format';
 
 interface SummaryBarProps {
   metrics: SseMetricsEvent | null;
@@ -24,6 +24,8 @@ function SummaryBarInner({ metrics, onOpenBulletins }: SummaryBarProps) {
 
     const totalBytesInRate = procs.reduce((s, p) => s + p.metrics.bytes_in_rate, 0);
     const totalBytesOutRate = procs.reduce((s, p) => s + p.metrics.bytes_out_rate, 0);
+    const totalFlowFilesInRate = procs.reduce((s, p) => s + p.metrics.flowfiles_in_rate, 0);
+    const totalFlowFilesOutRate = procs.reduce((s, p) => s + p.metrics.flowfiles_out_rate, 0);
 
     const warnCount = metrics.bulletins.filter((b) => b.severity === 'warn').length;
     const errorCount = metrics.bulletins.filter((b) => b.severity === 'error').length;
@@ -35,6 +37,8 @@ function SummaryBarInner({ metrics, onOpenBulletins }: SummaryBarProps) {
       backPressureCount,
       totalBytesInRate,
       totalBytesOutRate,
+      totalFlowFilesInRate,
+      totalFlowFilesOutRate,
       warnCount,
       errorCount,
     };
@@ -57,6 +61,8 @@ function SummaryBarInner({ metrics, onOpenBulletins }: SummaryBarProps) {
     backPressureCount,
     totalBytesInRate,
     totalBytesOutRate,
+    totalFlowFilesInRate,
+    totalFlowFilesOutRate,
     warnCount,
     errorCount,
   } = stats;
@@ -73,10 +79,16 @@ function SummaryBarInner({ metrics, onOpenBulletins }: SummaryBarProps) {
       </div>
 
       <div className="status-bar-group">
-        <span className="status-bar-item" title="Bytes transferred in last 5 minutes">
+        <span className="status-bar-item" title="FlowFile throughput (5-min rolling)">
+          {formatRate(totalFlowFilesInRate, 'FF')} in
+        </span>
+        <span className="status-bar-item" title="FlowFile throughput (5-min rolling)">
+          {formatRate(totalFlowFilesOutRate, 'FF')} out
+        </span>
+        <span className="status-bar-item" title="Bytes transferred in (5-min rolling)">
           {formatBytes(Math.round(totalBytesInRate))}/s in
         </span>
-        <span className="status-bar-item" title="Bytes transferred out last 5 minutes">
+        <span className="status-bar-item" title="Bytes transferred out (5-min rolling)">
           {formatBytes(Math.round(totalBytesOutRate))}/s out
         </span>
       </div>

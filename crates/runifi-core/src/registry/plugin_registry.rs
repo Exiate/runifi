@@ -103,4 +103,28 @@ impl PluginRegistry {
     pub fn service_description(&self, type_name: &str) -> Option<&'static str> {
         self.services.get(type_name).map(|desc| desc.description)
     }
+
+    /// Get tags for a processor type.
+    pub fn processor_tags(&self, type_name: &str) -> Vec<String> {
+        self.processors
+            .get(type_name)
+            .map(|desc| desc.tags.iter().map(|t| t.to_string()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Get tags for a source type.
+    pub fn source_tags(&self, type_name: &str) -> Vec<String> {
+        self.sources
+            .get(type_name)
+            .map(|desc| desc.tags.iter().map(|t| t.to_string()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Get tags for a sink type.
+    pub fn sink_tags(&self, type_name: &str) -> Vec<String> {
+        self.sinks
+            .get(type_name)
+            .map(|desc| desc.tags.iter().map(|t| t.to_string()).collect())
+            .unwrap_or_default()
+    }
 }

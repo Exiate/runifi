@@ -45,6 +45,7 @@ const nodeTypes = { processorNode: ProcessorNode } as const;
 const edgeTypes = { connectionEdge: ConnectionEdge } as const;
 
 const POSITION_DEBOUNCE_MS = 800;
+const LS_COLORS_KEY = 'runifi-processor-colors';
 
 interface PendingDrop {
   plugin: PluginDescriptor;
@@ -77,6 +78,20 @@ export interface FlowCanvasProps {
   draggedPlugin: PluginDescriptor | null;
   addPluginAtCenter?: PluginDescriptor | null;
   onAddPluginHandled?: () => void;
+}
+
+function loadSavedColors(): Record<string, string> {
+  try {
+    const stored = localStorage.getItem(LS_COLORS_KEY);
+    if (stored) return JSON.parse(stored) as Record<string, string>;
+  } catch { /* ignore corrupt data */ }
+  return {};
+}
+
+function saveColors(colors: Record<string, string>): void {
+  try {
+    localStorage.setItem(LS_COLORS_KEY, JSON.stringify(colors));
+  } catch { /* quota exceeded, etc. */ }
 }
 
 function buildEdges(
@@ -142,9 +157,12 @@ function FlowCanvasInner({
     setQueueInspectTarget({ connectionId, label });
   }, []);
 
+  const savedColorsRef = useRef(loadSavedColors());
+
   const initialNodes = useMemo(
-    () =>
-      computeLayout(topology.processors, topology.connections).map((n) => ({
+    () => {
+      const colors = savedColorsRef.current;
+      return computeLayout(topology.processors, topology.connections).map((n) => ({
         ...n,
         data: {
           ...n.data,
@@ -152,9 +170,10 @@ function FlowCanvasInner({
             'success',
           ],
           pending: false,
-          customColor: '',
+          customColor: colors[n.id] ?? '',
         },
-      })),
+      }));
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [topology],
   );
@@ -184,6 +203,8 @@ function FlowCanvasInner({
   useEffect(() => {
     if (topologyKey.current === topology.name) return;
     topologyKey.current = topology.name;
+    const colors = loadSavedColors();
+    savedColorsRef.current = colors;
     const newNodes = computeLayout(topology.processors, topology.connections).map((n) => ({
       ...n,
       data: {
@@ -192,7 +213,7 @@ function FlowCanvasInner({
           'success',
         ],
         pending: false,
-        customColor: '',
+        customColor: colors[n.id] ?? '',
       },
     }));
     setNodes(newNodes);
@@ -734,16 +755,6 @@ function FlowCanvasInner({
     }
   }, [contextMenu, nodes]);
 
-  const handleContextViewStatus = useCallback(() => {
-    if (!contextMenu?.nodeId) return;
-    const nodeId = contextMenu.nodeId;
-    const node = nodes.find((n) => n.id === nodeId);
-    setContextMenu(null);
-    if (node) {
-      setConfigTarget({ name: node.id, state: node.data.state });
-    }
-  }, [contextMenu, nodes]);
-
   const handleContextChangeColor = useCallback(() => {
     if (!contextMenu?.nodeId) return;
     const nodeId = contextMenu.nodeId;
@@ -780,6 +791,15 @@ function FlowCanvasInner({
             : n,
         ),
       );
+      // Persist to localStorage
+      const colors = loadSavedColors();
+      if (color) {
+        colors[nodeId] = color;
+      } else {
+        delete colors[nodeId];
+      }
+      saveColors(colors);
+      savedColorsRef.current = colors;
     },
     [colorPickerTarget, setNodes],
   );
@@ -906,7 +926,6 @@ function FlowCanvasInner({
           menu={contextMenu}
           onDelete={handleContextDelete}
           onConfigure={contextMenu.nodeId ? handleContextConfigure : undefined}
-          onViewStatus={contextMenu.nodeId ? handleContextViewStatus : undefined}
           onStart={
             contextMenu.nodeId
               ? () => controlProcessor(contextMenu.nodeId!, 'start')
