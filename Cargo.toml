@@ -24,6 +24,7 @@ tokio-util = { version = "0.7", features = ["codec", "io"] }
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+csv = "1"                     # CSV reader/writer for record processing
 
 # Error handling
 thiserror = "2"

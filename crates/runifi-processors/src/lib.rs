@@ -35,6 +35,9 @@ pub mod pull_flowfile;
 #[cfg(feature = "transport")]
 pub mod push_flowfile;
 
+#[cfg(feature = "record")]
+pub mod record;
+
 pub mod funnel;
 
 pub mod distributed_map_cache;
