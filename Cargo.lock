@@ -1030,6 +1030,7 @@ dependencies = [
  "inventory",
  "parking_lot",
  "runifi-plugin-api",
+ "runifi-processors",
  "serde",
  "serde_json",
  "slab",

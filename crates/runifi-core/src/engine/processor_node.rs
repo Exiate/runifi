@@ -57,6 +57,22 @@ impl runifi_plugin_api::context::ProcessContext for NodeProcessContext {
     }
 }
 
+/// Shared, mutable list of input connections.
+///
+/// `parking_lot::RwLock` is used (not tokio) because the list is also accessed
+/// from synchronous `on_trigger` contexts via `CoreProcessSession`. Cloning the
+/// `Arc` gives the mutation handler a handle into the live task's data.
+pub type SharedInputConnections = Arc<RwLock<Vec<Arc<FlowConnection>>>>;
+
+/// Shared, mutable list of output connections per relationship.
+pub type SharedOutputConnections = Arc<RwLock<Vec<(Relationship, Arc<FlowConnection>)>>>;
+
+/// Shared, mutable list of input notifiers for event-driven wakeup.
+///
+/// The mutation handler pushes a notifier from each new input connection so
+/// that `EventDriven` processors wake up when data arrives on hot-added inputs.
+pub type SharedInputNotifiers = Arc<RwLock<Vec<Arc<Notify>>>>;
+
 /// A runtime wrapper for a single processor instance.
 ///
 /// Manages the processor's lifecycle, connections, scheduling, and fault isolation.
@@ -66,12 +82,16 @@ pub struct ProcessorNode {
     pub scheduling: SchedulingStrategy,
     pub properties: Arc<RwLock<HashMap<String, String>>>,
     supervisor: ProcessorSupervisor,
-    input_connections: Vec<Arc<FlowConnection>>,
-    output_connections: Vec<(Relationship, Arc<FlowConnection>)>,
+    /// Shared so the mutation handler can wire hot-added connections to the
+    /// running task without restarting it.
+    input_connections: SharedInputConnections,
+    /// Shared so the mutation handler can wire hot-added output connections.
+    output_connections: SharedOutputConnections,
     content_repo: Arc<dyn ContentRepository>,
     id_gen: Arc<IdGenerator>,
     cancel_token: CancellationToken,
-    input_notifiers: Vec<Arc<Notify>>,
+    /// Shared so the mutation handler can register notifiers from new inputs.
+    input_notifiers: SharedInputNotifiers,
     metrics: Arc<ProcessorMetrics>,
     bulletin_board: Arc<BulletinBoard>,
 }
@@ -96,12 +116,12 @@ impl ProcessorNode {
             scheduling,
             properties,
             supervisor: ProcessorSupervisor::new(processor),
-            input_connections: Vec::new(),
-            output_connections: Vec::new(),
+            input_connections: Arc::new(RwLock::new(Vec::new())),
+            output_connections: Arc::new(RwLock::new(Vec::new())),
             content_repo,
             id_gen,
             cancel_token,
-            input_notifiers: Vec::new(),
+            input_notifiers: Arc::new(RwLock::new(Vec::new())),
             metrics,
             bulletin_board,
         }
@@ -109,13 +129,16 @@ impl ProcessorNode {
 
     /// Add an input connection and wire its notifier for event-driven wakeup.
     pub fn add_input(&mut self, connection: Arc<FlowConnection>) {
-        self.input_notifiers.push(connection.notifier());
-        self.input_connections.push(connection);
+        let notifier = connection.notifier();
+        self.input_notifiers.write().push(notifier);
+        self.input_connections.write().push(connection);
     }
 
     /// Add an output connection for a specific relationship.
     pub fn add_output(&mut self, relationship: Relationship, connection: Arc<FlowConnection>) {
-        self.output_connections.push((relationship, connection));
+        self.output_connections
+            .write()
+            .push((relationship, connection));
     }
 
     /// Get the processor's supported relationships.
@@ -126,6 +149,27 @@ impl ProcessorNode {
     /// Check if the circuit breaker is open.
     pub fn is_circuit_open(&self) -> bool {
         self.supervisor.is_circuit_open()
+    }
+
+    /// Return a clone of the shared input connection list handle.
+    ///
+    /// The mutation handler stores this so it can wire hot-added connections
+    /// into the running processor task after `tokio::spawn(node.run())`.
+    pub fn input_connections_handle(&self) -> SharedInputConnections {
+        Arc::clone(&self.input_connections)
+    }
+
+    /// Return a clone of the shared output connection list handle.
+    pub fn output_connections_handle(&self) -> SharedOutputConnections {
+        Arc::clone(&self.output_connections)
+    }
+
+    /// Return a clone of the shared input notifiers handle.
+    ///
+    /// The mutation handler pushes notifiers from new input connections so that
+    /// `EventDriven` processors wake up when data arrives on hot-added queues.
+    pub fn input_notifiers_handle(&self) -> SharedInputNotifiers {
+        Arc::clone(&self.input_notifiers)
     }
 
     /// Run the processor lifecycle until the cancellation token fires.
@@ -252,11 +296,17 @@ impl ProcessorNode {
                     .last_trigger_nanos
                     .store(now_nanos, Ordering::Relaxed);
 
+                // Snapshot the current input connections for this session.
+                // We snapshot rather than holding the lock across session lifetime
+                // so the mutation handler is never blocked on the lock.
+                let input_conns_snapshot: Vec<Arc<FlowConnection>> =
+                    self.input_connections.read().clone();
+
                 // Build session and invoke processor in a blocking thread.
                 let mut session = CoreProcessSession::new(
                     self.content_repo.clone(),
                     self.id_gen.clone(),
-                    self.input_connections.clone(),
+                    input_conns_snapshot,
                     ctx.yield_duration_ms,
                 );
 
@@ -363,16 +413,16 @@ impl ProcessorNode {
                 tokio::time::sleep(std::time::Duration::from_millis(*interval_ms)).await;
             }
             SchedulingStrategy::EventDriven => {
-                if self.input_notifiers.is_empty() {
+                // Snapshot the notifiers under a brief lock, then await outside
+                // the lock so we never hold parking_lot across an await point.
+                let notifiers: Vec<Arc<Notify>> = self.input_notifiers.read().clone();
+                if notifiers.is_empty() {
                     // No inputs wired — suspend forever (cancel token will break the loop).
                     std::future::pending::<()>().await;
                 } else {
                     // Race all input connection notifiers — wake on ANY data arrival.
-                    let futures: Vec<_> = self
-                        .input_notifiers
-                        .iter()
-                        .map(|n| Box::pin(n.notified()))
-                        .collect();
+                    let futures: Vec<_> =
+                        notifiers.iter().map(|n| Box::pin(n.notified())).collect();
                     futures::future::select_all(futures).await;
                 }
             }
@@ -381,6 +431,7 @@ impl ProcessorNode {
 
     fn any_output_back_pressured(&self) -> bool {
         self.output_connections
+            .read()
             .iter()
             .any(|(_, conn)| conn.is_back_pressured())
     }
@@ -389,10 +440,13 @@ impl ProcessorNode {
     fn route_transfers(&self, session: &mut CoreProcessSession) -> (u64, u64) {
         let mut ff_out: u64 = 0;
         let mut bytes_out: u64 = 0;
+        // Snapshot output connections for routing; brief lock, then released.
+        let output_connections: Vec<(Relationship, Arc<FlowConnection>)> =
+            self.output_connections.read().clone();
         for (flowfile, rel_name) in session.take_transfers() {
             let size = flowfile.size;
             let mut routed = false;
-            for (rel, conn) in &self.output_connections {
+            for (rel, conn) in &output_connections {
                 if rel.name == rel_name {
                     if let Err(_ff) = conn.try_send(flowfile.clone()) {
                         tracing::warn!(
@@ -418,8 +472,7 @@ impl ProcessorNode {
             }
             if !routed {
                 // Check if the relationship is auto-terminated.
-                let is_auto_term = self
-                    .output_connections
+                let is_auto_term = output_connections
                     .iter()
                     .any(|(rel, _)| rel.name == rel_name && rel.auto_terminated);
                 if !is_auto_term {

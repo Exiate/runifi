@@ -104,6 +104,17 @@ pub struct ConnectionResponse {
     pub back_pressured: bool,
 }
 
+// ── Canvas position ────────────────────────────────────────────────────
+
+/// Canvas position for a processor node.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+pub struct PositionResponse {
+    pub x: f64,
+    pub y: f64,
+}
+
+// ── Flow topology ─────────────────────────────────────────────────────
+
 #[derive(Serialize)]
 pub struct FlowResponse {
     pub name: String,
@@ -115,10 +126,12 @@ pub struct FlowResponse {
 pub struct FlowNodeResponse {
     pub name: String,
     pub type_name: String,
+    pub position: Option<PositionResponse>,
 }
 
 #[derive(Serialize)]
 pub struct FlowEdgeResponse {
+    pub id: String,
     pub source: String,
     pub relationship: String,
     pub destination: String,
@@ -203,7 +216,7 @@ pub struct SseMetricsEvent {
     pub bulletins: Vec<BulletinResponse>,
 }
 
-// ── Processor configuration DTOs ─────────────────────────────
+// ── Processor configuration DTOs ─────────────────────────────────────
 
 /// Response for `GET /api/v1/processors/{name}/config`.
 #[derive(Serialize)]
@@ -314,4 +327,78 @@ impl ProcessorConfigResponse {
             relationships,
         }
     }
+}
+
+// ── CRUD request/response DTOs ─────────────────────────────────────────
+
+/// Request body for `POST /api/v1/processors`.
+#[derive(Deserialize)]
+pub struct CreateProcessorRequest {
+    /// Processor type name (must exist in PluginRegistry).
+    #[serde(rename = "type")]
+    pub type_name: String,
+    /// Unique name for this processor instance.
+    pub name: String,
+    /// Optional canvas position.
+    pub position: Option<PositionResponse>,
+    /// Initial property values (optional; defaults applied by the processor).
+    #[serde(default)]
+    pub properties: HashMap<String, String>,
+    /// Scheduling strategy: "timer" (default) or "event".
+    #[serde(default = "default_scheduling_strategy")]
+    pub scheduling_strategy: String,
+    /// Scheduling interval in milliseconds (for "timer" strategy).
+    #[serde(default = "default_interval_ms")]
+    pub interval_ms: u64,
+}
+
+fn default_scheduling_strategy() -> String {
+    "timer".to_string()
+}
+
+fn default_interval_ms() -> u64 {
+    1000
+}
+
+/// Response for a created or retrieved processor (includes relationships).
+#[derive(Serialize)]
+pub struct ProcessorDetailResponse {
+    pub name: String,
+    pub type_name: String,
+    pub state: String,
+    pub scheduling: String,
+    pub position: Option<PositionResponse>,
+    pub relationships: Vec<RelationshipResponse>,
+    pub properties: HashMap<String, String>,
+}
+
+/// Request body for `PUT /api/v1/processors/{name}/position`.
+#[derive(Deserialize)]
+pub struct UpdatePositionRequest {
+    pub x: f64,
+    pub y: f64,
+}
+
+/// Request body for `POST /api/v1/connections`.
+#[derive(Deserialize)]
+pub struct CreateConnectionRequest {
+    pub source: String,
+    pub relationship: String,
+    pub destination: String,
+    /// Maximum FlowFiles in queue before back-pressure (default: 10 000).
+    pub max_queue_size: Option<usize>,
+    /// Maximum bytes in queue before back-pressure (default: 100 MB).
+    pub max_queue_bytes: Option<u64>,
+}
+
+/// Response for a created or retrieved connection.
+#[derive(Serialize)]
+pub struct ConnectionDetailResponse {
+    pub id: String,
+    pub source_name: String,
+    pub relationship: String,
+    pub dest_name: String,
+    pub queued_count: usize,
+    pub queued_bytes: u64,
+    pub back_pressured: bool,
 }

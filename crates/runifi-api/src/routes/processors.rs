@@ -1,16 +1,28 @@
 use axum::extract::{Path, State};
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 
-use crate::dto::{ProcessorConfigResponse, ProcessorConfigUpdateRequest, ProcessorResponse};
+use runifi_core::engine::processor_node::SchedulingStrategy;
+
+use crate::dto::{
+    CreateProcessorRequest, ProcessorConfigResponse, ProcessorConfigUpdateRequest,
+    ProcessorDetailResponse, ProcessorResponse, RelationshipResponse, UpdatePositionRequest,
+};
 use crate::error::ApiError;
 use crate::state::ApiState;
 
 pub fn routes() -> Router<ApiState> {
     Router::new()
-        .route("/api/v1/processors", get(list_processors))
-        .route("/api/v1/processors/{name}", get(get_processor))
+        .route(
+            "/api/v1/processors",
+            get(list_processors).post(create_processor),
+        )
+        .route(
+            "/api/v1/processors/{name}",
+            get(get_processor).delete(delete_processor),
+        )
         .route(
             "/api/v1/processors/{name}/config",
             get(get_processor_config).put(update_processor_config),
@@ -23,12 +35,14 @@ pub fn routes() -> Router<ApiState> {
         .route("/api/v1/processors/{name}/start", post(start_processor))
         .route("/api/v1/processors/{name}/pause", post(pause_processor))
         .route("/api/v1/processors/{name}/resume", post(resume_processor))
+        .route("/api/v1/processors/{name}/position", put(update_position))
 }
 
 async fn list_processors(State(state): State<ApiState>) -> Json<Vec<ProcessorResponse>> {
     let processors: Vec<ProcessorResponse> = state
         .handle
         .processors
+        .read()
         .iter()
         .map(ProcessorResponse::from_info)
         .collect();
@@ -41,12 +55,133 @@ async fn get_processor(
 ) -> Result<Json<ProcessorResponse>, ApiError> {
     let info = state
         .handle
-        .processors
-        .iter()
-        .find(|p| p.name == name)
+        .get_processor_info(&name)
         .ok_or(ApiError::ProcessorNotFound(name))?;
 
-    Ok(Json(ProcessorResponse::from_info(info)))
+    Ok(Json(ProcessorResponse::from_info(&info)))
+}
+
+/// Validate a processor name: non-empty, max 128 chars, only `[a-zA-Z0-9_-]`.
+fn validate_processor_name(name: &str) -> Result<(), ApiError> {
+    if name.is_empty() {
+        return Err(ApiError::BadRequest(
+            "Processor name must not be empty".to_string(),
+        ));
+    }
+    if name.len() > 128 {
+        return Err(ApiError::BadRequest(
+            "Processor name must not exceed 128 characters".to_string(),
+        ));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(ApiError::BadRequest(
+            "Processor name may only contain letters, digits, underscores, and hyphens".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Create a new processor instance at runtime.
+async fn create_processor(
+    State(state): State<ApiState>,
+    Json(body): Json<CreateProcessorRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    // Fix 4: validate the processor name before sending to the engine.
+    validate_processor_name(&body.name)?;
+
+    state
+        .handle
+        .add_processor(
+            body.name.clone(),
+            body.type_name.clone(),
+            body.properties.clone(),
+            body.scheduling_strategy.clone(),
+            body.interval_ms,
+        )
+        .await
+        .map_err(ApiError::from)?;
+
+    // Store canvas position if provided.
+    if let Some(pos) = body.position {
+        state.handle.set_position(&body.name, pos.x, pos.y);
+    }
+
+    // Build detailed response.
+    let info = state
+        .handle
+        .get_processor_info(&body.name)
+        .ok_or_else(|| ApiError::ProcessorNotFound(body.name.clone()))?;
+
+    let snapshot = info.metrics.snapshot();
+    let state_str = snapshot.state.as_str().to_string();
+
+    let scheduling_str = match &info.scheduling {
+        SchedulingStrategy::TimerDriven { interval_ms } => format!("timer ({}ms)", interval_ms),
+        SchedulingStrategy::EventDriven => "event".to_string(),
+    };
+
+    let relationships: Vec<RelationshipResponse> = info
+        .relationships
+        .iter()
+        .map(|r| RelationshipResponse {
+            name: r.name.clone(),
+            description: r.description.clone(),
+            auto_terminated: r.auto_terminated,
+        })
+        .collect();
+
+    let properties = info.properties.read().clone();
+
+    let detail = ProcessorDetailResponse {
+        name: info.name.clone(),
+        type_name: info.type_name.clone(),
+        state: state_str,
+        scheduling: scheduling_str,
+        position: body.position,
+        relationships,
+        properties,
+    };
+
+    Ok((StatusCode::CREATED, Json(detail)).into_response())
+}
+
+/// Remove a processor at runtime.
+async fn delete_processor(
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    state
+        .handle
+        .remove_processor(name.clone())
+        .await
+        .map_err(ApiError::from)?;
+
+    // Remove stored position.
+    state.handle.positions.remove(&name);
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Update the canvas position for a processor.
+async fn update_position(
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+    Json(body): Json<UpdatePositionRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    // Validate processor exists.
+    if state.handle.get_processor_info(&name).is_none() {
+        return Err(ApiError::ProcessorNotFound(name));
+    }
+
+    state.handle.set_position(&name, body.x, body.y);
+
+    Ok(Json(serde_json::json!({
+        "processor": name,
+        "position": { "x": body.x, "y": body.y },
+    })))
 }
 
 async fn get_processor_config(
@@ -58,7 +193,7 @@ async fn get_processor_config(
         .get_processor_info(&name)
         .ok_or(ApiError::ProcessorNotFound(name))?;
 
-    Ok(Json(ProcessorConfigResponse::from_info(info)))
+    Ok(Json(ProcessorConfigResponse::from_info(&info)))
 }
 
 async fn update_processor_config(
