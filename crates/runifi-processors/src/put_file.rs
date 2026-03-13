@@ -19,6 +19,9 @@ const PROP_CONFLICT_STRATEGY: PropertyDescriptor = PropertyDescriptor::new(
 .default_value("fail");
 
 /// Writes FlowFile content to files in a directory.
+///
+/// Uses atomic writes (temp file + rename) to prevent partial writes.
+/// Sanitizes filenames to prevent path traversal attacks.
 pub struct PutFile;
 
 impl PutFile {
@@ -31,6 +34,35 @@ impl Default for PutFile {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Sanitize a filename against path traversal.
+///
+/// Rejects absolute paths and `..` components. Returns the sanitized
+/// file name component, or `None` if the filename is unsafe.
+fn sanitize_filename(filename: &str) -> Option<String> {
+    let path = std::path::Path::new(filename);
+
+    // Reject absolute paths.
+    if path.is_absolute() {
+        return None;
+    }
+
+    // Reject any path with `..` components.
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => return None,
+            std::path::Component::RootDir => return None,
+            std::path::Component::Prefix(_) => return None,
+            _ => {}
+        }
+    }
+
+    // Use only the final filename component to prevent subdirectory creation
+    // via embedded path separators like "subdir/file.txt".
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string())
 }
 
 impl Processor for PutFile {
@@ -57,10 +89,23 @@ impl Processor for PutFile {
         }
 
         while let Some(flowfile) = session.get() {
-            let filename = flowfile
+            let raw_filename = flowfile
                 .get_attribute("filename")
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| format!("flowfile-{}", flowfile.id));
+
+            // Sanitize filename against path traversal.
+            let filename = match sanitize_filename(&raw_filename) {
+                Some(name) => name,
+                None => {
+                    tracing::warn!(
+                        filename = %raw_filename,
+                        "Rejected filename: path traversal or absolute path detected"
+                    );
+                    session.transfer(flowfile, &REL_FAILURE);
+                    continue;
+                }
+            };
 
             let path = dir.join(&filename);
 
@@ -82,7 +127,11 @@ impl Processor for PutFile {
             }
 
             let content = session.read_content(&flowfile)?;
-            std::fs::write(&path, &content).map_err(PluginError::Io)?;
+
+            // Atomic write: write to temp file, then rename.
+            let tmp_path = dir.join(format!(".{}.tmp", filename));
+            std::fs::write(&tmp_path, &content).map_err(PluginError::Io)?;
+            std::fs::rename(&tmp_path, &path).map_err(PluginError::Io)?;
 
             tracing::debug!(
                 path = %path.display(),
@@ -180,6 +229,20 @@ mod tests {
         fn rollback(&mut self) {}
     }
 
+    fn make_ff(id: u64, filename: &str) -> FlowFile {
+        let mut ff = FlowFile {
+            id,
+            attributes: Vec::new(),
+            content_claim: None,
+            size: 5,
+            created_at_nanos: 0,
+            lineage_start_id: id,
+            penalized_until_nanos: 0,
+        };
+        ff.set_attribute(Arc::from("filename"), Arc::from(filename));
+        ff
+    }
+
     #[test]
     fn writes_file_to_directory() {
         let tmp = std::env::temp_dir().join("runifi-test-putfile");
@@ -190,19 +253,8 @@ mod tests {
             output_dir: tmp.to_string_lossy().to_string(),
         };
 
-        let mut ff = FlowFile {
-            id: 1,
-            attributes: Vec::new(),
-            content_claim: None,
-            size: 5,
-            created_at_nanos: 0,
-            lineage_start_id: 1,
-            penalized_until_nanos: 0,
-        };
-        ff.set_attribute(Arc::from("filename"), Arc::from("output.txt"));
-
         let mut session = OneFlowFileSession {
-            input: Some(ff),
+            input: Some(make_ff(1, "output.txt")),
             content: Bytes::from_static(b"hello"),
             transferred: Vec::new(),
         };
@@ -215,6 +267,83 @@ mod tests {
         let written = std::fs::read_to_string(tmp.join("output.txt")).unwrap();
         assert_eq!(written, "hello");
 
+        // Verify no temp file left behind.
+        assert!(!tmp.join(".output.txt.tmp").exists());
+
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn rejects_path_traversal_dotdot() {
+        let tmp = std::env::temp_dir().join("runifi-test-putfile-traversal");
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let mut proc = PutFile::new();
+        let ctx = TestContext {
+            output_dir: tmp.to_string_lossy().to_string(),
+        };
+
+        let mut session = OneFlowFileSession {
+            input: Some(make_ff(1, "../../../etc/passwd")),
+            content: Bytes::from_static(b"malicious"),
+            transferred: Vec::new(),
+        };
+
+        proc.on_trigger(&ctx, &mut session).unwrap();
+
+        assert_eq!(session.transferred.len(), 1);
+        assert_eq!(session.transferred[0].1, "failure");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn rejects_absolute_path() {
+        let tmp = std::env::temp_dir().join("runifi-test-putfile-abs");
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let mut proc = PutFile::new();
+        let ctx = TestContext {
+            output_dir: tmp.to_string_lossy().to_string(),
+        };
+
+        let mut session = OneFlowFileSession {
+            input: Some(make_ff(1, "/etc/passwd")),
+            content: Bytes::from_static(b"malicious"),
+            transferred: Vec::new(),
+        };
+
+        proc.on_trigger(&ctx, &mut session).unwrap();
+
+        assert_eq!(session.transferred.len(), 1);
+        assert_eq!(session.transferred[0].1, "failure");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn sanitize_filename_strips_subdirectories() {
+        assert_eq!(
+            sanitize_filename("subdir/file.txt"),
+            Some("file.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitize_filename_rejects_dotdot() {
+        assert_eq!(sanitize_filename("../secret.txt"), None);
+        assert_eq!(sanitize_filename("foo/../../bar.txt"), None);
+    }
+
+    #[test]
+    fn sanitize_filename_allows_normal_names() {
+        assert_eq!(
+            sanitize_filename("my-file.dat"),
+            Some("my-file.dat".to_string())
+        );
+        assert_eq!(
+            sanitize_filename("data.2024.csv"),
+            Some("data.2024.csv".to_string())
+        );
     }
 }
