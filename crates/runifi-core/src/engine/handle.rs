@@ -13,6 +13,7 @@ use super::mutation::{MutationCommand, MutationError};
 use super::processor_node::{
     SharedInputConnections, SharedInputNotifiers, SharedOutputConnections,
 };
+use crate::audit::{AuditAction, AuditEvent, AuditLogger, AuditTarget};
 use crate::connection::back_pressure::BackPressureConfig;
 use crate::connection::query::ConnectionQuery;
 use crate::repository::content_repo::ContentRepository;
@@ -136,6 +137,8 @@ pub struct EngineHandle {
     pub content_repo: Arc<dyn ContentRepository>,
     /// Canvas position store (processor name -> position). UI metadata only.
     pub positions: Arc<DashMap<String, Position>>,
+    /// Structured audit logger for compliance events.
+    pub audit_logger: Arc<dyn AuditLogger>,
     /// Sender half of the engine mutation command channel.
     pub(crate) mutation_tx: mpsc::Sender<MutationCommand>,
 }
@@ -168,6 +171,10 @@ impl EngineHandle {
                 info.metrics
                     .paused
                     .store(false, std::sync::atomic::Ordering::Relaxed);
+                self.audit_logger.log(&AuditEvent::success(
+                    AuditAction::ProcessorStopped,
+                    AuditTarget::processor(name),
+                ));
                 return true;
             }
         }
@@ -186,6 +193,10 @@ impl EngineHandle {
                 info.metrics
                     .paused
                     .store(false, std::sync::atomic::Ordering::Relaxed);
+                self.audit_logger.log(&AuditEvent::success(
+                    AuditAction::ProcessorStarted,
+                    AuditTarget::processor(name),
+                ));
                 return true;
             }
         }
@@ -200,6 +211,10 @@ impl EngineHandle {
                 info.metrics
                     .paused
                     .store(true, std::sync::atomic::Ordering::Relaxed);
+                self.audit_logger.log(&AuditEvent::success(
+                    AuditAction::ProcessorPaused,
+                    AuditTarget::processor(name),
+                ));
                 return true;
             }
         }
@@ -214,6 +229,10 @@ impl EngineHandle {
                 info.metrics
                     .paused
                     .store(false, std::sync::atomic::Ordering::Relaxed);
+                self.audit_logger.log(&AuditEvent::success(
+                    AuditAction::ProcessorResumed,
+                    AuditTarget::processor(name),
+                ));
                 return true;
             }
         }
@@ -293,6 +312,10 @@ impl EngineHandle {
         }
 
         *props = new_properties;
+        self.audit_logger.log(&AuditEvent::success(
+            AuditAction::ProcessorConfigured,
+            AuditTarget::processor(name),
+        ));
         Ok(())
     }
 

@@ -3,13 +3,19 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use tracing_subscriber::EnvFilter;
 
+use runifi_core::audit::{
+    AuditLogger, CompositeAuditLogger, FileAuditLogger, NullAuditLogger, TracingAuditLogger,
+};
 use runifi_core::config::flow_config::FlowConfig;
 use runifi_core::connection::back_pressure::BackPressureConfig;
 use runifi_core::engine::flow_engine::FlowEngine;
 use runifi_core::engine::handle::{PluginKind, PluginTypeInfo};
 use runifi_core::engine::processor_node::SchedulingStrategy;
 use runifi_core::registry::plugin_registry::PluginRegistry;
+use runifi_core::repository::content_encrypted::EncryptedContentRepository;
 use runifi_core::repository::content_memory::InMemoryContentRepository;
+use runifi_core::repository::content_repo::ContentRepository;
+use runifi_core::repository::static_key_provider::StaticKeyProvider;
 
 // Ensure processor registrations are linked in.
 extern crate runifi_processors;
@@ -52,12 +58,67 @@ async fn main() -> Result<()> {
 
     tracing::info!(flow = %config.flow.name, "Loaded flow configuration");
 
-    // Create content repository.
-    let content_repo = Arc::new(InMemoryContentRepository::new());
+    // Create content repository, optionally wrapping with encryption.
+    let content_repo: Arc<dyn ContentRepository> = {
+        let base_repo = Arc::new(InMemoryContentRepository::new());
+
+        match &config.api.encryption {
+            Some(enc) if enc.enabled => {
+                let key_provider = Arc::new(
+                    StaticKeyProvider::from_hex(enc.key_id.clone(), &enc.key)
+                        .context("Invalid encryption configuration")?,
+                );
+                tracing::info!(key_id = %enc.key_id, "Content encryption at rest enabled");
+                Arc::new(EncryptedContentRepository::new(base_repo, key_provider))
+            }
+            _ => {
+                tracing::info!("Content encryption at rest disabled");
+                base_repo
+            }
+        }
+    };
+
+    // Build the audit logger.
+    let audit_logger: Arc<dyn AuditLogger> = if config.audit.enabled {
+        let mut sinks: Vec<Box<dyn AuditLogger>> = Vec::new();
+
+        if config.audit.log_to_tracing {
+            sinks.push(Box::new(TracingAuditLogger));
+        }
+
+        if let Some(ref path) = config.audit.file_path {
+            match FileAuditLogger::new(path) {
+                Ok(file_logger) => {
+                    tracing::info!(path = %path, "Audit file logger enabled");
+                    sinks.push(Box::new(file_logger));
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, path = %path, "Failed to open audit log file");
+                    return Err(anyhow::anyhow!(
+                        "Failed to open audit log file {}: {}",
+                        path,
+                        e
+                    ));
+                }
+            }
+        }
+
+        if sinks.is_empty() {
+            tracing::info!("Audit trail enabled but no sinks configured");
+            Arc::new(NullAuditLogger)
+        } else {
+            tracing::info!(sinks = sinks.len(), "Audit trail enabled");
+            Arc::new(CompositeAuditLogger::new(sinks))
+        }
+    } else {
+        tracing::info!("Audit trail disabled");
+        Arc::new(NullAuditLogger)
+    };
 
     // Build the flow engine.
     let registry = Arc::new(registry);
     let mut engine = FlowEngine::new(&config.flow.name, content_repo);
+    engine.set_audit_logger(audit_logger);
     // Provide the registry so the engine can hot-add processors at runtime.
     engine.set_registry(registry.clone());
 
@@ -157,11 +218,10 @@ async fn main() -> Result<()> {
             .expect("engine handle must exist after start")
             .clone();
 
-        let bind_address = config.api.bind_address.clone();
-        let port = config.api.port;
+        let api_config = config.api.clone();
 
         Some(tokio::spawn(async move {
-            if let Err(e) = runifi_api::start_api_server(engine_handle, &bind_address, port).await {
+            if let Err(e) = runifi_api::start_api_server(engine_handle, &api_config).await {
                 tracing::error!(error = %e, "API server failed");
             }
         }))

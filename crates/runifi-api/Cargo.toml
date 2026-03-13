@@ -8,7 +8,10 @@ license.workspace = true
 [dependencies]
 runifi-core = { workspace = true }
 axum = { workspace = true }
-tower-http = { workspace = true, features = ["cors"] }
+tower-http = { workspace = true, features = ["cors", "limit"] }
+tower = { workspace = true }
+governor = { workspace = true }
+runifi-plugin-api = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 serde = { workspace = true }
