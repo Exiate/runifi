@@ -5,6 +5,7 @@ interface ComponentToolbarProps {
   plugins: PluginDescriptor[];
   loading: boolean;
   onDragStart: (plugin: PluginDescriptor) => void;
+  onAddProcessor?: (plugin: PluginDescriptor) => void;
 }
 
 const COMPONENT_TYPES = [
@@ -33,7 +34,7 @@ function getCategory(typeName: string, kind: PluginKind): string {
   }
 }
 
-function ComponentToolbarInner({ plugins, loading, onDragStart }: ComponentToolbarProps) {
+function ComponentToolbarInner({ plugins, loading, onDragStart, onAddProcessor }: ComponentToolbarProps) {
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [search, setSearch] = useState('');
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
@@ -196,11 +197,19 @@ function ComponentToolbarInner({ plugins, loading, onDragStart }: ComponentToolb
                           e.dataTransfer.effectAllowed = 'copy';
                           e.dataTransfer.setData('application/runifi-plugin', plugin.type_name);
                           onDragStart(plugin);
+                        }}
+                        onDragEnd={() => {
+                          setShowAddDialog(false);
+                          setSearch('');
+                        }}
+                        onClick={() => {
+                          onAddProcessor?.(plugin);
                           setShowAddDialog(false);
                           setSearch('');
                         }}
                         role="listitem"
-                        aria-label={`Drag to add ${plugin.display_name}`}
+                        aria-label={`Click or drag to add ${plugin.display_name}`}
+                        style={{ cursor: 'pointer' }}
                       >
                         <div className="toolbar-add-item-info">
                           <span className="toolbar-add-item-name">{plugin.display_name}</span>

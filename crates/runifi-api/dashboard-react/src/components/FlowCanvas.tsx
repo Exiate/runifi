@@ -75,6 +75,8 @@ export interface FlowCanvasProps {
   plugins: PluginDescriptor[];
   onToast: (kind: ToastKind, message: string) => void;
   draggedPlugin: PluginDescriptor | null;
+  addPluginAtCenter?: PluginDescriptor | null;
+  onAddPluginHandled?: () => void;
 }
 
 function buildEdges(
@@ -130,8 +132,10 @@ function FlowCanvasInner({
   plugins,
   onToast,
   draggedPlugin,
+  addPluginAtCenter,
+  onAddPluginHandled,
 }: FlowCanvasProps) {
-  const { screenToFlowPosition } = useReactFlow();
+  const { screenToFlowPosition, getViewport } = useReactFlow();
 
   const [queueInspectTarget, setQueueInspectTarget] = useState<QueueInspectTarget | null>(null);
   const handleQueueClick = useCallback((connectionId: string, label: string) => {
@@ -301,6 +305,15 @@ function FlowCanvasInner({
       for (const t of timers.values()) clearTimeout(t);
     };
   }, []);
+
+  useEffect(() => {
+    if (!addPluginAtCenter) return;
+    const { x, y, zoom } = getViewport();
+    const centerX = (-x + window.innerWidth / 2) / zoom;
+    const centerY = (-y + window.innerHeight / 2) / zoom;
+    setPendingDrop({ plugin: addPluginAtCenter, position: { x: centerX, y: centerY } });
+    onAddPluginHandled?.();
+  }, [addPluginAtCenter, getViewport, onAddPluginHandled]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
