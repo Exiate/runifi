@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Header } from './components/Header';
 import { SummaryBar } from './components/SummaryBar';
 import { FlowCanvas } from './components/FlowCanvas';
@@ -18,6 +18,7 @@ export function App() {
   const { toasts, push: pushToast, dismiss: dismissToast } = useToast();
 
   const [draggedPlugin, setDraggedPlugin] = useState<PluginDescriptor | null>(null);
+  const [addPluginAtCenter, setAddPluginAtCenter] = useState<PluginDescriptor | null>(null);
   const [bulletinOpen, setBulletinOpen] = useState(false);
 
   const uptimeSecs = liveMetrics?.uptime_secs ?? 0;
@@ -34,6 +35,7 @@ export function App() {
   );
 
   const handleDragEnd = () => setDraggedPlugin(null);
+  const handleAddPluginHandled = useCallback(() => setAddPluginAtCenter(null), []);
 
   return (
     <div className="app-layout" onDragEnd={handleDragEnd}>
@@ -42,6 +44,7 @@ export function App() {
         plugins={plugins}
         loading={pluginsLoading}
         onDragStart={setDraggedPlugin}
+        onAddProcessor={setAddPluginAtCenter}
       />
 
       <div className="app-body">
@@ -69,6 +72,8 @@ export function App() {
                 plugins={plugins}
                 onToast={pushToast}
                 draggedPlugin={draggedPlugin}
+                addPluginAtCenter={addPluginAtCenter}
+                onAddPluginHandled={handleAddPluginHandled}
               />
             )}
           </section>
