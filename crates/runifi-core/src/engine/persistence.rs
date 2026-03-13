@@ -60,6 +60,9 @@ pub struct PersistedScheduling {
     pub strategy: String,
     #[serde(default = "default_interval_ms")]
     pub interval_ms: u64,
+    /// CRON expression (only present when strategy = "cron").
+    #[serde(default)]
+    pub expression: Option<String>,
 }
 
 fn default_interval_ms() -> u64 {
@@ -73,6 +76,15 @@ pub struct PersistedConnection {
     pub destination: String,
     #[serde(default)]
     pub back_pressure: Option<PersistedBackPressure>,
+    /// FlowFile expiration duration string, e.g. "5m", "1h".
+    #[serde(default)]
+    pub expiration: Option<String>,
+    /// Queue priority strategy: "FIFO", "NewestFirst", "PriorityAttribute".
+    #[serde(default)]
+    pub priority: Option<String>,
+    /// Attribute name for PriorityAttribute priority mode.
+    #[serde(default)]
+    pub priority_attribute: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,6 +204,34 @@ impl PersistedFlowState {
             .iter()
             .map(|c| {
                 let bp = c.connection.back_pressure_config();
+                // Persist expiration and priority from the underlying FlowConnection.
+                let (expiration, priority, priority_attribute) =
+                    if let Some(fc) = c.connection.flow_connection() {
+                        let exp = fc.expiration().map(|d| {
+                            let secs = d.as_secs();
+                            if secs >= 86400 && secs % 86400 == 0 {
+                                format!("{}d", secs / 86400)
+                            } else if secs >= 3600 && secs % 3600 == 0 {
+                                format!("{}h", secs / 3600)
+                            } else if secs >= 60 && secs % 60 == 0 {
+                                format!("{}m", secs / 60)
+                            } else {
+                                format!("{}s", secs)
+                            }
+                        });
+                        let (prio, prio_attr) = match fc.queue_priority() {
+                            crate::connection::flow_connection::QueuePriority::Fifo => (None, None),
+                            crate::connection::flow_connection::QueuePriority::NewestFirst => {
+                                (Some("NewestFirst".to_string()), None)
+                            }
+                            crate::connection::flow_connection::QueuePriority::PriorityAttribute(
+                                attr,
+                            ) => (Some("PriorityAttribute".to_string()), Some(attr.clone())),
+                        };
+                        (exp, prio, prio_attr)
+                    } else {
+                        (None, None, None)
+                    };
                 PersistedConnection {
                     source: c.source_name.clone(),
                     relationship: c.relationship.clone(),
@@ -200,6 +240,9 @@ impl PersistedFlowState {
                         max_count: Some(bp.max_count),
                         max_bytes: Some(bp.max_bytes),
                     }),
+                    expiration,
+                    priority,
+                    priority_attribute,
                 }
             })
             .collect();
@@ -297,7 +340,7 @@ impl PersistedFlowState {
 /// back into a `PersistedScheduling`.
 pub fn scheduling_display_to_persisted(display: &str) -> PersistedScheduling {
     if display.starts_with("timer-driven") {
-        // Parse "timer-driven (1000ms)" → interval_ms = 1000
+        // Parse "timer-driven (1000ms)" -> interval_ms = 1000
         let interval_ms = display
             .strip_prefix("timer-driven (")
             .and_then(|s| s.strip_suffix("ms)"))
@@ -306,11 +349,25 @@ pub fn scheduling_display_to_persisted(display: &str) -> PersistedScheduling {
         PersistedScheduling {
             strategy: "timer".to_string(),
             interval_ms,
+            expression: None,
+        }
+    } else if display.starts_with("cron-driven") {
+        // Parse "cron-driven (0 */5 * * * *)" -> expression
+        let expression = display
+            .strip_prefix("cron-driven (")
+            .and_then(|s| s.strip_suffix(')'))
+            .unwrap_or("0 * * * * *")
+            .to_string();
+        PersistedScheduling {
+            strategy: "cron".to_string(),
+            interval_ms: 100,
+            expression: Some(expression),
         }
     } else {
         PersistedScheduling {
             strategy: "event".to_string(),
             interval_ms: 100,
+            expression: None,
         }
     }
 }
@@ -542,6 +599,7 @@ mod tests {
                 scheduling: PersistedScheduling {
                     strategy: "timer".to_string(),
                     interval_ms: 500,
+                    expression: None,
                 },
                 properties: HashMap::new(),
             }],
@@ -565,6 +623,7 @@ mod tests {
                     scheduling: PersistedScheduling {
                         strategy: "timer".to_string(),
                         interval_ms: 1000,
+                        expression: None,
                     },
                     properties: HashMap::from([("File Size".to_string(), "5120".to_string())]),
                 },
@@ -574,6 +633,7 @@ mod tests {
                     scheduling: PersistedScheduling {
                         strategy: "event".to_string(),
                         interval_ms: 100,
+                        expression: None,
                     },
                     properties: HashMap::new(),
                 },
@@ -586,6 +646,9 @@ mod tests {
                     max_count: Some(10_000),
                     max_bytes: Some(1_073_741_824),
                 }),
+                expiration: None,
+                priority: None,
+                priority_attribute: None,
             }],
             positions: HashMap::from([(
                 "gen".to_string(),

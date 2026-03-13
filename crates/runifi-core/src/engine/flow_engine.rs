@@ -25,7 +25,7 @@ use super::processor_node::{
 };
 use crate::audit::{AuditAction, AuditEvent, AuditLogger, AuditTarget, NullAuditLogger};
 use crate::connection::back_pressure::BackPressureConfig;
-use crate::connection::flow_connection::FlowConnection;
+use crate::connection::flow_connection::{FlowConnection, QueuePriority};
 use crate::connection::query::FlowConnectionQuery;
 use crate::error::{Result, RuniFiError};
 use crate::id::IdGenerator;
@@ -86,6 +86,8 @@ struct ConnBuilder {
     relationship: &'static str,
     dest_node: NodeId,
     config: BackPressureConfig,
+    expiration: Option<Duration>,
+    priority: QueuePriority,
 }
 
 impl FlowEngine {
@@ -171,6 +173,26 @@ impl FlowEngine {
         dest_id: NodeId,
         config: BackPressureConfig,
     ) -> ConnId {
+        self.connect_with_options(
+            source_id,
+            relationship,
+            dest_id,
+            config,
+            None,
+            QueuePriority::Fifo,
+        )
+    }
+
+    /// Connect two processors with full options (expiration, priority).
+    pub fn connect_with_options(
+        &mut self,
+        source_id: NodeId,
+        relationship: &'static str,
+        dest_id: NodeId,
+        config: BackPressureConfig,
+        expiration: Option<Duration>,
+        priority: QueuePriority,
+    ) -> ConnId {
         let id = self.next_conn_id;
         self.next_conn_id += 1;
         self.connections.push(ConnBuilder {
@@ -179,6 +201,8 @@ impl FlowEngine {
             relationship,
             dest_node: dest_id,
             config,
+            expiration,
+            priority,
         });
         id
     }
@@ -208,7 +232,12 @@ impl FlowEngine {
         let mut flow_connections: Vec<(usize, &'static str, usize, Arc<FlowConnection>)> =
             Vec::new();
         for (idx, conn) in self.connections.iter().enumerate() {
-            let fc = Arc::new(FlowConnection::new(format!("conn-{}", idx), conn.config));
+            let fc = Arc::new(FlowConnection::with_options(
+                format!("conn-{}", idx),
+                conn.config,
+                conn.expiration,
+                conn.priority.clone(),
+            ));
             flow_connections.push((conn.source_node, conn.relationship, conn.dest_node, fc));
         }
 
@@ -535,6 +564,53 @@ impl FlowEngine {
             self.task_handles.push(ckpt_handle);
         }
 
+        // Spawn the FlowFile expiration background task.
+        // Checks all connections with configured expiration and drops expired FlowFiles.
+        {
+            let expire_token = self.cancel_token.child_token();
+            let expire_conns: Vec<Arc<FlowConnection>> = flow_connections
+                .iter()
+                .filter(|(_, _, _, fc)| fc.expiration().is_some())
+                .map(|(_, _, _, fc)| fc.clone())
+                .collect();
+
+            if !expire_conns.is_empty() {
+                let num_expire_conns = expire_conns.len();
+                let expire_handle = tokio::spawn(async move {
+                    // Check every 5 seconds.
+                    let mut interval = tokio::time::interval(Duration::from_secs(5));
+                    // Skip the first immediate tick.
+                    interval.tick().await;
+                    loop {
+                        tokio::select! {
+                            _ = expire_token.cancelled() => break,
+                            _ = interval.tick() => {
+                                let now_nanos = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_nanos() as u64;
+                                for conn in &expire_conns {
+                                    let expired = conn.expire_flowfiles(now_nanos);
+                                    if !expired.is_empty() {
+                                        tracing::info!(
+                                            connection_id = %conn.id,
+                                            expired_count = expired.len(),
+                                            "Expired FlowFiles removed from queue"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+                self.task_handles.push(expire_handle);
+                tracing::info!(
+                    connections_with_expiration = num_expire_conns,
+                    "FlowFile expiration task started"
+                );
+            }
+        }
+
         // Spawn the mutation handler task.
         {
             let mutation_cancel = self.cancel_token.child_token();
@@ -650,6 +726,9 @@ pub(crate) fn scheduling_display(strategy: &SchedulingStrategy) -> String {
             format!("timer-driven ({}ms)", interval_ms)
         }
         SchedulingStrategy::EventDriven => "event-driven".to_string(),
+        SchedulingStrategy::CronDriven { expression } => {
+            format!("cron-driven ({})", expression)
+        }
     }
 }
 
@@ -705,11 +784,12 @@ async fn run_mutation_handler(
                 match cmd {
                     MutationCommand::AddProcessor {
                         name, type_name, properties,
-                        scheduling_strategy, interval_ms, reply,
+                        scheduling_strategy, interval_ms, cron_expression, reply,
                     } => {
                         let result = handler.handle_add_processor(
                             &name, &type_name, properties,
                             &scheduling_strategy, interval_ms,
+                            cron_expression.as_deref(),
                         );
                         let _ = reply.send(result);
                     }

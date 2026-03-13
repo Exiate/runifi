@@ -41,6 +41,12 @@ pub trait ConnectionQuery: Send + Sync {
     fn remove_flowfile(&self, flowfile_id: u64) -> bool;
     /// Clear all FlowFiles from the queue. Returns the number removed.
     fn clear_queue(&self) -> usize;
+
+    /// Access the underlying FlowConnection (for persistence of expiration/priority).
+    /// Returns `None` if the implementation does not use a FlowConnection.
+    fn flow_connection(&self) -> Option<&FlowConnection> {
+        None
+    }
 }
 
 /// Standard implementation of `ConnectionQuery` that wraps a `FlowConnection`
@@ -123,5 +129,9 @@ impl ConnectionQuery for FlowConnectionQuery {
 
     fn clear_queue(&self) -> usize {
         self.connection.clear_queue()
+    }
+
+    fn flow_connection(&self) -> Option<&FlowConnection> {
+        Some(&self.connection)
     }
 }
