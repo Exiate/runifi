@@ -2,7 +2,7 @@ import { memo, useState, useEffect, useCallback, type FormEvent } from 'react';
 import type { ProcessorConfigResponse, PropertyDescriptorFull } from '../types/api';
 import type { ToastKind } from '../hooks/useToast';
 
-type ActiveTab = 'properties' | 'scheduling' | 'relationships';
+type ActiveTab = 'settings' | 'scheduling' | 'properties' | 'comments';
 
 interface ProcessorConfigModalProps {
   processorName: string;
@@ -29,7 +29,8 @@ function ProcessorConfigModalInner({
   onToast,
   onClose,
 }: ProcessorConfigModalProps) {
-  const [activeTab, setActiveTab] = useState<ActiveTab>('properties');
+  const [activeTab, setActiveTab] = useState<ActiveTab>('settings');
+  const [comments, setComments] = useState('');
   const [config, setConfig] = useState<ProcessorConfigResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [formValues, setFormValues] = useState<Record<string, string>>({});
@@ -172,7 +173,7 @@ function ProcessorConfigModalInner({
         {config && (
           <form onSubmit={handleSave} noValidate>
             <div className="config-tabs" role="tablist">
-              {(['properties', 'scheduling', 'relationships'] as ActiveTab[]).map((tab) => (
+              {(['settings', 'scheduling', 'properties', 'comments'] as ActiveTab[]).map((tab) => (
                 <button
                   key={tab}
                   type="button"
@@ -185,6 +186,111 @@ function ProcessorConfigModalInner({
                 </button>
               ))}
             </div>
+
+            {/* Settings tab */}
+            {activeTab === 'settings' && (
+              <div className="config-tab-content" role="tabpanel">
+                <div className="config-settings-section">
+                  <h4 className="config-section-heading">Processor Details</h4>
+                  <div className="config-field">
+                    <label className="config-label">Name</label>
+                    <input
+                      className="form-input"
+                      type="text"
+                      value={processorName}
+                      disabled
+                      readOnly
+                    />
+                  </div>
+                  <div className="config-field">
+                    <label className="config-label">Type</label>
+                    <input
+                      className="form-input"
+                      type="text"
+                      value={config.type_name}
+                      disabled
+                      readOnly
+                    />
+                  </div>
+                </div>
+
+                <div className="config-settings-section">
+                  <h4 className="config-section-heading">Relationships</h4>
+                  {config.relationships.length === 0 ? (
+                    <p className="config-empty">This processor has no relationships.</p>
+                  ) : (
+                    <table className="rel-table">
+                      <thead>
+                        <tr>
+                          <th>Name</th>
+                          <th>Description</th>
+                          <th>Auto-Terminated</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {config.relationships.map((rel) => (
+                          <tr key={rel.name}>
+                            <td>
+                              <strong>{rel.name}</strong>
+                            </td>
+                            <td>{rel.description}</td>
+                            <td>
+                              <span
+                                className={`rel-auto-term ${rel.auto_terminated ? 'yes' : 'no'}`}
+                              >
+                                {rel.auto_terminated ? 'Yes' : 'No'}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Scheduling tab */}
+            {activeTab === 'scheduling' && (
+              <div className="config-tab-content" role="tabpanel">
+                <div className="config-field">
+                  <label className="config-label">Scheduling Strategy</label>
+                  <span className="config-description">How the processor is triggered</span>
+                  <input
+                    className="form-input"
+                    type="text"
+                    value={config.scheduling.strategy}
+                    disabled
+                    readOnly
+                  />
+                </div>
+                {config.scheduling.interval_ms !== null &&
+                  config.scheduling.interval_ms !== undefined && (
+                    <div className="config-field">
+                      <label className="config-label">Run Schedule</label>
+                      <span className="config-description">Trigger interval in milliseconds</span>
+                      <input
+                        className="form-input"
+                        type="text"
+                        value={`${config.scheduling.interval_ms} ms`}
+                        disabled
+                        readOnly
+                      />
+                    </div>
+                  )}
+                <div className="config-field">
+                  <label className="config-label">Concurrent Tasks</label>
+                  <span className="config-description">Number of concurrent tasks for this processor</span>
+                  <input
+                    className="form-input"
+                    type="text"
+                    value="1"
+                    disabled
+                    readOnly
+                  />
+                </div>
+              </div>
+            )}
 
             {/* Properties tab */}
             {activeTab === 'properties' && (
@@ -242,70 +348,26 @@ function ProcessorConfigModalInner({
               </div>
             )}
 
-            {/* Scheduling tab */}
-            {activeTab === 'scheduling' && (
+            {/* Comments tab */}
+            {activeTab === 'comments' && (
               <div className="config-tab-content" role="tabpanel">
                 <div className="config-field">
-                  <label className="config-label">Strategy</label>
-                  <span className="config-description">How the processor is triggered</span>
-                  <input
-                    className="form-input"
-                    type="text"
-                    value={config.scheduling.strategy}
-                    disabled
-                    readOnly
+                  <label className="config-label" htmlFor="proc-comments">
+                    Processor Comments
+                  </label>
+                  <span className="config-description">
+                    Add notes or documentation for this processor. Comments are stored locally.
+                  </span>
+                  <textarea
+                    id="proc-comments"
+                    className="form-textarea"
+                    rows={6}
+                    value={comments}
+                    onChange={(e) => setComments(e.target.value)}
+                    placeholder="Enter comments about this processor..."
+                    spellCheck={true}
                   />
                 </div>
-                {config.scheduling.interval_ms !== null &&
-                  config.scheduling.interval_ms !== undefined && (
-                    <div className="config-field">
-                      <label className="config-label">Interval</label>
-                      <span className="config-description">Trigger interval in milliseconds</span>
-                      <input
-                        className="form-input"
-                        type="text"
-                        value={`${config.scheduling.interval_ms} ms`}
-                        disabled
-                        readOnly
-                      />
-                    </div>
-                  )}
-              </div>
-            )}
-
-            {/* Relationships tab */}
-            {activeTab === 'relationships' && (
-              <div className="config-tab-content" role="tabpanel">
-                {config.relationships.length === 0 ? (
-                  <p className="config-empty">This processor has no relationships.</p>
-                ) : (
-                  <table className="rel-table">
-                    <thead>
-                      <tr>
-                        <th>Name</th>
-                        <th>Description</th>
-                        <th>Auto-Terminated</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {config.relationships.map((rel) => (
-                        <tr key={rel.name}>
-                          <td>
-                            <strong>{rel.name}</strong>
-                          </td>
-                          <td>{rel.description}</td>
-                          <td>
-                            <span
-                              className={`rel-auto-term ${rel.auto_terminated ? 'yes' : 'no'}`}
-                            >
-                              {rel.auto_terminated ? 'Yes' : 'No'}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
               </div>
             )}
 
@@ -329,7 +391,7 @@ function ProcessorConfigModalInner({
                 disabled={!isStopped || saving || activeTab !== 'properties'}
                 title={!isStopped ? 'Stop the processor to save configuration' : undefined}
               >
-                {saving ? 'Saving...' : 'Save'}
+                {saving ? 'Applying...' : 'Apply'}
               </button>
             </div>
           </form>

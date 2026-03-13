@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, type CSSProperties } from 'react';
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
 import type { ProcessorNodeData } from '../types/flow';
 import { stateColor } from '../utils/format';
@@ -23,7 +23,6 @@ function stateLabel(state: string): string {
   return state.charAt(0).toUpperCase() + state.slice(1);
 }
 
-// Distribute multiple source handles evenly along the right edge
 function handleTopPercent(index: number, total: number): string {
   if (total <= 1) return '50%';
   const step = 100 / (total + 1);
@@ -31,9 +30,15 @@ function handleTopPercent(index: number, total: number): string {
 }
 
 function ProcessorNodeInner({ data }: NodeProps<ProcessorNodeType>) {
-  const { label, typeName, state, metrics, bulletin, relationships, pending } = data;
-  const borderColor = pending ? 'var(--warning)' : stateColor(state);
+  const { label, typeName, state, metrics, bulletin, relationships, pending, customColor } = data;
+  const borderColor: string = pending
+    ? 'var(--warning)'
+    : (customColor || stateColor(state));
   const rels = relationships && relationships.length > 0 ? relationships : ['success'];
+
+  const headerStyle: CSSProperties | undefined = customColor
+    ? { borderBottomColor: customColor as string, borderBottomWidth: '2px', borderBottomStyle: 'solid' }
+    : undefined;
 
   return (
     <div
@@ -42,7 +47,6 @@ function ProcessorNodeInner({ data }: NodeProps<ProcessorNodeType>) {
       role="article"
       aria-label={`Processor ${label}${pending ? ' (pending)' : ''}`}
     >
-      {/* Target handle — left side, centered */}
       <Handle
         type="target"
         position={Position.Left}
@@ -50,7 +54,7 @@ function ProcessorNodeInner({ data }: NodeProps<ProcessorNodeType>) {
         style={{ top: '50%' }}
       />
 
-      <div className="proc-node-header">
+      <div className="proc-node-header" style={headerStyle}>
         <div className="proc-node-identity">
           <span className="proc-node-name" title={label}>
             {label}
@@ -108,7 +112,6 @@ function ProcessorNodeInner({ data }: NodeProps<ProcessorNodeType>) {
         </div>
       )}
 
-      {/* Source handles — right side, one per relationship */}
       {rels.map((rel, idx) => (
         <Handle
           key={rel}

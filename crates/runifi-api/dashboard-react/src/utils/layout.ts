@@ -99,6 +99,7 @@ export function computeLayout(
       bulletin: null,
       relationships: ['success'], // overridden by caller once plugins are loaded
       pending: false,
+      customColor: '',
     },
   }));
 }

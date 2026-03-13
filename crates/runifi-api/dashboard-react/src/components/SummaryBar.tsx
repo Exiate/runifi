@@ -1,6 +1,6 @@
 import { memo, useMemo } from 'react';
 import type { SseMetricsEvent } from '../types/api';
-import { formatRate, formatBytes } from '../utils/format';
+import { formatBytes } from '../utils/format';
 
 interface SummaryBarProps {
   metrics: SseMetricsEvent | null;
@@ -19,39 +19,32 @@ function SummaryBarInner({ metrics, onOpenBulletins }: SummaryBarProps) {
     }
 
     const totalQueued = metrics.connections.reduce((s, c) => s + c.queued_count, 0);
+    const totalQueuedBytes = metrics.connections.reduce((s, c) => s + c.queued_bytes, 0);
     const backPressureCount = metrics.connections.filter((c) => c.back_pressured).length;
 
-    const totalFFOutRate = procs.reduce((s, p) => s + p.metrics.flowfiles_out_rate, 0);
+    const totalBytesInRate = procs.reduce((s, p) => s + p.metrics.bytes_in_rate, 0);
     const totalBytesOutRate = procs.reduce((s, p) => s + p.metrics.bytes_out_rate, 0);
 
     const warnCount = metrics.bulletins.filter((b) => b.severity === 'warn').length;
     const errorCount = metrics.bulletins.filter((b) => b.severity === 'error').length;
 
-    const hasUnhealthy = counts['circuit-open'] > 0;
-    const hasWarning = counts.stopped > 0 || counts.paused > 0 || backPressureCount > 0;
-    const procHealth = hasUnhealthy ? 'danger' : hasWarning ? 'warning' : 'healthy';
-    const bpHealth = backPressureCount > 0 ? 'danger' : 'healthy';
-    const bulletinHealth = errorCount > 0 ? 'danger' : warnCount > 0 ? 'warning' : 'healthy';
-
     return {
       counts,
       totalQueued,
+      totalQueuedBytes,
       backPressureCount,
-      totalFFOutRate,
+      totalBytesInRate,
       totalBytesOutRate,
       warnCount,
       errorCount,
-      procHealth,
-      bpHealth,
-      bulletinHealth,
     };
   }, [metrics]);
 
   if (!stats) {
     return (
-      <section className="summary-bar" aria-label="System summary">
-        <div className="summary-item">
-          <span className="summary-label">Loading...</span>
+      <section className="nifi-status-bar" aria-label="System status">
+        <div className="status-bar-group">
+          <span className="status-bar-item">Loading...</span>
         </div>
       </section>
     );
@@ -60,76 +53,54 @@ function SummaryBarInner({ metrics, onOpenBulletins }: SummaryBarProps) {
   const {
     counts,
     totalQueued,
+    totalQueuedBytes,
     backPressureCount,
-    totalFFOutRate,
+    totalBytesInRate,
     totalBytesOutRate,
     warnCount,
     errorCount,
-    procHealth,
-    bpHealth,
-    bulletinHealth,
   } = stats;
-  const procTotal = Object.values(counts).reduce((a, b) => a + b, 0);
 
   return (
-    <section className="summary-bar" aria-label="System summary">
-      <div className="summary-item">
-        <span className="summary-label">Processors</span>
-        <span className="summary-value">
-          {counts.running} / {procTotal} Running
+    <section className="nifi-status-bar" aria-label="System status">
+      <div className="status-bar-group">
+        <span className="status-bar-item" title="Active threads (running processors)">
+          {counts.running} active threads
         </span>
-        <span
-          className={`summary-indicator ${procHealth}`}
-          aria-label={`Processor health: ${procHealth}`}
-        />
-      </div>
-
-      <div className="summary-item">
-        <span className="summary-label">Queued FlowFiles</span>
-        <span className="summary-value">{totalQueued.toLocaleString()}</span>
-      </div>
-
-      <div className="summary-item">
-        <span className="summary-label">Throughput</span>
-        <span className="summary-value">
-          {formatRate(totalFFOutRate, 'FF')} &middot; {formatBytes(Math.round(totalBytesOutRate))}/s
+        <span className="status-bar-item" title={`${totalQueued} queued, ${formatBytes(totalQueuedBytes)}`}>
+          {totalQueued.toLocaleString()} / {formatBytes(totalQueuedBytes)} queued
         </span>
       </div>
 
-      <div className="summary-item">
-        <span className="summary-label">States</span>
-        <div className="summary-state-pills">
-          {counts.running > 0 && (
-            <span className="state-pill running">{counts.running} running</span>
-          )}
-          {counts.paused > 0 && (
-            <span className="state-pill paused">{counts.paused} paused</span>
-          )}
-          {counts.stopped > 0 && (
-            <span className="state-pill stopped">{counts.stopped} stopped</span>
-          )}
-          {counts['circuit-open'] > 0 && (
-            <span className="state-pill circuit-open">{counts['circuit-open']} open</span>
-          )}
-        </div>
+      <div className="status-bar-group">
+        <span className="status-bar-item" title="Bytes transferred in last 5 minutes">
+          {formatBytes(Math.round(totalBytesInRate))}/s in
+        </span>
+        <span className="status-bar-item" title="Bytes transferred out last 5 minutes">
+          {formatBytes(Math.round(totalBytesOutRate))}/s out
+        </span>
       </div>
 
-      <div className="summary-item">
-        <span className="summary-label">Back-Pressure</span>
-        <span className="summary-value">{backPressureCount}</span>
-        <span
-          className={`summary-indicator ${bpHealth}`}
-          aria-label={`Back-pressure: ${bpHealth}`}
-        />
-      </div>
-
-      <div className="summary-item">
-        <span className="summary-label">Bulletins</span>
+      <div className="status-bar-group">
+        {counts.running > 0 && (
+          <span className="state-pill running">{counts.running} running</span>
+        )}
+        {counts.stopped > 0 && (
+          <span className="state-pill stopped">{counts.stopped} stopped</span>
+        )}
+        {counts.paused > 0 && (
+          <span className="state-pill paused">{counts.paused} paused</span>
+        )}
+        {counts['circuit-open'] > 0 && (
+          <span className="state-pill circuit-open">{counts['circuit-open']} open</span>
+        )}
+        {backPressureCount > 0 && (
+          <span className="state-pill stopped">{backPressureCount} back-pressured</span>
+        )}
         <button
-          className={`summary-bulletins-btn${onOpenBulletins ? ' clickable' : ''}`}
+          className={`status-bar-bulletins${onOpenBulletins ? ' clickable' : ''}`}
           onClick={onOpenBulletins}
           disabled={!onOpenBulletins}
-          aria-label={`Bulletins: ${warnCount} warnings, ${errorCount} errors`}
           title="Open bulletin board"
         >
           {errorCount > 0 && (
@@ -139,13 +110,9 @@ function SummaryBarInner({ metrics, onOpenBulletins }: SummaryBarProps) {
             <span className="bulletin-count warn">{warnCount} warn</span>
           )}
           {errorCount === 0 && warnCount === 0 && (
-            <span className="bulletin-count ok">Clear</span>
+            <span className="bulletin-count ok">0 bulletins</span>
           )}
         </button>
-        <span
-          className={`summary-indicator ${bulletinHealth}`}
-          aria-label={`Bulletin health: ${bulletinHealth}`}
-        />
       </div>
     </section>
   );

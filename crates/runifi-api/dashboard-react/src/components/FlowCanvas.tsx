@@ -30,6 +30,7 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { ContextMenu, type ContextMenuState } from './ContextMenu';
 import { ProcessorConfigModal } from './ProcessorConfigModal';
 import { QueueInspectorModal } from './QueueInspectorModal';
+import { ColorPickerDialog } from './ColorPickerDialog';
 import { computeLayout } from '../utils/layout';
 import { stateColor } from '../utils/format';
 import type { FlowResponse, SseMetricsEvent, PluginDescriptor } from '../types/api';
@@ -43,7 +44,6 @@ type ConnEdge = Edge<ConnectionEdgeData, 'connectionEdge'>;
 const nodeTypes = { processorNode: ProcessorNode } as const;
 const edgeTypes = { connectionEdge: ConnectionEdge } as const;
 
-// Debounce delay for position persistence (ms)
 const POSITION_DEBOUNCE_MS = 800;
 
 interface PendingDrop {
@@ -52,15 +52,21 @@ interface PendingDrop {
 }
 
 interface DeleteTarget {
-  kind: 'node' | 'edge';
+  kind: 'node' | 'edge' | 'multi';
   id: string;
   label: string;
   nodeState?: string;
+  nodeIds?: string[];
 }
 
 interface QueueInspectTarget {
   connectionId: string;
   label: string;
+}
+
+interface ColorPickerTarget {
+  nodeId: string;
+  currentColor: string;
 }
 
 export interface FlowCanvasProps {
@@ -127,7 +133,6 @@ function FlowCanvasInner({
 }: FlowCanvasProps) {
   const { screenToFlowPosition } = useReactFlow();
 
-  // Queue click handler — defined before buildEdges use
   const [queueInspectTarget, setQueueInspectTarget] = useState<QueueInspectTarget | null>(null);
   const handleQueueClick = useCallback((connectionId: string, label: string) => {
     setQueueInspectTarget({ connectionId, label });
@@ -143,6 +148,7 @@ function FlowCanvasInner({
             'success',
           ],
           pending: false,
+          customColor: '',
         },
       })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -157,7 +163,6 @@ function FlowCanvasInner({
   const [nodes, setNodes, onNodesChange] = useNodesState<ProcNode>(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState<ConnEdge>(initialEdges);
 
-  // Modal state
   const [pendingDrop, setPendingDrop] = useState<PendingDrop | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -168,8 +173,8 @@ function FlowCanvasInner({
     existingRels: string[];
   } | null>(null);
   const [configTarget, setConfigTarget] = useState<{ name: string; state: string } | null>(null);
+  const [colorPickerTarget, setColorPickerTarget] = useState<ColorPickerTarget | null>(null);
 
-  // Guard to prevent re-layout on first metrics update
   const topologyKey = useRef(topology.name);
 
   useEffect(() => {
@@ -183,13 +188,13 @@ function FlowCanvasInner({
           'success',
         ],
         pending: false,
+        customColor: '',
       },
     }));
     setNodes(newNodes);
     setEdges(buildEdges(topology, liveMetrics, handleQueueClick));
   }, [topology, liveMetrics, setNodes, setEdges, plugins, handleQueueClick]);
 
-  // Update node data from live metrics without touching positions
   useEffect(() => {
     if (!liveMetrics) return;
 
@@ -260,7 +265,6 @@ function FlowCanvasInner({
     );
   }, [liveMetrics, setNodes, setEdges, handleQueueClick]);
 
-  // ── Position persistence (debounced) ──────────────────────────────────────
   const positionTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   const persistPosition = useCallback((nodeId: string, x: number, y: number) => {
@@ -273,9 +277,7 @@ function FlowCanvasInner({
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ x, y }),
-      }).catch(() => {
-        // Position save is best-effort — do not surface to user
-      });
+      }).catch(() => {});
     }, POSITION_DEBOUNCE_MS);
 
     positionTimers.current.set(nodeId, timer);
@@ -300,7 +302,6 @@ function FlowCanvasInner({
     };
   }, []);
 
-  // ── Drag-and-drop from palette ────────────────────────────────────────────
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
@@ -321,7 +322,6 @@ function FlowCanvasInner({
     [plugins, screenToFlowPosition],
   );
 
-  // ── Add processor on modal confirm ───────────────────────────────────────
   const handleAddProcessor = useCallback(
     (name: string) => {
       if (!pendingDrop) return;
@@ -340,6 +340,7 @@ function FlowCanvasInner({
           bulletin: null,
           relationships: plugin.relationships,
           pending: true,
+          customColor: '',
         },
       };
 
@@ -375,7 +376,6 @@ function FlowCanvasInner({
     [pendingDrop, setNodes, onToast],
   );
 
-  // ── Connection creation ───────────────────────────────────────────────────
   const handleConnect: OnConnect = useCallback(
     (connection: Connection) => {
       const { source, target } = connection;
@@ -448,7 +448,7 @@ function FlowCanvasInner({
                 : e,
             ),
           );
-          onToast('success', `Connection ${sourceId} → ${targetId} (${relationship}) created.`);
+          onToast('success', `Connection ${sourceId} \u2192 ${targetId} (${relationship}) created.`);
         })
         .catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
@@ -461,7 +461,6 @@ function FlowCanvasInner({
     [pendingConnectionContext, setEdges, onToast, handleQueueClick],
   );
 
-  // ── Deletion ──────────────────────────────────────────────────────────────
   const initiateDelete = useCallback(
     (kind: 'node' | 'edge', id: string) => {
       if (kind === 'node') {
@@ -479,7 +478,7 @@ function FlowCanvasInner({
         setDeleteTarget({
           kind: 'edge',
           id,
-          label: `${edge.source} → ${edge.target} (${edge.data?.relationship ?? ''})`,
+          label: `${edge.source} \u2192 ${edge.target} (${edge.data?.relationship ?? ''})`,
         });
       }
     },
@@ -489,6 +488,27 @@ function FlowCanvasInner({
   const handleDeleteConfirm = useCallback(() => {
     if (!deleteTarget) return;
     setDeleteTarget(null);
+
+    if (deleteTarget.kind === 'multi') {
+      const nodeIds = deleteTarget.nodeIds ?? [];
+      const runningIds = nodes
+        .filter((n) => nodeIds.includes(n.id) && n.data.state === 'running')
+        .map((n) => n.id);
+
+      if (runningIds.length > 0) {
+        onToast('error', `Cannot delete running processors: ${runningIds.join(', ')}. Stop them first.`);
+        return;
+      }
+
+      setNodes((prev) => prev.filter((n) => !nodeIds.includes(n.id)));
+      setEdges((prev) => prev.filter((e) => !nodeIds.includes(e.source) && !nodeIds.includes(e.target)));
+
+      for (const id of nodeIds) {
+        fetch(`/api/v1/processors/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
+      }
+      onToast('success', `Deleted ${nodeIds.length} processors.`);
+      return;
+    }
 
     if (deleteTarget.kind === 'node') {
       const { id, nodeState } = deleteTarget;
@@ -533,7 +553,6 @@ function FlowCanvasInner({
     }
   }, [deleteTarget, nodes, edges, setNodes, setEdges, onToast]);
 
-  // ── Processor controls ────────────────────────────────────────────────────
   const controlProcessor = useCallback(
     (name: string, action: 'start' | 'stop' | 'pause' | 'resume' | 'reset-circuit') => {
       fetch(`/api/v1/processors/${encodeURIComponent(name)}/${action}`, { method: 'POST' })
@@ -556,7 +575,47 @@ function FlowCanvasInner({
     [onToast],
   );
 
-  // ── Keyboard shortcuts ────────────────────────────────────────────────────
+  // Multi-select operations
+  const getSelectedNodeIds = useCallback((): string[] => {
+    return nodes.filter((n) => n.selected).map((n) => n.id);
+  }, [nodes]);
+
+  const handleStartSelected = useCallback(() => {
+    const selectedIds = getSelectedNodeIds();
+    for (const id of selectedIds) {
+      const node = nodes.find((n) => n.id === id);
+      if (node && node.data.state === 'stopped') {
+        controlProcessor(id, 'start');
+      }
+    }
+  }, [getSelectedNodeIds, nodes, controlProcessor]);
+
+  const handleStopSelected = useCallback(() => {
+    const selectedIds = getSelectedNodeIds();
+    for (const id of selectedIds) {
+      const node = nodes.find((n) => n.id === id);
+      if (node && node.data.state === 'running') {
+        controlProcessor(id, 'stop');
+      }
+    }
+  }, [getSelectedNodeIds, nodes, controlProcessor]);
+
+  const handleDeleteSelected = useCallback(() => {
+    const selectedIds = getSelectedNodeIds();
+    if (selectedIds.length === 0) return;
+    setDeleteTarget({
+      kind: 'multi',
+      id: 'multi',
+      label: `${selectedIds.length} processors`,
+      nodeIds: selectedIds,
+    });
+  }, [getSelectedNodeIds]);
+
+  const handleSelectAll = useCallback(() => {
+    setNodes((prev) => prev.map((n) => ({ ...n, selected: true })));
+    setContextMenu(null);
+  }, [setNodes]);
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -565,6 +624,12 @@ function FlowCanvasInner({
           document.activeElement?.tagName === 'TEXTAREA'
         )
           return;
+
+        const selectedIds = nodes.filter((n) => n.selected).map((n) => n.id);
+        if (selectedIds.length > 1) {
+          handleDeleteSelected();
+          return;
+        }
 
         const selectedNode = nodes.find((n) => n.selected);
         const selectedEdge = edges.find((edge) => edge.selected);
@@ -580,24 +645,35 @@ function FlowCanvasInner({
         setPendingDrop(null);
         setPendingConnectionContext(null);
         setDeleteTarget(null);
+        setColorPickerTarget(null);
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+        if (
+          document.activeElement?.tagName === 'INPUT' ||
+          document.activeElement?.tagName === 'TEXTAREA'
+        )
+          return;
+        e.preventDefault();
+        handleSelectAll();
       }
     },
-    [nodes, edges, initiateDelete],
+    [nodes, edges, initiateDelete, handleDeleteSelected, handleSelectAll],
   );
 
-  // ── Context menu ──────────────────────────────────────────────────────────
   const handleNodeContextMenu: NodeMouseHandler<ProcNode> = useCallback(
     (event, node) => {
       event.preventDefault();
+      const selectedIds = nodes.filter((n) => n.selected).map((n) => n.id);
       setContextMenu({
         x: event.clientX,
         y: event.clientY,
         nodeId: node.id,
         edgeId: null,
         nodeState: node.data.state,
+        selectedNodeIds: selectedIds.length > 1 ? selectedIds : undefined,
       });
     },
-    [],
+    [nodes],
   );
 
   const handleEdgeContextMenu: EdgeMouseHandler<ConnEdge> = useCallback(
@@ -608,6 +684,20 @@ function FlowCanvasInner({
         y: event.clientY,
         nodeId: null,
         edgeId: edge.id,
+      });
+    },
+    [],
+  );
+
+  const handleCanvasContextMenu = useCallback(
+    (event: MouseEvent | React.MouseEvent) => {
+      event.preventDefault();
+      setContextMenu({
+        x: event.clientX,
+        y: event.clientY,
+        nodeId: null,
+        edgeId: null,
+        isCanvas: true,
       });
     },
     [],
@@ -631,7 +721,56 @@ function FlowCanvasInner({
     }
   }, [contextMenu, nodes]);
 
-  // ── Double-click to configure ─────────────────────────────────────────────
+  const handleContextViewStatus = useCallback(() => {
+    if (!contextMenu?.nodeId) return;
+    const nodeId = contextMenu.nodeId;
+    const node = nodes.find((n) => n.id === nodeId);
+    setContextMenu(null);
+    if (node) {
+      setConfigTarget({ name: node.id, state: node.data.state });
+    }
+  }, [contextMenu, nodes]);
+
+  const handleContextChangeColor = useCallback(() => {
+    if (!contextMenu?.nodeId) return;
+    const nodeId = contextMenu.nodeId;
+    const node = nodes.find((n) => n.id === nodeId);
+    setContextMenu(null);
+    if (node) {
+      setColorPickerTarget({
+        nodeId: node.id,
+        currentColor: node.data.customColor ?? '',
+      });
+    }
+  }, [contextMenu, nodes]);
+
+  const handleContextViewQueue = useCallback(() => {
+    if (!contextMenu?.edgeId) return;
+    const edgeId = contextMenu.edgeId;
+    const edge = edges.find((e) => e.id === edgeId);
+    setContextMenu(null);
+    if (edge && edge.data?.connectionId) {
+      const label = `${edge.source} \u2192 ${edge.data.relationship} \u2192 ${edge.target}`;
+      setQueueInspectTarget({ connectionId: edge.data.connectionId, label });
+    }
+  }, [contextMenu, edges]);
+
+  const handleColorSelect = useCallback(
+    (color: string) => {
+      if (!colorPickerTarget) return;
+      const { nodeId } = colorPickerTarget;
+      setColorPickerTarget(null);
+      setNodes((prev) =>
+        prev.map((n) =>
+          n.id === nodeId
+            ? { ...n, data: { ...n.data, customColor: color } }
+            : n,
+        ),
+      );
+    },
+    [colorPickerTarget, setNodes],
+  );
+
   const handleNodeDoubleClick: NodeMouseHandler<ProcNode> = useCallback(
     (_event, node) => {
       setConfigTarget({ name: node.id, state: node.data.state });
@@ -639,9 +778,9 @@ function FlowCanvasInner({
     [],
   );
 
-  // ── MiniMap color ─────────────────────────────────────────────────────────
-  const nodeColor = useCallback((node: ProcNode) => {
+  const nodeColor = useCallback((node: ProcNode): string => {
     if (node.data?.pending) return 'var(--warning)';
+    if (node.data?.customColor) return String(node.data.customColor);
     return stateColor(node.data?.state ?? 'stopped');
   }, []);
 
@@ -664,11 +803,13 @@ function FlowCanvasInner({
         onConnect={handleConnect}
         onNodeContextMenu={handleNodeContextMenu}
         onEdgeContextMenu={handleEdgeContextMenu}
+        onPaneContextMenu={handleCanvasContextMenu}
         onNodeDoubleClick={handleNodeDoubleClick}
         onPaneClick={() => setContextMenu(null)}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         connectOnClick={false}
+        selectionOnDrag
         fitView
         fitViewOptions={{ padding: 0.15 }}
         minZoom={0.3}
@@ -676,6 +817,7 @@ function FlowCanvasInner({
         attributionPosition="bottom-right"
         colorMode="dark"
         deleteKeyCode={null}
+        multiSelectionKeyCode="Shift"
       >
         <Background
           variant={BackgroundVariant.Dots}
@@ -725,11 +867,19 @@ function FlowCanvasInner({
 
       {deleteTarget && (
         <ConfirmDialog
-          title={deleteTarget.kind === 'node' ? 'Delete Processor' : 'Delete Connection'}
+          title={
+            deleteTarget.kind === 'multi'
+              ? 'Delete Selected Processors'
+              : deleteTarget.kind === 'node'
+                ? 'Delete Processor'
+                : 'Delete Connection'
+          }
           message={
-            deleteTarget.kind === 'node'
-              ? `Delete processor "${deleteTarget.label}"? This will also remove all its connections.`
-              : `Delete connection ${deleteTarget.label}?`
+            deleteTarget.kind === 'multi'
+              ? `Delete ${deleteTarget.nodeIds?.length ?? 0} selected processors? This will also remove all their connections.`
+              : deleteTarget.kind === 'node'
+                ? `Delete processor "${deleteTarget.label}"? This will also remove all its connections.`
+                : `Delete connection ${deleteTarget.label}?`
           }
           confirmLabel="Delete"
           destructive
@@ -743,6 +893,7 @@ function FlowCanvasInner({
           menu={contextMenu}
           onDelete={handleContextDelete}
           onConfigure={contextMenu.nodeId ? handleContextConfigure : undefined}
+          onViewStatus={contextMenu.nodeId ? handleContextViewStatus : undefined}
           onStart={
             contextMenu.nodeId
               ? () => controlProcessor(contextMenu.nodeId!, 'start')
@@ -768,6 +919,12 @@ function FlowCanvasInner({
               ? () => controlProcessor(contextMenu.nodeId!, 'reset-circuit')
               : undefined
           }
+          onChangeColor={contextMenu.nodeId ? handleContextChangeColor : undefined}
+          onViewQueue={contextMenu.edgeId ? handleContextViewQueue : undefined}
+          onSelectAll={contextMenu.isCanvas ? handleSelectAll : undefined}
+          onStartSelected={handleStartSelected}
+          onStopSelected={handleStopSelected}
+          onDeleteSelected={handleDeleteSelected}
           onClose={() => setContextMenu(null)}
         />
       )}
@@ -787,6 +944,15 @@ function FlowCanvasInner({
           connectionLabel={queueInspectTarget.label}
           onToast={onToast}
           onClose={() => setQueueInspectTarget(null)}
+        />
+      )}
+
+      {colorPickerTarget && (
+        <ColorPickerDialog
+          processorName={colorPickerTarget.nodeId}
+          currentColor={colorPickerTarget.currentColor}
+          onSelect={handleColorSelect}
+          onClose={() => setColorPickerTarget(null)}
         />
       )}
     </div>
