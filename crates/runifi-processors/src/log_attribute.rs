@@ -16,6 +16,19 @@ const PROP_LOG_PAYLOAD: PropertyDescriptor = PropertyDescriptor::new(
 )
 .default_value("false");
 
+const PROP_SENSITIVE_ATTRS: PropertyDescriptor = PropertyDescriptor::new(
+    "Sensitive Attribute Names",
+    "Comma-separated list of attribute names whose values should be masked in log output. \
+     Attributes matching these names will be displayed as '********'.",
+)
+.sensitive();
+
+/// Default attribute name patterns that are always treated as sensitive,
+/// regardless of the configured list. Defense-in-depth against accidental
+/// secret leakage.
+const BUILTIN_SENSITIVE_PATTERNS: &[&str] =
+    &["password", "secret", "token", "credential", "api.key"];
+
 /// Logs FlowFile attributes (and optionally content) for debugging.
 pub struct LogAttribute;
 
@@ -39,10 +52,22 @@ impl Processor for LogAttribute {
     ) -> ProcessResult {
         let log_payload = context.get_property("Log Payload").unwrap_or("false") == "true";
 
+        // Build the set of attribute names to mask.
+        let configured_sensitive: Vec<String> = context
+            .get_property("Sensitive Attribute Names")
+            .as_str()
+            .map(|s| s.split(',').map(|p| p.trim().to_lowercase()).collect())
+            .unwrap_or_default();
+
         while let Some(flowfile) = session.get() {
             let mut attrs = String::new();
             for (key, value) in &flowfile.attributes {
-                attrs.push_str(&format!("  {}: {}\n", key, value));
+                let display_value = if is_sensitive_attribute(key, &configured_sensitive) {
+                    "********"
+                } else {
+                    value.as_ref()
+                };
+                attrs.push_str(&format!("  {}: {}\n", key, display_value));
             }
 
             let content_info = if log_payload {
@@ -84,8 +109,33 @@ impl Processor for LogAttribute {
     }
 
     fn property_descriptors(&self) -> Vec<PropertyDescriptor> {
-        vec![PROP_LOG_LEVEL, PROP_LOG_PAYLOAD]
+        vec![PROP_LOG_LEVEL, PROP_LOG_PAYLOAD, PROP_SENSITIVE_ATTRS]
     }
+}
+
+/// Check whether an attribute name should be masked.
+///
+/// An attribute is considered sensitive if:
+/// 1. Its lowercase name matches one of the built-in patterns, OR
+/// 2. Its lowercase name matches one of the user-configured names.
+fn is_sensitive_attribute(name: &str, configured: &[String]) -> bool {
+    let lower = name.to_lowercase();
+
+    // Check built-in patterns.
+    for pattern in BUILTIN_SENSITIVE_PATTERNS {
+        if lower.contains(pattern) {
+            return true;
+        }
+    }
+
+    // Check user-configured names.
+    for configured_name in configured {
+        if !configured_name.is_empty() && lower.contains(configured_name.as_str()) {
+            return true;
+        }
+    }
+
+    false
 }
 
 inventory::submit! {
@@ -180,5 +230,35 @@ mod tests {
 
         assert_eq!(session.transferred.len(), 1);
         assert_eq!(session.transferred[0].1, "success");
+    }
+
+    #[test]
+    fn sensitive_builtin_patterns_detected() {
+        // Built-in patterns should be detected.
+        assert!(is_sensitive_attribute("db.password", &[]));
+        assert!(is_sensitive_attribute("API_SECRET", &[]));
+        assert!(is_sensitive_attribute("auth_token", &[]));
+        assert!(is_sensitive_attribute("my-credential-store", &[]));
+        assert!(is_sensitive_attribute("api.key.value", &[]));
+
+        // Normal attributes should not be masked.
+        assert!(!is_sensitive_attribute("filename", &[]));
+        assert!(!is_sensitive_attribute("path", &[]));
+        assert!(!is_sensitive_attribute("mime.type", &[]));
+    }
+
+    #[test]
+    fn sensitive_configured_patterns_detected() {
+        let configured = vec!["ssn".to_string(), "credit_card".to_string()];
+        assert!(is_sensitive_attribute("user.ssn", &configured));
+        assert!(is_sensitive_attribute("credit_card_number", &configured));
+        assert!(!is_sensitive_attribute("filename", &configured));
+    }
+
+    #[test]
+    fn sensitive_empty_configured_ignored() {
+        let configured = vec!["".to_string()];
+        // Empty pattern should not match everything.
+        assert!(!is_sensitive_attribute("filename", &configured));
     }
 }

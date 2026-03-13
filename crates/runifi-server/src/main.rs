@@ -7,6 +7,10 @@ use runifi_core::audit::{
     AuditLogger, CompositeAuditLogger, FileAuditLogger, NullAuditLogger, TracingAuditLogger,
 };
 use runifi_core::config::flow_config::FlowConfig;
+use runifi_core::config::permissions::check_config_permissions;
+use runifi_core::config::property_encryption::{
+    decrypt_property_value, expand_env_vars, is_encrypted_value,
+};
 use runifi_core::connection::back_pressure::BackPressureConfig;
 use runifi_core::engine::flow_engine::FlowEngine;
 use runifi_core::engine::handle::{PluginKind, PluginTypeInfo};
@@ -44,6 +48,12 @@ async fn main() -> Result<()> {
         .nth(1)
         .unwrap_or_else(|| "config/flow.toml".to_string());
 
+    // Check config file permissions (Unix only).
+    if let Err(e) = check_config_permissions(&config_path) {
+        tracing::error!(error = %e, "Config file permission check failed");
+        return Err(anyhow::anyhow!("{}", e));
+    }
+
     let config_str = match std::fs::read_to_string(&config_path) {
         Ok(s) => s,
         Err(e) => {
@@ -53,8 +63,20 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Expand environment variable references in the config before parsing.
+    let config_str = expand_env_vars(&config_str);
+
     let config: FlowConfig =
         toml::from_str(&config_str).context("Failed to parse flow configuration")?;
+
+    // Resolve the encryption key from config (needed for ENC() decryption).
+    let encryption_key: Option<Vec<u8>> = config
+        .api
+        .encryption
+        .as_ref()
+        .filter(|enc| enc.enabled)
+        .map(|enc| hex::decode(&enc.key).context("Invalid hex encryption key in config"))
+        .transpose()?;
 
     tracing::info!(flow = %config.flow.name, "Loaded flow configuration");
 
@@ -137,12 +159,37 @@ async fn main() -> Result<()> {
             },
         };
 
+        // Decrypt any ENC() property values.
+        let mut properties = proc_config.properties.clone();
+        for (prop_name, prop_value) in properties.iter_mut() {
+            if is_encrypted_value(prop_value) {
+                let key = encryption_key.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Processor '{}' property '{}' uses ENC() but no encryption key is configured",
+                        proc_config.name,
+                        prop_name
+                    )
+                })?;
+                *prop_value = decrypt_property_value(prop_value, key).with_context(|| {
+                    format!(
+                        "Failed to decrypt property '{}' on processor '{}'",
+                        prop_name, proc_config.name
+                    )
+                })?;
+                tracing::debug!(
+                    processor = %proc_config.name,
+                    property = %prop_name,
+                    "Decrypted ENC() property value"
+                );
+            }
+        }
+
         let node_id = engine.add_processor(
             &proc_config.name,
             &proc_config.type_name,
             processor,
             scheduling,
-            proc_config.properties.clone(),
+            properties,
         );
         node_ids.insert(proc_config.name.clone(), node_id);
 

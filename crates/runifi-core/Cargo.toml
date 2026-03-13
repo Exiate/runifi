@@ -24,8 +24,10 @@ chrono = { workspace = true }
 aes-gcm = { workspace = true }
 zeroize = { workspace = true }
 hex = { workspace = true }
+base64 = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 runifi-processors = { path = "../runifi-processors" }
 inventory = { workspace = true }
+tempfile = "3"
