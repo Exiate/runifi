@@ -24,9 +24,11 @@ pub mod flatten_json;
 pub mod validate_json;
 
 #[cfg(feature = "extraction")]
+pub mod evaluate_jsonpath;
+#[cfg(feature = "extraction")]
 pub mod extract_text;
 #[cfg(feature = "extraction")]
-pub mod evaluate_jsonpath;
+pub mod parse_syslog;
 
 pub mod funnel;
 
