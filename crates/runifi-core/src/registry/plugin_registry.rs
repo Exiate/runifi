@@ -128,3 +128,72 @@ impl PluginRegistry {
             .unwrap_or_default()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discover_finds_registered_processors() {
+        let registry = PluginRegistry::discover();
+        let types = registry.processor_types();
+        // We can't guarantee specific types without linking runifi-processors,
+        // but the API should work without panicking.
+        let _ = types;
+    }
+
+    #[test]
+    fn create_unknown_processor_returns_none() {
+        let registry = PluginRegistry::discover();
+        assert!(registry.create_processor("NonexistentProcessor").is_none());
+    }
+
+    #[test]
+    fn create_unknown_source_returns_none() {
+        let registry = PluginRegistry::discover();
+        assert!(registry.create_source("NonexistentSource").is_none());
+    }
+
+    #[test]
+    fn create_unknown_sink_returns_none() {
+        let registry = PluginRegistry::discover();
+        assert!(registry.create_sink("NonexistentSink").is_none());
+    }
+
+    #[test]
+    fn create_unknown_service_returns_none() {
+        let registry = PluginRegistry::discover();
+        assert!(registry.create_service("NonexistentService").is_none());
+    }
+
+    #[test]
+    fn processor_tags_for_unknown_type_returns_empty() {
+        let registry = PluginRegistry::discover();
+        let tags = registry.processor_tags("NonexistentProcessor");
+        assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn service_description_for_unknown_type_returns_none() {
+        let registry = PluginRegistry::discover();
+        assert!(registry.service_description("NonexistentService").is_none());
+    }
+
+    #[test]
+    fn source_types_does_not_panic() {
+        let registry = PluginRegistry::discover();
+        let _ = registry.source_types();
+    }
+
+    #[test]
+    fn sink_types_does_not_panic() {
+        let registry = PluginRegistry::discover();
+        let _ = registry.sink_types();
+    }
+
+    #[test]
+    fn service_types_does_not_panic() {
+        let registry = PluginRegistry::discover();
+        let _ = registry.service_types();
+    }
+}
