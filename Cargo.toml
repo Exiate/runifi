@@ -58,6 +58,7 @@ parking_lot = "0.12"         # Fast synchronization primitives
 smallvec = "2"               # Small-buffer-optimized Vec
 regex-lite = "0.1"           # Lightweight regex for expression language
 jsonpath_lib = "0.3"         # JSONPath query engine for JSON processors
+jsonpath-rust = "1.0"        # JSONPath expression evaluation
 aes-gcm = "0.10"             # AES-256-GCM authenticated encryption
 zeroize = { version = "1", features = ["derive"] }  # Secure memory zeroing
 hex = "0.4"                  # Hex encoding/decoding for keys

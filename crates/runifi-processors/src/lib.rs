@@ -25,6 +25,8 @@ pub mod validate_json;
 
 #[cfg(feature = "extraction")]
 pub mod extract_text;
+#[cfg(feature = "extraction")]
+pub mod evaluate_jsonpath;
 
 pub mod funnel;
 

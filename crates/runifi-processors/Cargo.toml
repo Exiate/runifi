@@ -13,7 +13,7 @@ routing = []
 debug = []
 transformation = ["serde_json", "jsonpath_lib"]
 json = ["serde_json", "dep:jsonschema"]
-extraction = []
+extraction = ["dep:jsonpath-rust", "serde_json"]
 
 [dependencies]
 runifi-plugin-api = { workspace = true }
@@ -26,3 +26,4 @@ parking_lot = { workspace = true }
 serde_json = { workspace = true, optional = true }
 jsonpath_lib = { workspace = true, optional = true }
 jsonschema = { workspace = true, optional = true }
+jsonpath-rust = { workspace = true, optional = true }
