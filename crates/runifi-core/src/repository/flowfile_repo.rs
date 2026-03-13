@@ -1,35 +1,61 @@
+use std::collections::HashMap;
+
 use runifi_plugin_api::FlowFile;
 
 use crate::error::Result;
 
+/// An operation in a WAL batch.
+pub enum FlowFileOp<'a> {
+    /// Persist a FlowFile with its queue assignment.
+    Upsert {
+        flowfile: &'a FlowFile,
+        queue_id: &'a str,
+    },
+    /// Remove a FlowFile from persistence.
+    Delete { id: u64 },
+}
+
+/// State recovered from the WAL on startup.
+pub struct RecoveryState {
+    /// FlowFiles grouped by their connection queue ID.
+    pub queued: HashMap<String, Vec<FlowFile>>,
+    /// Highest FlowFile ID seen — used to re-seed the ID generator.
+    pub max_id: u64,
+}
+
 /// Trait for FlowFile persistence (WAL-based durability).
 ///
-/// In-memory implementation is provided for now; WAL-backed impl is a future phase.
+/// Implementations must be `Send + Sync` for use across async tasks.
 pub trait FlowFileRepository: Send + Sync {
-    /// Store a FlowFile for durability.
-    fn store(&self, flowfile: &FlowFile) -> Result<()>;
+    /// Atomically persist a batch of operations.
+    fn commit_batch(&self, ops: &[FlowFileOp<'_>]) -> Result<()>;
 
-    /// Remove a FlowFile from the repository.
-    fn remove(&self, id: u64) -> Result<()>;
+    /// Recover all persisted FlowFiles, grouped by queue ID.
+    fn recover(&self) -> Result<RecoveryState>;
 
-    /// Load all FlowFiles (used on recovery).
-    fn load_all(&self) -> Result<Vec<FlowFile>>;
+    /// Write a compacted checkpoint of current state and truncate the WAL.
+    fn checkpoint(&self) -> Result<()>;
+
+    /// Graceful shutdown hook (e.g. flush buffers).
+    fn shutdown(&self) {}
 }
 
 /// In-memory FlowFile repository (no persistence, for development/testing).
 pub struct InMemoryFlowFileRepository;
 
 impl FlowFileRepository for InMemoryFlowFileRepository {
-    fn store(&self, _flowfile: &FlowFile) -> Result<()> {
-        // No-op: in-memory only
+    fn commit_batch(&self, _ops: &[FlowFileOp<'_>]) -> Result<()> {
         Ok(())
     }
 
-    fn remove(&self, _id: u64) -> Result<()> {
-        Ok(())
+    fn recover(&self) -> Result<RecoveryState> {
+        Ok(RecoveryState {
+            queued: HashMap::new(),
+            max_id: 0,
+        })
     }
 
-    fn load_all(&self) -> Result<Vec<FlowFile>> {
-        Ok(Vec::new())
+    fn checkpoint(&self) -> Result<()> {
+        Ok(())
     }
 }

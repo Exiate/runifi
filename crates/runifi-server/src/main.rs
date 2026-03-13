@@ -12,6 +12,10 @@ use runifi_core::registry::plugin_registry::PluginRegistry;
 use runifi_core::repository::content_file::{FileContentRepoConfig, FileContentRepository};
 use runifi_core::repository::content_memory::InMemoryContentRepository;
 use runifi_core::repository::content_repo::ContentRepository;
+use runifi_core::repository::flowfile_repo::{FlowFileRepository, InMemoryFlowFileRepository};
+use runifi_core::repository::flowfile_wal::{
+    FsyncMode, WalFlowFileRepoConfig, WalFlowFileRepository,
+};
 
 // Ensure processor registrations are linked in.
 extern crate runifi_processors;
@@ -83,10 +87,41 @@ async fn main() -> Result<()> {
             }
         };
 
+    // Create FlowFile repository based on config.
+    let flowfile_repo: Arc<dyn FlowFileRepository> =
+        match config.engine.flowfile_repository.repo_type.as_str() {
+            "wal" => {
+                let wal_config = match &config.engine.flowfile_repository.wal {
+                    Some(wc) => {
+                        let fsync = match wc.fsync_mode.as_str() {
+                            "never" => FsyncMode::Never,
+                            _ => FsyncMode::Always,
+                        };
+                        WalFlowFileRepoConfig {
+                            dir: wc.dir.clone(),
+                            fsync_mode: fsync,
+                            checkpoint_interval_secs: wc.checkpoint_interval_secs,
+                        }
+                    }
+                    None => WalFlowFileRepoConfig::default(),
+                };
+                let repo = Arc::new(
+                    WalFlowFileRepository::new(wal_config)
+                        .context("Failed to create WAL FlowFile repository")?,
+                );
+                tracing::info!("Using WAL-based FlowFile repository");
+                repo
+            }
+            _ => {
+                tracing::info!("Using in-memory FlowFile repository (no crash recovery)");
+                Arc::new(InMemoryFlowFileRepository)
+            }
+        };
+
     // Build the flow engine.
     let content_repo_ref = content_repo.clone();
     let registry = Arc::new(registry);
-    let mut engine = FlowEngine::new(&config.flow.name, content_repo);
+    let mut engine = FlowEngine::new(&config.flow.name, content_repo, flowfile_repo);
     // Provide the registry so the engine can hot-add processors at runtime.
     engine.set_registry(registry.clone());
 

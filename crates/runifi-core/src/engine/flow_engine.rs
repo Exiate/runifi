@@ -27,6 +27,7 @@ use crate::error::{Result, RuniFiError};
 use crate::id::IdGenerator;
 use crate::registry::plugin_registry::PluginRegistry;
 use crate::repository::content_repo::ContentRepository;
+use crate::repository::flowfile_repo::FlowFileRepository;
 
 /// A unique identifier for a processor node in the engine.
 pub type NodeId = usize;
@@ -46,6 +47,7 @@ pub struct FlowEngine {
     cancel_token: CancellationToken,
     bulletin_board: Arc<BulletinBoard>,
     registry: Option<Arc<PluginRegistry>>,
+    flowfile_repo: Arc<dyn FlowFileRepository>,
 
     nodes: Vec<NodeBuilder>,
     connections: Vec<ConnBuilder>,
@@ -75,7 +77,11 @@ struct ConnBuilder {
 }
 
 impl FlowEngine {
-    pub fn new(flow_name: impl Into<String>, content_repo: Arc<dyn ContentRepository>) -> Self {
+    pub fn new(
+        flow_name: impl Into<String>,
+        content_repo: Arc<dyn ContentRepository>,
+        flowfile_repo: Arc<dyn FlowFileRepository>,
+    ) -> Self {
         Self {
             flow_name: flow_name.into(),
             content_repo,
@@ -83,6 +89,7 @@ impl FlowEngine {
             cancel_token: CancellationToken::new(),
             bulletin_board: Arc::new(BulletinBoard::default()),
             registry: None,
+            flowfile_repo,
             nodes: Vec::new(),
             connections: Vec::new(),
             next_node_id: 0,
@@ -146,12 +153,53 @@ impl FlowEngine {
             return Err(RuniFiError::EngineAlreadyRunning);
         }
 
+        // ── WAL recovery ────────────────────────────────────────────────
+        let recovery = self.flowfile_repo.recover().map_err(|e| {
+            RuniFiError::Config(format!("FlowFile repository recovery failed: {e}"))
+        })?;
+
+        if recovery.max_id > 0 {
+            self.id_gen.reset_to(recovery.max_id + 1);
+            tracing::info!(
+                max_id = recovery.max_id,
+                recovered_queues = recovery.queued.len(),
+                recovered_flowfiles = recovery.queued.values().map(|v| v.len()).sum::<usize>(),
+                "Recovered FlowFiles from WAL"
+            );
+        }
+
         // Build FlowConnections.
         let mut flow_connections: Vec<(usize, &'static str, usize, Arc<FlowConnection>)> =
             Vec::new();
         for (idx, conn) in self.connections.iter().enumerate() {
             let fc = Arc::new(FlowConnection::new(format!("conn-{}", idx), conn.config));
             flow_connections.push((conn.source_node, conn.relationship, conn.dest_node, fc));
+        }
+
+        // Restore recovered FlowFiles to their connection queues.
+        if !recovery.queued.is_empty() {
+            for (queue_id, flowfiles) in &recovery.queued {
+                let target_conn = flow_connections
+                    .iter()
+                    .find(|(_, _, _, fc)| fc.id == *queue_id);
+                if let Some((_, _, _, fc)) = target_conn {
+                    for ff in flowfiles {
+                        if fc.try_send(ff.clone()).is_err() {
+                            tracing::warn!(
+                                queue_id = %queue_id,
+                                flowfile_id = ff.id,
+                                "Failed to restore FlowFile — connection full"
+                            );
+                        }
+                    }
+                } else {
+                    tracing::warn!(
+                        queue_id = %queue_id,
+                        count = flowfiles.len(),
+                        "No matching connection for recovered FlowFiles — discarded"
+                    );
+                }
+            }
         }
 
         // First pass: collect static processor metadata (property descriptors and
@@ -258,6 +306,7 @@ impl FlowEngine {
                 child_token.clone(),
                 metrics,
                 self.bulletin_board.clone(),
+                self.flowfile_repo.clone(),
             );
 
             for (src, rel, dst, fc) in &flow_connections {
@@ -374,6 +423,32 @@ impl FlowEngine {
             self.task_handles.push(tick_handle);
         }
 
+        // Spawn the WAL checkpoint task.
+        {
+            let ckpt_token = self.cancel_token.child_token();
+            let ckpt_repo = self.flowfile_repo.clone();
+            let ckpt_handle = tokio::spawn(async move {
+                // Default to 120s if the repo doesn't expose an interval.
+                let interval_secs = 120u64;
+                let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
+                // Skip the first immediate tick.
+                interval.tick().await;
+                loop {
+                    tokio::select! {
+                        _ = ckpt_token.cancelled() => break,
+                        _ = interval.tick() => {
+                            if let Err(e) = ckpt_repo.checkpoint() {
+                                tracing::error!(error = %e, "WAL checkpoint failed");
+                            } else {
+                                tracing::debug!("WAL checkpoint completed");
+                            }
+                        }
+                    }
+                }
+            });
+            self.task_handles.push(ckpt_handle);
+        }
+
         // Spawn the mutation handler task.
         {
             let mutation_cancel = self.cancel_token.child_token();
@@ -386,6 +461,7 @@ impl FlowEngine {
             let shared_tokens: Arc<parking_lot::Mutex<HashMap<String, CancellationToken>>> =
                 Arc::new(parking_lot::Mutex::new(proc_tokens));
 
+            let flowfile_repo_mutation = self.flowfile_repo.clone();
             let mutation_handle = tokio::spawn(run_mutation_handler(
                 mutation_rx,
                 mutation_cancel,
@@ -397,6 +473,7 @@ impl FlowEngine {
                 registry,
                 parent_cancel,
                 shared_tokens,
+                flowfile_repo_mutation,
             ));
             self.task_handles.push(mutation_handle);
         }
@@ -423,6 +500,12 @@ impl FlowEngine {
         for handle in self.task_handles.drain(..) {
             let _ = handle.await;
         }
+
+        // Best-effort final checkpoint before shutdown.
+        if let Err(e) = self.flowfile_repo.checkpoint() {
+            tracing::error!(error = %e, "Final WAL checkpoint failed");
+        }
+        self.flowfile_repo.shutdown();
 
         self.running = false;
         tracing::info!("Flow engine stopped");
@@ -460,6 +543,7 @@ async fn run_mutation_handler(
     registry: Option<Arc<PluginRegistry>>,
     parent_cancel: CancellationToken,
     proc_tokens: Arc<parking_lot::Mutex<HashMap<String, CancellationToken>>>,
+    flowfile_repo: Arc<dyn FlowFileRepository>,
 ) {
     let mut runtime_conn_id: usize = 0;
 
@@ -486,6 +570,7 @@ async fn run_mutation_handler(
                             &live_procs, &content_repo, &id_gen,
                             &bulletin_board, &registry,
                             &parent_cancel, &proc_tokens,
+                            &flowfile_repo,
                         );
                         let _ = reply.send(result);
                     }
@@ -533,6 +618,7 @@ fn handle_add_processor(
     registry: &Option<Arc<PluginRegistry>>,
     parent_cancel: &CancellationToken,
     proc_tokens: &Arc<parking_lot::Mutex<HashMap<String, CancellationToken>>>,
+    flowfile_repo: &Arc<dyn FlowFileRepository>,
 ) -> std::result::Result<(), MutationError> {
     // Fix 5: validate scheduling_strategy strictly.
     if scheduling_strategy != "timer" && scheduling_strategy != "event" {
@@ -603,6 +689,7 @@ fn handle_add_processor(
         child_token.clone(),
         metrics.clone(),
         bulletin_board.clone(),
+        flowfile_repo.clone(),
     );
 
     // Capture shared handles before moving pn into spawn.

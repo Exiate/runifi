@@ -124,6 +124,8 @@ pub struct BackPressureConfigToml {
 pub struct EngineConfig {
     #[serde(default)]
     pub content_repository: ContentRepositoryConfig,
+    #[serde(default)]
+    pub flowfile_repository: FlowFileRepositoryConfig,
 }
 
 /// Content repository type selection.
@@ -182,4 +184,44 @@ fn default_inline_threshold() -> u64 {
 
 fn default_cleanup_interval() -> u64 {
     30
+}
+
+/// FlowFile repository type selection.
+#[derive(Debug, Deserialize)]
+pub struct FlowFileRepositoryConfig {
+    /// "memory" (default) or "wal"
+    #[serde(default = "default_repo_type")]
+    pub repo_type: String,
+    /// WAL repository settings (only used when repo_type = "wal").
+    pub wal: Option<WalRepoConfigToml>,
+}
+
+impl Default for FlowFileRepositoryConfig {
+    fn default() -> Self {
+        Self {
+            repo_type: default_repo_type(),
+            wal: None,
+        }
+    }
+}
+
+/// TOML configuration for the WAL-based FlowFile repository.
+#[derive(Debug, Deserialize)]
+pub struct WalRepoConfigToml {
+    /// Directory for WAL and checkpoint files.
+    pub dir: PathBuf,
+    /// fsync mode: "always" (default) or "never".
+    #[serde(default = "default_fsync_mode")]
+    pub fsync_mode: String,
+    /// Checkpoint interval in seconds (default: 120).
+    #[serde(default = "default_checkpoint_interval")]
+    pub checkpoint_interval_secs: u64,
+}
+
+fn default_fsync_mode() -> String {
+    "always".to_string()
+}
+
+fn default_checkpoint_interval() -> u64 {
+    120
 }

@@ -33,6 +33,8 @@ pub struct CoreProcessSession {
     created_content_claims: Vec<u64>,
     committed: bool,
     yield_duration_ms: u64,
+    /// IDs of FlowFiles removed during `commit()`, for WAL DELETE ops.
+    committed_remove_ids: Vec<u64>,
 }
 
 impl CoreProcessSession {
@@ -52,6 +54,7 @@ impl CoreProcessSession {
             created_content_claims: Vec::new(),
             committed: false,
             yield_duration_ms,
+            committed_remove_ids: Vec::new(),
         }
     }
 
@@ -76,6 +79,11 @@ impl CoreProcessSession {
     /// Total bytes of FlowFiles acquired from input connections this session.
     pub fn acquired_bytes(&self) -> u64 {
         self.acquired_flowfiles.iter().map(|ff| ff.size).sum()
+    }
+
+    /// Take the IDs of FlowFiles removed during `commit()` for WAL DELETE ops.
+    pub fn take_committed_remove_ids(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.committed_remove_ids)
     }
 }
 
@@ -189,6 +197,9 @@ impl ProcessSession for CoreProcessSession {
     }
 
     fn commit(&mut self) {
+        // Capture remove IDs before decrementing refs (for WAL DELETE ops).
+        self.committed_remove_ids = self.pending_removes.iter().map(|ff| ff.id).collect();
+
         // Decrement ref counts for removed FlowFiles.
         for ff in self.pending_removes.drain(..) {
             if let Some(claim) = &ff.content_claim {

@@ -19,6 +19,12 @@ impl IdGenerator {
     pub fn next_id(&self) -> u64 {
         self.next.fetch_add(1, Ordering::Relaxed)
     }
+
+    /// Re-seed the generator so the next call to `next_id()` returns `value`.
+    /// Used during crash recovery to avoid ID collisions with persisted FlowFiles.
+    pub fn reset_to(&self, value: u64) {
+        self.next.store(value, Ordering::Relaxed);
+    }
 }
 
 impl Default for IdGenerator {
@@ -37,6 +43,15 @@ mod tests {
         assert_eq!(id_gen.next_id(), 1);
         assert_eq!(id_gen.next_id(), 2);
         assert_eq!(id_gen.next_id(), 3);
+    }
+
+    #[test]
+    fn reset_to_reseeds_correctly() {
+        let id_gen = IdGenerator::new();
+        assert_eq!(id_gen.next_id(), 1);
+        id_gen.reset_to(100);
+        assert_eq!(id_gen.next_id(), 100);
+        assert_eq!(id_gen.next_id(), 101);
     }
 
     #[test]
