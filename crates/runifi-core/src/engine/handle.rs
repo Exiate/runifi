@@ -21,6 +21,7 @@ use crate::connection::back_pressure::BackPressureConfig;
 use crate::connection::query::ConnectionQuery;
 use crate::registry::service_registry::{ServiceError, ServiceInfo, SharedServiceRegistry};
 use crate::repository::content_repo::ContentRepository;
+use crate::repository::provenance_repo::SharedProvenanceRepository;
 
 /// Error type for processor configuration updates.
 #[derive(Debug)]
@@ -201,6 +202,8 @@ pub struct EngineHandle {
     pub(crate) mutation_tx: mpsc::Sender<MutationCommand>,
     /// Flow persistence layer (debounced background writer).
     pub(crate) persistence: Option<FlowPersistence>,
+    /// Provenance repository for FlowFile lineage tracking.
+    pub provenance_repo: SharedProvenanceRepository,
 }
 
 impl EngineHandle {
