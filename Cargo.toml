@@ -56,8 +56,9 @@ slab = "0.4"                 # Slab allocator for FlowFile IDs
 parking_lot = "0.12"         # Fast synchronization primitives
 smallvec = "2"               # Small-buffer-optimized Vec
 aes-gcm = "0.10"             # AES-256-GCM authenticated encryption
-zeroize = "1"                # Secure memory zeroing
+zeroize = { version = "1", features = ["derive"] }  # Secure memory zeroing
 hex = "0.4"                  # Hex encoding/decoding for keys
+base64 = "0.22"              # Base64 encoding for encrypted properties
 
 # Config
 toml = "0.8"
