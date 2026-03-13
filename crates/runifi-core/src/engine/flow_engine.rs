@@ -33,6 +33,9 @@ use crate::registry::plugin_registry::PluginRegistry;
 use crate::registry::service_registry::SharedServiceRegistry;
 use crate::repository::content_repo::ContentRepository;
 use crate::repository::flowfile_repo::FlowFileRepository;
+use crate::repository::provenance_repo::{
+    InMemoryProvenanceRepository, SharedProvenanceRepository,
+};
 
 /// A unique identifier for a processor node in the engine.
 pub type NodeId = usize;
@@ -56,6 +59,7 @@ pub struct FlowEngine {
     persistence: Option<FlowPersistence>,
     audit_logger: Arc<dyn AuditLogger>,
     service_registry: SharedServiceRegistry,
+    provenance_repo: SharedProvenanceRepository,
 
     nodes: Vec<NodeBuilder>,
     connections: Vec<ConnBuilder>,
@@ -101,6 +105,7 @@ impl FlowEngine {
             persistence: None,
             audit_logger: Arc::new(NullAuditLogger),
             service_registry: SharedServiceRegistry::new(),
+            provenance_repo: Arc::new(InMemoryProvenanceRepository::new()),
             nodes: Vec::new(),
             connections: Vec::new(),
             next_node_id: 0,
@@ -124,6 +129,16 @@ impl FlowEngine {
     /// Set the flow persistence layer for runtime state saving.
     pub fn set_persistence(&mut self, persistence: FlowPersistence) {
         self.persistence = Some(persistence);
+    }
+
+    /// Set the provenance repository for FlowFile lineage tracking.
+    pub fn set_provenance_repo(&mut self, repo: SharedProvenanceRepository) {
+        self.provenance_repo = repo;
+    }
+
+    /// Get a reference to the provenance repository.
+    pub fn provenance_repo(&self) -> &SharedProvenanceRepository {
+        &self.provenance_repo
     }
 
     /// Add a processor to the engine. Returns a node ID for wiring connections.
@@ -341,6 +356,8 @@ impl FlowEngine {
                 self.flowfile_repo.clone(),
             );
             pn.set_service_registry(self.service_registry.clone());
+            pn.set_provenance_repo(self.provenance_repo.clone());
+            pn.set_type_name(node_builder.type_name.clone());
 
             for (src, rel, dst, fc) in &flow_connections {
                 if *src == node_builder.id {
@@ -426,6 +443,7 @@ impl FlowEngine {
             labels: labels.clone(),
             mutation_tx,
             persistence: self.persistence.clone(),
+            provenance_repo: self.provenance_repo.clone(),
         };
 
         // Wire persistence: pass only the data collections it needs for
@@ -526,6 +544,7 @@ impl FlowEngine {
 
             let flowfile_repo_mutation = self.flowfile_repo.clone();
             let audit_logger = self.audit_logger.clone();
+            let provenance_repo_mutation = self.provenance_repo.clone();
             let mutation_handle = tokio::spawn(run_mutation_handler(
                 mutation_rx,
                 mutation_cancel,
@@ -539,6 +558,7 @@ impl FlowEngine {
                 shared_tokens,
                 flowfile_repo_mutation,
                 audit_logger,
+                provenance_repo_mutation,
             ));
             self.task_handles.push(mutation_handle);
         }
@@ -648,6 +668,7 @@ async fn run_mutation_handler(
     proc_tokens: Arc<parking_lot::Mutex<HashMap<String, CancellationToken>>>,
     flowfile_repo: Arc<dyn FlowFileRepository>,
     audit_logger: Arc<dyn AuditLogger>,
+    provenance_repo: SharedProvenanceRepository,
 ) {
     let mut handler = DefaultMutationHandler {
         live_procs,
@@ -661,6 +682,7 @@ async fn run_mutation_handler(
         runtime_conn_id: 0,
         flowfile_repo,
         audit_logger,
+        provenance_repo,
     };
 
     loop {

@@ -459,6 +459,108 @@ pub struct UpdateServiceConfigRequest {
     pub properties: HashMap<String, String>,
 }
 
+// ── Provenance DTOs ───────────────────────────────────────────────────
+
+/// Response for a provenance event.
+#[derive(Serialize)]
+pub struct ProvenanceEventResponse {
+    pub event_id: u64,
+    pub flowfile_id: u64,
+    pub event_type: String,
+    pub processor_name: String,
+    pub processor_type: String,
+    pub timestamp_nanos: u64,
+    pub timestamp_ms: u64,
+    pub attributes: Vec<ProvenanceAttributeResponse>,
+    pub content_size: u64,
+    pub lineage_start_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relationship: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_flowfile_id: Option<u64>,
+    pub details: String,
+}
+
+/// Attribute snapshot in a provenance event.
+#[derive(Serialize)]
+pub struct ProvenanceAttributeResponse {
+    pub key: String,
+    pub value: String,
+}
+
+/// Paginated response for provenance search.
+#[derive(Serialize)]
+pub struct ProvenanceSearchResponse {
+    pub events: Vec<ProvenanceEventResponse>,
+    pub total_count: usize,
+    pub offset: usize,
+    pub max_results: usize,
+}
+
+/// Lineage graph response.
+#[derive(Serialize)]
+pub struct ProvenanceLineageResponse {
+    pub flowfile_id: u64,
+    pub lineage_start_id: u64,
+    pub events: Vec<ProvenanceEventResponse>,
+}
+
+/// Query parameters for provenance search.
+#[derive(Deserialize, Default)]
+pub struct ProvenanceSearchParams {
+    /// Filter by FlowFile ID.
+    pub flowfile_id: Option<u64>,
+    /// Filter by processor name.
+    pub processor: Option<String>,
+    /// Filter by event type (CREATE, SEND, RECEIVE, etc.).
+    pub event_type: Option<String>,
+    /// Filter events after this timestamp (milliseconds since epoch).
+    pub start_time: Option<u64>,
+    /// Filter events before this timestamp (milliseconds since epoch).
+    pub end_time: Option<u64>,
+    /// Maximum results (default 100).
+    pub max_results: Option<usize>,
+    /// Pagination offset (default 0).
+    pub offset: Option<usize>,
+}
+
+/// Response for provenance replay.
+#[derive(Serialize)]
+pub struct ProvenanceReplayResponse {
+    pub status: String,
+    pub event_id: u64,
+    pub flowfile_id: u64,
+    pub processor_name: String,
+    pub message: String,
+}
+
+impl ProvenanceEventResponse {
+    pub fn from_event(event: &runifi_core::repository::provenance_repo::ProvenanceEvent) -> Self {
+        Self {
+            event_id: event.event_id,
+            flowfile_id: event.flowfile_id,
+            event_type: event.event_type.as_str().to_string(),
+            processor_name: event.processor_name.clone(),
+            processor_type: event.processor_type.clone(),
+            timestamp_nanos: event.timestamp_nanos,
+            timestamp_ms: event.timestamp_nanos / 1_000_000,
+            attributes: event
+                .attributes
+                .iter()
+                .map(|(k, v)| ProvenanceAttributeResponse {
+                    key: k.clone(),
+                    value: v.clone(),
+                })
+                .collect(),
+            content_size: event.content_size,
+            lineage_start_id: event.lineage_start_id,
+            relationship: event.relationship.clone(),
+            source_flowfile_id: event.source_flowfile_id,
+            details: event.details.clone(),
+        }
+    }
+}
+
 // ── Label DTOs ────────────────────────────────────────────────────────
 
 /// Response for a canvas label.

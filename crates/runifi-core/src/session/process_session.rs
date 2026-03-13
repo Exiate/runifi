@@ -9,6 +9,9 @@ use runifi_plugin_api::session::ProcessSession;
 use crate::connection::flow_connection::FlowConnection;
 use crate::id::IdGenerator;
 use crate::repository::content_repo::ContentRepository;
+use crate::repository::provenance_repo::{
+    ProvenanceEvent, ProvenanceEventType, SharedProvenanceRepository,
+};
 
 /// Pending transfer: a FlowFile waiting to be routed to a relationship.
 struct PendingTransfer {
@@ -35,6 +38,15 @@ pub struct CoreProcessSession {
     yield_duration_ms: u64,
     /// IDs of FlowFiles removed during `commit()`, for WAL DELETE ops.
     committed_remove_ids: Vec<u64>,
+
+    // Provenance tracking
+    provenance_repo: SharedProvenanceRepository,
+    /// Processor name context for provenance events.
+    processor_name: String,
+    /// Processor type context for provenance events.
+    processor_type: String,
+    /// Buffered provenance events — flushed on commit, discarded on rollback.
+    pending_provenance: Vec<ProvenanceEvent>,
 }
 
 impl CoreProcessSession {
@@ -55,7 +67,23 @@ impl CoreProcessSession {
             committed: false,
             yield_duration_ms,
             committed_remove_ids: Vec::new(),
+            provenance_repo: Arc::new(crate::repository::provenance_repo::NullProvenanceRepository),
+            processor_name: String::new(),
+            processor_type: String::new(),
+            pending_provenance: Vec::new(),
         }
+    }
+
+    /// Set the provenance repository for this session.
+    pub fn set_provenance(
+        &mut self,
+        repo: SharedProvenanceRepository,
+        processor_name: String,
+        processor_type: String,
+    ) {
+        self.provenance_repo = repo;
+        self.processor_name = processor_name;
+        self.processor_type = processor_type;
     }
 
     /// Get pending transfers for routing by the engine after commit.
@@ -85,12 +113,48 @@ impl CoreProcessSession {
     pub fn take_committed_remove_ids(&mut self) -> Vec<u64> {
         std::mem::take(&mut self.committed_remove_ids)
     }
+
+    /// Create a provenance event for the given FlowFile.
+    fn make_provenance_event(
+        &self,
+        ff: &FlowFile,
+        event_type: ProvenanceEventType,
+    ) -> ProvenanceEvent {
+        let now_nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        ProvenanceEvent {
+            event_id: 0, // Will be assigned by the repository.
+            flowfile_id: ff.id,
+            event_type,
+            processor_name: self.processor_name.clone(),
+            processor_type: self.processor_type.clone(),
+            timestamp_nanos: now_nanos,
+            attributes: ff
+                .attributes
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            content_size: ff.size,
+            lineage_start_id: ff.lineage_start_id,
+            relationship: None,
+            source_flowfile_id: None,
+            details: String::new(),
+        }
+    }
 }
 
 impl ProcessSession for CoreProcessSession {
     fn get(&mut self) -> Option<FlowFile> {
         for conn in &self.input_connections {
             if let Some(ff) = conn.try_recv() {
+                // Record RECEIVE provenance event.
+                let mut event = self.make_provenance_event(&ff, ProvenanceEventType::Receive);
+                event.details = format!("Received from connection '{}'", conn.id);
+                self.pending_provenance.push(event);
+
                 self.acquired_flowfiles.push(ff.clone());
                 return Some(ff);
             }
@@ -109,6 +173,11 @@ impl ProcessSession for CoreProcessSession {
             let received = conn.try_recv_batch(remaining);
             remaining -= received.len();
             for ff in &received {
+                // Record RECEIVE provenance event for each FlowFile.
+                let mut event = self.make_provenance_event(ff, ProvenanceEventType::Receive);
+                event.details = format!("Received from connection '{}'", conn.id);
+                self.pending_provenance.push(event);
+
                 self.acquired_flowfiles.push(ff.clone());
             }
             batch.extend(received);
@@ -135,6 +204,12 @@ impl ProcessSession for CoreProcessSession {
         self.created_content_claims.push(claim.resource_id);
         flowfile.size = data.len() as u64;
         flowfile.content_claim = Some(claim);
+
+        // Record CONTENT_MODIFIED provenance event.
+        let mut event = self.make_provenance_event(&flowfile, ProvenanceEventType::ContentModified);
+        event.details = format!("Content written ({} bytes)", data.len());
+        self.pending_provenance.push(event);
+
         Ok(flowfile)
     }
 
@@ -145,7 +220,7 @@ impl ProcessSession for CoreProcessSession {
             .unwrap_or_default()
             .as_nanos() as u64;
 
-        FlowFile {
+        let ff = FlowFile {
             id,
             attributes: Vec::new(),
             content_claim: None,
@@ -153,7 +228,13 @@ impl ProcessSession for CoreProcessSession {
             created_at_nanos: now,
             lineage_start_id: id,
             penalized_until_nanos: 0,
-        }
+        };
+
+        // Record CREATE provenance event.
+        let event = self.make_provenance_event(&ff, ProvenanceEventType::Create);
+        self.pending_provenance.push(event);
+
+        ff
     }
 
     fn clone_flowfile(&mut self, flowfile: &FlowFile) -> FlowFile {
@@ -164,7 +245,7 @@ impl ProcessSession for CoreProcessSession {
             let _ = self.content_repo.increment_ref(claim.resource_id);
         }
 
-        FlowFile {
+        let cloned = FlowFile {
             id: new_id,
             attributes: flowfile.attributes.clone(),
             content_claim: flowfile.content_claim.clone(),
@@ -172,10 +253,24 @@ impl ProcessSession for CoreProcessSession {
             created_at_nanos: flowfile.created_at_nanos,
             lineage_start_id: flowfile.lineage_start_id,
             penalized_until_nanos: 0,
-        }
+        };
+
+        // Record CLONE provenance event.
+        let mut event = self.make_provenance_event(&cloned, ProvenanceEventType::Clone);
+        event.source_flowfile_id = Some(flowfile.id);
+        event.details = format!("Cloned from FlowFile {}", flowfile.id);
+        self.pending_provenance.push(event);
+
+        cloned
     }
 
     fn transfer(&mut self, flowfile: FlowFile, relationship: &Relationship) {
+        // Record ROUTE provenance event.
+        let mut event = self.make_provenance_event(&flowfile, ProvenanceEventType::Route);
+        event.relationship = Some(relationship.name.to_string());
+        event.details = format!("Transferred to relationship '{}'", relationship.name);
+        self.pending_provenance.push(event);
+
         self.pending_transfers.push(PendingTransfer {
             flowfile,
             relationship_name: relationship.name,
@@ -183,6 +278,10 @@ impl ProcessSession for CoreProcessSession {
     }
 
     fn remove(&mut self, flowfile: FlowFile) {
+        // Record DROP provenance event.
+        let event = self.make_provenance_event(&flowfile, ProvenanceEventType::Drop);
+        self.pending_provenance.push(event);
+
         self.pending_removes.push(flowfile);
     }
 
@@ -206,6 +305,13 @@ impl ProcessSession for CoreProcessSession {
                 let _ = self.content_repo.decrement_ref(claim.resource_id);
             }
         }
+
+        // Flush provenance events on commit.
+        if !self.pending_provenance.is_empty() {
+            let events = std::mem::take(&mut self.pending_provenance);
+            self.provenance_repo.record_batch(events);
+        }
+
         // Note: acquired_flowfiles is intentionally NOT cleared here.
         // ProcessorNode reads acquired_count()/acquired_bytes() after commit
         // to track input metrics. The Vec is freed when the session is dropped.
@@ -229,6 +335,8 @@ impl ProcessSession for CoreProcessSession {
 
         self.pending_transfers.clear();
         self.pending_removes.clear();
+        // Discard provenance events on rollback.
+        self.pending_provenance.clear();
         self.committed = false;
     }
 }
@@ -246,11 +354,27 @@ mod tests {
     use super::*;
     use crate::connection::back_pressure::BackPressureConfig;
     use crate::repository::content_memory::InMemoryContentRepository;
+    use crate::repository::provenance_repo::{InMemoryProvenanceRepository, ProvenanceRepository};
 
     fn make_session(input_connections: Vec<Arc<FlowConnection>>) -> CoreProcessSession {
         let content_repo = Arc::new(InMemoryContentRepository::new());
         let id_gen = Arc::new(IdGenerator::new());
         CoreProcessSession::new(content_repo, id_gen, input_connections, 1000)
+    }
+
+    fn make_session_with_provenance(
+        input_connections: Vec<Arc<FlowConnection>>,
+    ) -> (CoreProcessSession, Arc<InMemoryProvenanceRepository>) {
+        let content_repo = Arc::new(InMemoryContentRepository::new());
+        let id_gen = Arc::new(IdGenerator::new());
+        let provenance_repo = Arc::new(InMemoryProvenanceRepository::new());
+        let mut session = CoreProcessSession::new(content_repo, id_gen, input_connections, 1000);
+        session.set_provenance(
+            provenance_repo.clone(),
+            "test-processor".to_string(),
+            "TestProcessor".to_string(),
+        );
+        (session, provenance_repo)
     }
 
     fn make_flowfile(id: u64) -> FlowFile {
@@ -479,5 +603,120 @@ mod tests {
         assert_eq!(remove_ids.len(), 2);
         assert!(remove_ids.contains(&id1));
         assert!(remove_ids.contains(&id2));
+    }
+
+    // ── Provenance tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn provenance_create_records_event() {
+        let (mut session, prov_repo) = make_session_with_provenance(vec![]);
+        let _ff = session.create();
+        session.commit();
+
+        assert_eq!(prov_repo.event_count(), 1);
+        let event = prov_repo.get_event(1).unwrap();
+        assert_eq!(event.event_type, ProvenanceEventType::Create);
+        assert_eq!(event.processor_name, "test-processor");
+    }
+
+    #[test]
+    fn provenance_receive_records_event() {
+        let conn = Arc::new(FlowConnection::new(
+            "test-conn",
+            BackPressureConfig::default(),
+        ));
+        conn.try_send(make_flowfile(42)).unwrap();
+
+        let (mut session, prov_repo) = make_session_with_provenance(vec![conn]);
+        let _ff = session.get().unwrap();
+        session.commit();
+
+        assert_eq!(prov_repo.event_count(), 1);
+        let event = prov_repo.get_event(1).unwrap();
+        assert_eq!(event.event_type, ProvenanceEventType::Receive);
+        assert_eq!(event.flowfile_id, 42);
+    }
+
+    #[test]
+    fn provenance_write_content_records_event() {
+        let (mut session, prov_repo) = make_session_with_provenance(vec![]);
+        let ff = session.create();
+        let data = Bytes::from_static(b"test data");
+        let _ff = session.write_content(ff, data).unwrap();
+        session.commit();
+
+        // Should have CREATE and CONTENT_MODIFIED events.
+        assert_eq!(prov_repo.event_count(), 2);
+    }
+
+    #[test]
+    fn provenance_clone_records_event() {
+        let (mut session, prov_repo) = make_session_with_provenance(vec![]);
+        let ff = session.create();
+        let cloned = session.clone_flowfile(&ff);
+        session.commit();
+
+        // CREATE + CLONE.
+        assert_eq!(prov_repo.event_count(), 2);
+
+        // The clone event should reference the source FlowFile.
+        let events = prov_repo.get_lineage(cloned.id);
+        let clone_event = events
+            .iter()
+            .find(|e| e.event_type == ProvenanceEventType::Clone)
+            .unwrap();
+        assert_eq!(clone_event.source_flowfile_id, Some(ff.id));
+    }
+
+    #[test]
+    fn provenance_transfer_records_route_event() {
+        let (mut session, prov_repo) = make_session_with_provenance(vec![]);
+        let ff = session.create();
+        session.transfer(ff, &runifi_plugin_api::REL_SUCCESS);
+        session.commit();
+
+        // CREATE + ROUTE.
+        assert_eq!(prov_repo.event_count(), 2);
+    }
+
+    #[test]
+    fn provenance_remove_records_drop_event() {
+        let (mut session, prov_repo) = make_session_with_provenance(vec![]);
+        let ff = session.create();
+        session.remove(ff);
+        session.commit();
+
+        // CREATE + DROP.
+        assert_eq!(prov_repo.event_count(), 2);
+    }
+
+    #[test]
+    fn provenance_discarded_on_rollback() {
+        let (mut session, prov_repo) = make_session_with_provenance(vec![]);
+        let ff = session.create();
+        session.transfer(ff, &runifi_plugin_api::REL_SUCCESS);
+        session.rollback();
+
+        // No events should be recorded after rollback.
+        assert_eq!(prov_repo.event_count(), 0);
+    }
+
+    #[test]
+    fn provenance_discarded_on_drop_without_commit() {
+        let prov_repo = Arc::new(InMemoryProvenanceRepository::new());
+        {
+            let content_repo = Arc::new(InMemoryContentRepository::new());
+            let id_gen = Arc::new(IdGenerator::new());
+            let mut session = CoreProcessSession::new(content_repo, id_gen, vec![], 1000);
+            session.set_provenance(
+                prov_repo.clone(),
+                "test-processor".to_string(),
+                "TestProcessor".to_string(),
+            );
+            let _ff = session.create();
+            // Drop without commit.
+        }
+
+        assert_eq!(prov_repo.event_count(), 0);
     }
 }
