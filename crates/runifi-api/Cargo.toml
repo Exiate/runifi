@@ -26,4 +26,4 @@ rand = { workspace = true }
 urlencoding = { workspace = true }
 
 [dev-dependencies]
-axum-test = "16"
+axum-test = "19"

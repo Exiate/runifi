@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use super::back_pressure::BackPressureConfig;
 use super::flow_connection::{FlowConnection, FlowFileSnapshot};
 
 /// Trait for querying metadata and state of a connection between processors.
@@ -23,6 +24,8 @@ pub trait ConnectionQuery: Send + Sync {
     fn queue_size_bytes(&self) -> u64;
     /// Whether back-pressure thresholds are currently exceeded.
     fn is_back_pressured(&self) -> bool;
+    /// Return the back-pressure configuration for this connection.
+    fn back_pressure_config(&self) -> BackPressureConfig;
 
     // ── Queue inspection ──────────────────────────────────────────────────────
 
@@ -92,6 +95,10 @@ impl ConnectionQuery for FlowConnectionQuery {
 
     fn is_back_pressured(&self) -> bool {
         self.connection.is_back_pressured()
+    }
+
+    fn back_pressure_config(&self) -> BackPressureConfig {
+        self.connection.back_pressure_config()
     }
 
     fn queue_snapshot(&self, offset: usize, limit: usize) -> Vec<FlowFileSnapshot> {

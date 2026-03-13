@@ -1,4 +1,3 @@
-use std::path::{Component, Path};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -28,24 +27,16 @@ const PROP_BATCH_SIZE: PropertyDescriptor = PropertyDescriptor::new(
 )
 .default_value("10");
 
-const PROP_FOLLOW_SYMLINKS: PropertyDescriptor = PropertyDescriptor::new(
-    "Follow Symlinks",
-    "If true, follow symbolic links when reading files (true/false)",
+const PROP_MAX_FILE_SIZE: PropertyDescriptor = PropertyDescriptor::new(
+    "Maximum File Size",
+    "Maximum file size in bytes. Files larger than this are routed to failure. Default 100MB.",
 )
-.default_value("false");
+.default_value("104857600");
 
-/// Validate that the input directory path does not contain `..` components.
-fn validate_directory_path(dir_str: &str) -> Result<(), PluginError> {
-    let path = Path::new(dir_str);
-    for component in path.components() {
-        if matches!(component, Component::ParentDir) {
-            return Err(PluginError::ProcessingFailed(format!(
-                "Input directory contains '..' component: {dir_str}"
-            )));
-        }
-    }
-    Ok(())
-}
+const PROP_FILE_FILTER: PropertyDescriptor = PropertyDescriptor::new(
+    "File Filter",
+    "Glob pattern to filter filenames (e.g. '*.csv', 'data-*.json'). Empty means accept all.",
+);
 
 /// Watches a directory and ingests files as FlowFiles.
 pub struct GetFile;
@@ -60,6 +51,43 @@ impl Default for GetFile {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Simple glob matcher supporting `*` and `?` wildcards.
+fn glob_matches(pattern: &str, text: &str) -> bool {
+    let pat: Vec<char> = pattern.chars().collect();
+    let txt: Vec<char> = text.chars().collect();
+    glob_match_inner(&pat, &txt)
+}
+
+fn glob_match_inner(pattern: &[char], text: &[char]) -> bool {
+    let mut pi = 0;
+    let mut ti = 0;
+    let mut star_pi = usize::MAX;
+    let mut star_ti = usize::MAX;
+
+    while ti < text.len() {
+        if pi < pattern.len() && (pattern[pi] == '?' || pattern[pi] == text[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < pattern.len() && pattern[pi] == '*' {
+            star_pi = pi;
+            star_ti = ti;
+            pi += 1;
+        } else if star_pi != usize::MAX {
+            pi = star_pi + 1;
+            star_ti += 1;
+            ti = star_ti;
+        } else {
+            return false;
+        }
+    }
+
+    while pi < pattern.len() && pattern[pi] == '*' {
+        pi += 1;
+    }
+
+    pi == pattern.len()
 }
 
 impl Processor for GetFile {
@@ -79,12 +107,17 @@ impl Processor for GetFile {
             .unwrap_or("10")
             .parse()
             .unwrap_or(10);
-        let follow_symlinks = context.get_property("Follow Symlinks").unwrap_or("false") == "true";
+        let max_file_size: u64 = context
+            .get_property("Maximum File Size")
+            .unwrap_or("104857600")
+            .parse()
+            .unwrap_or(104_857_600);
+        let file_filter = context
+            .get_property("File Filter")
+            .as_str()
+            .map(|s| s.to_string());
 
-        // Validate the input directory path has no `..` components.
-        validate_directory_path(&input_dir)?;
-
-        let dir = Path::new(&input_dir);
+        let dir = std::path::Path::new(&input_dir);
         if !dir.is_dir() {
             return Err(PluginError::ProcessingFailed(format!(
                 "Input directory does not exist: {}",
@@ -92,59 +125,46 @@ impl Processor for GetFile {
             )));
         }
 
-        // Canonicalize the input directory to resolve symlinks at the directory level.
-        let canonical_dir = dir.canonicalize().map_err(PluginError::Io)?;
-
-        let entries: Vec<_> = std::fs::read_dir(&canonical_dir)
+        let entries: Vec<_> = std::fs::read_dir(dir)
             .map_err(PluginError::Io)?
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                let ft = match e.file_type() {
-                    Ok(ft) => ft,
-                    Err(_) => return false,
-                };
-                if ft.is_file() {
-                    return true;
+            .filter(|e| e.file_type().ok().is_some_and(|ft| ft.is_file()))
+            .filter(|e| match &file_filter {
+                Some(pattern) if !pattern.is_empty() => {
+                    let name = e.file_name();
+                    let name_str = name.to_string_lossy();
+                    glob_matches(pattern, &name_str)
                 }
-                if ft.is_symlink() && follow_symlinks {
-                    // Check if symlink target is a file.
-                    e.path().metadata().ok().is_some_and(|m| m.is_file())
-                } else {
-                    false
-                }
+                _ => true,
             })
             .take(batch_size)
             .collect();
 
         for entry in entries {
             let path = entry.path();
+            let metadata = std::fs::metadata(&path).map_err(PluginError::Io)?;
 
-            // Verify the file's canonical path is within the canonical input directory.
-            // This prevents symlink escape attacks.
-            let canonical_file = match path.canonicalize() {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::warn!(
-                        path = %path.display(),
-                        error = %e,
-                        "Failed to canonicalize file path, skipping"
-                    );
-                    continue;
-                }
-            };
-
-            if !canonical_file.starts_with(&canonical_dir) {
+            // Enforce maximum file size.
+            if metadata.len() > max_file_size {
                 tracing::warn!(
                     path = %path.display(),
-                    canonical = %canonical_file.display(),
-                    dir = %canonical_dir.display(),
-                    "Symlink escape detected: file resolves outside input directory, skipping"
+                    size = metadata.len(),
+                    max = max_file_size,
+                    "File exceeds maximum size limit"
                 );
+                let mut flowfile = session.create();
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    flowfile.set_attribute(Arc::from("filename"), Arc::from(name));
+                }
+                flowfile.set_attribute(
+                    Arc::from("file.size"),
+                    Arc::from(metadata.len().to_string().as_str()),
+                );
+                session.transfer(flowfile, &REL_FAILURE);
                 continue;
             }
 
-            let metadata = std::fs::metadata(&canonical_file).map_err(PluginError::Io)?;
-            let data = std::fs::read(&canonical_file).map_err(PluginError::Io)?;
+            let data = std::fs::read(&path).map_err(PluginError::Io)?;
 
             let mut flowfile = session.create();
 
@@ -183,7 +203,8 @@ impl Processor for GetFile {
             PROP_INPUT_DIR,
             PROP_KEEP_SOURCE,
             PROP_BATCH_SIZE,
-            PROP_FOLLOW_SYMLINKS,
+            PROP_MAX_FILE_SIZE,
+            PROP_FILE_FILTER,
         ]
     }
 }
@@ -199,43 +220,28 @@ inventory::submit! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::Bytes;
     use runifi_plugin_api::FlowFile;
     use runifi_plugin_api::property::PropertyValue;
-    use runifi_plugin_api::relationship::Relationship;
-    use runifi_plugin_api::result::ProcessResult;
 
     struct TestContext {
         input_dir: String,
-        follow_symlinks: bool,
-        keep_source: bool,
-    }
-
-    impl TestContext {
-        fn new(input_dir: String) -> Self {
-            Self {
-                input_dir,
-                follow_symlinks: false,
-                keep_source: false,
-            }
-        }
+        max_file_size: Option<String>,
+        file_filter: Option<String>,
     }
 
     impl ProcessContext for TestContext {
         fn get_property(&self, name: &str) -> PropertyValue {
             match name {
                 "Input Directory" => PropertyValue::String(self.input_dir.clone()),
-                "Follow Symlinks" => PropertyValue::String(
-                    if self.follow_symlinks {
-                        "true"
-                    } else {
-                        "false"
-                    }
-                    .to_string(),
-                ),
-                "Keep Source File" => PropertyValue::String(
-                    if self.keep_source { "true" } else { "false" }.to_string(),
-                ),
+                "Keep Source File" => PropertyValue::String("true".to_string()),
+                "Maximum File Size" => match &self.max_file_size {
+                    Some(v) => PropertyValue::String(v.clone()),
+                    None => PropertyValue::Unset,
+                },
+                "File Filter" => match &self.file_filter {
+                    Some(v) => PropertyValue::String(v.clone()),
+                    None => PropertyValue::Unset,
+                },
                 _ => PropertyValue::Unset,
             }
         }
@@ -250,42 +256,44 @@ mod tests {
         }
     }
 
-    struct CollectingSession {
-        created_count: u64,
-        flowfiles: Vec<(FlowFile, &'static str)>,
+    struct CollectorSession {
+        transferred: Vec<(FlowFile, &'static str)>,
+        next_id: u64,
     }
 
-    impl CollectingSession {
+    impl CollectorSession {
         fn new() -> Self {
             Self {
-                created_count: 0,
-                flowfiles: Vec::new(),
+                transferred: Vec::new(),
+                next_id: 1,
             }
         }
     }
 
-    impl ProcessSession for CollectingSession {
+    impl ProcessSession for CollectorSession {
         fn get(&mut self) -> Option<FlowFile> {
             None
         }
         fn get_batch(&mut self, _max: usize) -> Vec<FlowFile> {
-            Vec::new()
+            vec![]
         }
         fn read_content(&self, _ff: &FlowFile) -> ProcessResult<Bytes> {
             Ok(Bytes::new())
         }
-        fn write_content(&mut self, ff: FlowFile, _data: Bytes) -> ProcessResult<FlowFile> {
+        fn write_content(&mut self, mut ff: FlowFile, data: Bytes) -> ProcessResult<FlowFile> {
+            ff.size = data.len() as u64;
             Ok(ff)
         }
         fn create(&mut self) -> FlowFile {
-            self.created_count += 1;
+            let id = self.next_id;
+            self.next_id += 1;
             FlowFile {
-                id: self.created_count,
+                id,
                 attributes: Vec::new(),
                 content_claim: None,
                 size: 0,
                 created_at_nanos: 0,
-                lineage_start_id: self.created_count,
+                lineage_start_id: id,
                 penalized_until_nanos: 0,
             }
         }
@@ -293,7 +301,7 @@ mod tests {
             unimplemented!()
         }
         fn transfer(&mut self, ff: FlowFile, rel: &Relationship) {
-            self.flowfiles.push((ff, rel.name));
+            self.transferred.push((ff, rel.name));
         }
         fn remove(&mut self, _ff: FlowFile) {}
         fn penalize(&mut self, ff: FlowFile) -> FlowFile {
@@ -304,122 +312,77 @@ mod tests {
     }
 
     #[test]
-    fn rejects_input_dir_with_dot_dot() {
-        let mut proc = GetFile::new();
-        let ctx = TestContext::new("/tmp/../etc".to_string());
-        let mut session = CollectingSession::new();
-
-        let result = proc.on_trigger(&ctx, &mut session);
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains(".."), "Error should mention '..'");
-    }
-
-    #[test]
-    fn reads_normal_directory() {
-        let tmp = std::env::temp_dir().join("runifi-test-getfile-normal");
+    fn rejects_oversized_files() {
+        let tmp = std::env::temp_dir().join("runifi-test-getfile-maxsize");
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
 
-        // Create a test file.
-        std::fs::write(tmp.join("test.txt"), b"hello").unwrap();
+        // Create a file larger than our limit.
+        std::fs::write(tmp.join("big.dat"), vec![0u8; 200]).unwrap();
+        std::fs::write(tmp.join("small.dat"), vec![0u8; 50]).unwrap();
 
         let mut proc = GetFile::new();
-        let mut ctx = TestContext::new(tmp.to_string_lossy().to_string());
-        ctx.follow_symlinks = false;
+        let ctx = TestContext {
+            input_dir: tmp.to_string_lossy().to_string(),
+            max_file_size: Some("100".to_string()),
+            file_filter: None,
+        };
+        let mut session = CollectorSession::new();
 
-        let mut session = CollectingSession::new();
         proc.on_trigger(&ctx, &mut session).unwrap();
 
-        assert_eq!(session.flowfiles.len(), 1);
-        assert_eq!(session.flowfiles[0].1, "success");
-
-        let ff = &session.flowfiles[0].0;
-        assert_eq!(
-            ff.get_attribute("filename").map(|v| v.as_ref()),
-            Some("test.txt")
-        );
+        let success_count = session
+            .transferred
+            .iter()
+            .filter(|(_, r)| *r == "success")
+            .count();
+        let failure_count = session
+            .transferred
+            .iter()
+            .filter(|(_, r)| *r == "failure")
+            .count();
+        assert_eq!(success_count, 1);
+        assert_eq!(failure_count, 1);
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
-    fn skips_symlinks_when_follow_disabled() {
-        let tmp = std::env::temp_dir().join("runifi-test-getfile-nosymlink");
+    fn file_filter_glob() {
+        let tmp = std::env::temp_dir().join("runifi-test-getfile-filter");
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
 
-        // Create a real file and a symlink to /etc/hostname.
-        std::fs::write(tmp.join("real.txt"), b"real").unwrap();
-        // Create symlink pointing outside the directory.
-        let symlink_path = tmp.join("escape.txt");
-        let _ = std::os::unix::fs::symlink("/etc/hostname", &symlink_path);
+        std::fs::write(tmp.join("data.csv"), b"a,b").unwrap();
+        std::fs::write(tmp.join("data.json"), b"{}").unwrap();
+        std::fs::write(tmp.join("readme.txt"), b"hi").unwrap();
 
         let mut proc = GetFile::new();
-        let ctx = TestContext::new(tmp.to_string_lossy().to_string());
-        let mut session = CollectingSession::new();
+        let ctx = TestContext {
+            input_dir: tmp.to_string_lossy().to_string(),
+            max_file_size: None,
+            file_filter: Some("*.csv".to_string()),
+        };
+        let mut session = CollectorSession::new();
 
         proc.on_trigger(&ctx, &mut session).unwrap();
 
-        // Only the real file should be ingested (symlink skipped due to is_file() check on DirEntry).
-        assert_eq!(session.flowfiles.len(), 1);
-        assert_eq!(
-            session.flowfiles[0]
-                .0
-                .get_attribute("filename")
-                .map(|v| v.as_ref()),
-            Some("real.txt")
-        );
+        assert_eq!(session.transferred.len(), 1);
+        assert_eq!(session.transferred[0].1, "success");
+        let filename = session.transferred[0].0.get_attribute("filename").unwrap();
+        assert_eq!(filename.as_ref(), "data.csv");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
-    fn blocks_symlink_escape_when_follow_enabled() {
-        let tmp = std::env::temp_dir().join("runifi-test-getfile-symlink-escape");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-
-        // Create a symlink pointing outside the input directory.
-        let symlink_path = tmp.join("escape.txt");
-        let _ = std::os::unix::fs::symlink("/etc/hostname", &symlink_path);
-
-        let mut proc = GetFile::new();
-        let mut ctx = TestContext::new(tmp.to_string_lossy().to_string());
-        ctx.follow_symlinks = true;
-
-        let mut session = CollectingSession::new();
-        proc.on_trigger(&ctx, &mut session).unwrap();
-
-        // Symlink pointing outside directory should be skipped.
-        assert_eq!(session.flowfiles.len(), 0);
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn allows_internal_symlinks_when_follow_enabled() {
-        let tmp = std::env::temp_dir().join("runifi-test-getfile-internal-symlink");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-
-        // Create a real file and a symlink pointing to it (within same dir).
-        let real_file = tmp.join("original.txt");
-        std::fs::write(&real_file, b"content").unwrap();
-        let symlink_path = tmp.join("link.txt");
-        let _ = std::os::unix::fs::symlink(&real_file, &symlink_path);
-
-        let mut proc = GetFile::new();
-        let mut ctx = TestContext::new(tmp.to_string_lossy().to_string());
-        ctx.follow_symlinks = true;
-        ctx.keep_source = true;
-
-        let mut session = CollectingSession::new();
-        proc.on_trigger(&ctx, &mut session).unwrap();
-
-        // Both files should be ingested (symlink resolves within input dir).
-        assert_eq!(session.flowfiles.len(), 2);
-
-        let _ = std::fs::remove_dir_all(&tmp);
+    fn glob_matcher_works() {
+        assert!(glob_matches("*.csv", "data.csv"));
+        assert!(!glob_matches("*.csv", "data.json"));
+        assert!(glob_matches("data-*", "data-2024.csv"));
+        assert!(glob_matches("*.?sv", "file.csv"));
+        assert!(glob_matches("*", "anything"));
+        assert!(glob_matches("file.txt", "file.txt"));
+        assert!(!glob_matches("file.txt", "other.txt"));
     }
 }

@@ -69,10 +69,7 @@ impl PartialEq for SensitiveString {
         if self.inner.len() != other.inner.len() {
             return false;
         }
-        self.inner
-            .as_bytes()
-            .ct_eq(other.inner.as_bytes())
-            .into()
+        self.inner.as_bytes().ct_eq(other.inner.as_bytes()).into()
     }
 }
 

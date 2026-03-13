@@ -45,6 +45,30 @@ pub enum RuniFiError {
 
     #[error("config error: {0}")]
     Config(String),
+
+    #[error("content write failed: resource_id={resource_id}, {reason}")]
+    ContentWriteFailed { resource_id: u64, reason: String },
+
+    #[error(
+        "content corrupted: resource_id={resource_id}, expected CRC={expected:#010x}, actual={actual:#010x}"
+    )]
+    ContentCorrupted {
+        resource_id: u64,
+        expected: u32,
+        actual: u32,
+    },
+
+    #[error("segment error: {path}: {reason}")]
+    SegmentError { path: String, reason: String },
+
+    #[error("WAL error: {path}: {reason}")]
+    WalError { path: String, reason: String },
+
+    #[error("WAL corrupted at offset {offset}: {reason}")]
+    WalCorrupted { offset: u64, reason: String },
+
+    #[error("checkpoint error: {path}: {reason}")]
+    CheckpointError { path: String, reason: String },
 }
 
 pub type Result<T> = std::result::Result<T, RuniFiError>;

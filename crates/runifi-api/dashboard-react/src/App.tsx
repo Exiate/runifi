@@ -1,8 +1,8 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Header } from './components/Header';
 import { SummaryBar } from './components/SummaryBar';
 import { FlowCanvas } from './components/FlowCanvas';
-import { ProcessorPalette } from './components/ProcessorPalette';
+import { ComponentToolbar } from './components/ComponentToolbar';
 import { ToastNotifier } from './components/ToastNotifier';
 import { BulletinBoard } from './components/BulletinBoard';
 import { useFlowTopology } from './hooks/useFlowTopology';
@@ -17,8 +17,8 @@ export function App() {
   const { plugins, loading: pluginsLoading } = usePlugins();
   const { toasts, push: pushToast, dismiss: dismissToast } = useToast();
 
-  const [paletteCollapsed, setPaletteCollapsed] = useState(false);
   const [draggedPlugin, setDraggedPlugin] = useState<PluginDescriptor | null>(null);
+  const [addPluginAtCenter, setAddPluginAtCenter] = useState<PluginDescriptor | null>(null);
   const [bulletinOpen, setBulletinOpen] = useState(false);
 
   const uptimeSecs = liveMetrics?.uptime_secs ?? 0;
@@ -35,27 +35,22 @@ export function App() {
   );
 
   const handleDragEnd = () => setDraggedPlugin(null);
+  const handleAddPluginHandled = useCallback(() => setAddPluginAtCenter(null), []);
 
   return (
     <div className="app-layout" onDragEnd={handleDragEnd}>
       <Header flowName={flowName} uptimeSecs={uptimeSecs} sseStatus={sseStatus} />
-      <SummaryBar
-        metrics={liveMetrics}
-        onOpenBulletins={() => setBulletinOpen((v) => !v)}
+      <ComponentToolbar
+        plugins={plugins}
+        loading={pluginsLoading}
+        onDragStart={setDraggedPlugin}
+        onAddProcessor={setAddPluginAtCenter}
       />
 
       <div className="app-body">
-        <ProcessorPalette
-          plugins={plugins}
-          loading={pluginsLoading}
-          collapsed={paletteCollapsed}
-          onToggle={() => setPaletteCollapsed((c) => !c)}
-          onDragStart={setDraggedPlugin}
-        />
-
         <main className="app-main">
           <section className="dag-section" aria-labelledby="dag-heading">
-            <h2 id="dag-heading">Flow Topology</h2>
+            <h2 id="dag-heading" className="sr-only">Flow Topology</h2>
 
             {loading && (
               <div className="canvas-placeholder" role="status" aria-live="polite">
@@ -77,6 +72,8 @@ export function App() {
                 plugins={plugins}
                 onToast={pushToast}
                 draggedPlugin={draggedPlugin}
+                addPluginAtCenter={addPluginAtCenter}
+                onAddPluginHandled={handleAddPluginHandled}
               />
             )}
           </section>
@@ -89,6 +86,11 @@ export function App() {
           )}
         </main>
       </div>
+
+      <SummaryBar
+        metrics={liveMetrics}
+        onOpenBulletins={() => setBulletinOpen((v) => !v)}
+      />
 
       <ToastNotifier toasts={toasts} onDismiss={dismissToast} />
     </div>

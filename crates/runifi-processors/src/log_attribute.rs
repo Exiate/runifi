@@ -6,28 +6,17 @@ use runifi_plugin_api::result::ProcessResult;
 use runifi_plugin_api::session::ProcessSession;
 use runifi_plugin_api::{REL_FAILURE, REL_SUCCESS};
 
-const PROP_LOG_LEVEL: PropertyDescriptor =
-    PropertyDescriptor::new("Log Level", "Logging level: 'info', 'debug', or 'trace'")
-        .default_value("info");
+const PROP_LOG_LEVEL: PropertyDescriptor = PropertyDescriptor::new(
+    "Log Level",
+    "Logging level: 'trace', 'debug', 'info', 'warn', or 'error'",
+)
+.default_value("info");
 
 const PROP_LOG_PAYLOAD: PropertyDescriptor = PropertyDescriptor::new(
     "Log Payload",
     "Whether to log the FlowFile content (true/false)",
 )
 .default_value("false");
-
-const PROP_SENSITIVE_ATTRS: PropertyDescriptor = PropertyDescriptor::new(
-    "Sensitive Attribute Names",
-    "Comma-separated list of attribute names whose values should be masked in log output. \
-     Attributes matching these names will be displayed as '********'.",
-)
-.sensitive();
-
-/// Default attribute name patterns that are always treated as sensitive,
-/// regardless of the configured list. Defense-in-depth against accidental
-/// secret leakage.
-const BUILTIN_SENSITIVE_PATTERNS: &[&str] =
-    &["password", "secret", "token", "credential", "api.key"];
 
 /// Logs FlowFile attributes (and optionally content) for debugging.
 pub struct LogAttribute;
@@ -51,23 +40,15 @@ impl Processor for LogAttribute {
         session: &mut dyn ProcessSession,
     ) -> ProcessResult {
         let log_payload = context.get_property("Log Payload").unwrap_or("false") == "true";
-
-        // Build the set of attribute names to mask.
-        let configured_sensitive: Vec<String> = context
-            .get_property("Sensitive Attribute Names")
-            .as_str()
-            .map(|s| s.split(',').map(|p| p.trim().to_lowercase()).collect())
-            .unwrap_or_default();
+        let log_level = context
+            .get_property("Log Level")
+            .unwrap_or("info")
+            .to_string();
 
         while let Some(flowfile) = session.get() {
             let mut attrs = String::new();
             for (key, value) in &flowfile.attributes {
-                let display_value = if is_sensitive_attribute(key, &configured_sensitive) {
-                    "********"
-                } else {
-                    value.as_ref()
-                };
-                attrs.push_str(&format!("  {}: {}\n", key, display_value));
+                attrs.push_str(&format!("  {}: {}\n", key, value));
             }
 
             let content_info = if log_payload {
@@ -89,13 +70,42 @@ impl Processor for LogAttribute {
                 format!("  content: {} bytes", flowfile.size)
             };
 
-            tracing::info!(
-                processor = context.name(),
-                flowfile_id = flowfile.id,
-                "FlowFile attributes:\n{}{}",
-                attrs,
-                content_info
-            );
+            let message = format!("FlowFile attributes:\n{}{}", attrs, content_info);
+            let processor_name = context.name();
+            let ff_id = flowfile.id;
+
+            match log_level.as_str() {
+                "trace" => tracing::trace!(
+                    processor = processor_name,
+                    flowfile_id = ff_id,
+                    "{}",
+                    message
+                ),
+                "debug" => tracing::debug!(
+                    processor = processor_name,
+                    flowfile_id = ff_id,
+                    "{}",
+                    message
+                ),
+                "warn" => tracing::warn!(
+                    processor = processor_name,
+                    flowfile_id = ff_id,
+                    "{}",
+                    message
+                ),
+                "error" => tracing::error!(
+                    processor = processor_name,
+                    flowfile_id = ff_id,
+                    "{}",
+                    message
+                ),
+                _ => tracing::info!(
+                    processor = processor_name,
+                    flowfile_id = ff_id,
+                    "{}",
+                    message
+                ),
+            }
 
             session.transfer(flowfile, &REL_SUCCESS);
         }
@@ -109,33 +119,8 @@ impl Processor for LogAttribute {
     }
 
     fn property_descriptors(&self) -> Vec<PropertyDescriptor> {
-        vec![PROP_LOG_LEVEL, PROP_LOG_PAYLOAD, PROP_SENSITIVE_ATTRS]
+        vec![PROP_LOG_LEVEL, PROP_LOG_PAYLOAD]
     }
-}
-
-/// Check whether an attribute name should be masked.
-///
-/// An attribute is considered sensitive if:
-/// 1. Its lowercase name matches one of the built-in patterns, OR
-/// 2. Its lowercase name matches one of the user-configured names.
-fn is_sensitive_attribute(name: &str, configured: &[String]) -> bool {
-    let lower = name.to_lowercase();
-
-    // Check built-in patterns.
-    for pattern in BUILTIN_SENSITIVE_PATTERNS {
-        if lower.contains(pattern) {
-            return true;
-        }
-    }
-
-    // Check user-configured names.
-    for configured_name in configured {
-        if !configured_name.is_empty() && lower.contains(configured_name.as_str()) {
-            return true;
-        }
-    }
-
-    false
 }
 
 inventory::submit! {
@@ -154,10 +139,16 @@ mod tests {
     use runifi_plugin_api::property::PropertyValue;
     use std::sync::Arc;
 
-    struct TestContext;
+    struct TestContext {
+        log_level: String,
+    }
+
     impl ProcessContext for TestContext {
-        fn get_property(&self, _name: &str) -> PropertyValue {
-            PropertyValue::Unset
+        fn get_property(&self, name: &str) -> PropertyValue {
+            match name {
+                "Log Level" => PropertyValue::String(self.log_level.clone()),
+                _ => PropertyValue::Unset,
+            }
         }
         fn name(&self) -> &str {
             "test-log"
@@ -205,11 +196,7 @@ mod tests {
         fn rollback(&mut self) {}
     }
 
-    #[test]
-    fn logs_and_transfers() {
-        let mut proc = LogAttribute::new();
-        let ctx = TestContext;
-
+    fn make_test_ff() -> FlowFile {
         let mut ff = FlowFile {
             id: 42,
             attributes: Vec::new(),
@@ -220,9 +207,18 @@ mod tests {
             penalized_until_nanos: 0,
         };
         ff.set_attribute(Arc::from("filename"), Arc::from("test.txt"));
+        ff
+    }
+
+    #[test]
+    fn logs_and_transfers() {
+        let mut proc = LogAttribute::new();
+        let ctx = TestContext {
+            log_level: "info".to_string(),
+        };
 
         let mut session = OneFlowFileSession {
-            input: Some(ff),
+            input: Some(make_test_ff()),
             transferred: Vec::new(),
         };
 
@@ -233,32 +229,36 @@ mod tests {
     }
 
     #[test]
-    fn sensitive_builtin_patterns_detected() {
-        // Built-in patterns should be detected.
-        assert!(is_sensitive_attribute("db.password", &[]));
-        assert!(is_sensitive_attribute("API_SECRET", &[]));
-        assert!(is_sensitive_attribute("auth_token", &[]));
-        assert!(is_sensitive_attribute("my-credential-store", &[]));
-        assert!(is_sensitive_attribute("api.key.value", &[]));
+    fn supports_debug_level() {
+        let mut proc = LogAttribute::new();
+        let ctx = TestContext {
+            log_level: "debug".to_string(),
+        };
 
-        // Normal attributes should not be masked.
-        assert!(!is_sensitive_attribute("filename", &[]));
-        assert!(!is_sensitive_attribute("path", &[]));
-        assert!(!is_sensitive_attribute("mime.type", &[]));
+        let mut session = OneFlowFileSession {
+            input: Some(make_test_ff()),
+            transferred: Vec::new(),
+        };
+
+        proc.on_trigger(&ctx, &mut session).unwrap();
+        assert_eq!(session.transferred.len(), 1);
+        assert_eq!(session.transferred[0].1, "success");
     }
 
     #[test]
-    fn sensitive_configured_patterns_detected() {
-        let configured = vec!["ssn".to_string(), "credit_card".to_string()];
-        assert!(is_sensitive_attribute("user.ssn", &configured));
-        assert!(is_sensitive_attribute("credit_card_number", &configured));
-        assert!(!is_sensitive_attribute("filename", &configured));
-    }
+    fn supports_warn_level() {
+        let mut proc = LogAttribute::new();
+        let ctx = TestContext {
+            log_level: "warn".to_string(),
+        };
 
-    #[test]
-    fn sensitive_empty_configured_ignored() {
-        let configured = vec!["".to_string()];
-        // Empty pattern should not match everything.
-        assert!(!is_sensitive_attribute("filename", &configured));
+        let mut session = OneFlowFileSession {
+            input: Some(make_test_ff()),
+            transferred: Vec::new(),
+        };
+
+        proc.on_trigger(&ctx, &mut session).unwrap();
+        assert_eq!(session.transferred.len(), 1);
+        assert_eq!(session.transferred[0].1, "success");
     }
 }

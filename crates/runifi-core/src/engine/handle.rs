@@ -10,6 +10,7 @@ use tokio::sync::{mpsc, oneshot};
 use super::bulletin::BulletinBoard;
 use super::metrics::ProcessorMetrics;
 use super::mutation::{MutationCommand, MutationError};
+use super::persistence::FlowPersistence;
 use super::processor_node::{
     SharedInputConnections, SharedInputNotifiers, SharedOutputConnections,
 };
@@ -141,9 +142,19 @@ pub struct EngineHandle {
     pub audit_logger: Arc<dyn AuditLogger>,
     /// Sender half of the engine mutation command channel.
     pub(crate) mutation_tx: mpsc::Sender<MutationCommand>,
+    /// Flow persistence layer (debounced background writer).
+    pub(crate) persistence: Option<FlowPersistence>,
 }
 
 impl EngineHandle {
+    /// Notify the persistence layer that the flow state has changed.
+    /// Called internally after mutations and externally for initial persist.
+    pub fn notify_persist(&self) {
+        if let Some(ref p) = self.persistence {
+            p.notify_changed();
+        }
+    }
+
     // ── Lifecycle controls ───────────────────────────────────────────────────
 
     /// Request a circuit breaker reset for a processor by name.
@@ -312,10 +323,13 @@ impl EngineHandle {
         }
 
         *props = new_properties;
+        drop(props);
+        drop(processors);
         self.audit_logger.log(&AuditEvent::success(
             AuditAction::ProcessorConfigured,
             AuditTarget::processor(name),
         ));
+        self.notify_persist();
         Ok(())
     }
 
@@ -344,9 +358,13 @@ impl EngineHandle {
             })
             .await
             .map_err(|_| MutationError::EngineNotRunning)?;
-        reply_rx
+        let result = reply_rx
             .await
-            .map_err(|_| MutationError::EngineNotRunning)?
+            .map_err(|_| MutationError::EngineNotRunning)?;
+        if result.is_ok() {
+            self.notify_persist();
+        }
+        result
     }
 
     /// Remove a processor at runtime (hot-remove).
@@ -361,9 +379,13 @@ impl EngineHandle {
             })
             .await
             .map_err(|_| MutationError::EngineNotRunning)?;
-        reply_rx
+        let result = reply_rx
             .await
-            .map_err(|_| MutationError::EngineNotRunning)?
+            .map_err(|_| MutationError::EngineNotRunning)?;
+        if result.is_ok() {
+            self.notify_persist();
+        }
+        result
     }
 
     /// Add a new connection at runtime (hot-add).
@@ -387,9 +409,13 @@ impl EngineHandle {
             })
             .await
             .map_err(|_| MutationError::EngineNotRunning)?;
-        reply_rx
+        let result = reply_rx
             .await
-            .map_err(|_| MutationError::EngineNotRunning)?
+            .map_err(|_| MutationError::EngineNotRunning)?;
+        if result.is_ok() {
+            self.notify_persist();
+        }
+        result
     }
 
     /// Remove a connection at runtime (hot-remove).
@@ -406,9 +432,13 @@ impl EngineHandle {
             })
             .await
             .map_err(|_| MutationError::EngineNotRunning)?;
-        reply_rx
+        let result = reply_rx
             .await
-            .map_err(|_| MutationError::EngineNotRunning)?
+            .map_err(|_| MutationError::EngineNotRunning)?;
+        if result.is_ok() {
+            self.notify_persist();
+        }
+        result
     }
 
     // ── Position metadata ────────────────────────────────────────────────────
@@ -416,6 +446,7 @@ impl EngineHandle {
     /// Store the canvas position for a processor (UI metadata).
     pub fn set_position(&self, name: &str, x: f64, y: f64) {
         self.positions.insert(name.to_string(), Position { x, y });
+        self.notify_persist();
     }
 
     /// Read the canvas position for a processor.

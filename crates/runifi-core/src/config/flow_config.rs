@@ -1,13 +1,17 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use serde::Deserialize;
 
 /// Top-level flow configuration, loaded from TOML.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct FlowConfig {
+    #[serde(default)]
     pub flow: FlowDefinition,
     #[serde(default)]
     pub api: ApiConfig,
+    #[serde(default)]
+    pub engine: EngineConfig,
     #[serde(default)]
     pub audit: AuditConfig,
 }
@@ -206,11 +210,26 @@ fn default_max_sse_connections() -> usize {
 
 #[derive(Debug, Deserialize)]
 pub struct FlowDefinition {
+    #[serde(default = "default_flow_name")]
     pub name: String,
     #[serde(default)]
     pub processors: Vec<ProcessorConfig>,
     #[serde(default)]
     pub connections: Vec<ConnectionConfig>,
+}
+
+impl Default for FlowDefinition {
+    fn default() -> Self {
+        Self {
+            name: default_flow_name(),
+            processors: Vec::new(),
+            connections: Vec::new(),
+        }
+    }
+}
+
+fn default_flow_name() -> String {
+    "default-flow".to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -274,6 +293,121 @@ pub struct BackPressureConfigToml {
     pub max_bytes: Option<u64>,
 }
 
+/// Engine-level configuration.
+#[derive(Debug, Default, Deserialize)]
+pub struct EngineConfig {
+    /// Directory for runtime flow state persistence.
+    /// Default: `./data/conf/`
+    #[serde(default = "default_conf_dir")]
+    pub conf_dir: PathBuf,
+    #[serde(default)]
+    pub content_repository: ContentRepositoryConfig,
+    #[serde(default)]
+    pub flowfile_repository: FlowFileRepositoryConfig,
+}
+
+fn default_conf_dir() -> PathBuf {
+    PathBuf::from("./data/conf")
+}
+
+/// Content repository type selection.
+#[derive(Debug, Deserialize)]
+pub struct ContentRepositoryConfig {
+    /// "memory" (default) or "file"
+    #[serde(default = "default_repo_type")]
+    pub repo_type: String,
+    /// File-based repository settings (only used when repo_type = "file").
+    pub file: Option<FileRepoConfigToml>,
+}
+
+impl Default for ContentRepositoryConfig {
+    fn default() -> Self {
+        Self {
+            repo_type: default_repo_type(),
+            file: None,
+        }
+    }
+}
+
+fn default_repo_type() -> String {
+    "memory".to_string()
+}
+
+/// TOML configuration for the file-based content repository.
+#[derive(Debug, Deserialize)]
+pub struct FileRepoConfigToml {
+    /// Container directories for segment files.
+    pub containers: Vec<PathBuf>,
+    /// Max size of a single segment file in bytes (default: 128MB).
+    #[serde(default = "default_max_segment_size")]
+    pub max_segment_size_bytes: u64,
+    /// Memory threshold before eviction starts (default: 256MB).
+    #[serde(default = "default_memory_threshold")]
+    pub memory_threshold_bytes: u64,
+    /// Content <= this size stays in memory (default: 64KB).
+    #[serde(default = "default_inline_threshold")]
+    pub inline_threshold_bytes: u64,
+    /// Background cleanup interval in seconds (default: 30).
+    #[serde(default = "default_cleanup_interval")]
+    pub cleanup_interval_secs: u64,
+}
+
+fn default_max_segment_size() -> u64 {
+    128 * 1024 * 1024
+}
+
+fn default_memory_threshold() -> u64 {
+    256 * 1024 * 1024
+}
+
+fn default_inline_threshold() -> u64 {
+    64 * 1024
+}
+
+fn default_cleanup_interval() -> u64 {
+    30
+}
+
+/// FlowFile repository type selection.
+#[derive(Debug, Deserialize)]
+pub struct FlowFileRepositoryConfig {
+    /// "memory" (default) or "wal"
+    #[serde(default = "default_repo_type")]
+    pub repo_type: String,
+    /// WAL repository settings (only used when repo_type = "wal").
+    pub wal: Option<WalRepoConfigToml>,
+}
+
+impl Default for FlowFileRepositoryConfig {
+    fn default() -> Self {
+        Self {
+            repo_type: default_repo_type(),
+            wal: None,
+        }
+    }
+}
+
+/// TOML configuration for the WAL-based FlowFile repository.
+#[derive(Debug, Deserialize)]
+pub struct WalRepoConfigToml {
+    /// Directory for WAL and checkpoint files.
+    pub dir: PathBuf,
+    /// fsync mode: "always" (default) or "never".
+    #[serde(default = "default_fsync_mode")]
+    pub fsync_mode: String,
+    /// Checkpoint interval in seconds (default: 120).
+    #[serde(default = "default_checkpoint_interval")]
+    pub checkpoint_interval_secs: u64,
+}
+
+fn default_fsync_mode() -> String {
+    "always".to_string()
+}
+
+fn default_checkpoint_interval() -> u64 {
+    120
+}
+
 /// Configuration for the structured audit trail.
 #[derive(Debug, Deserialize)]
 pub struct AuditConfig {
@@ -304,4 +438,39 @@ fn default_audit_enabled() -> bool {
 
 fn default_audit_log_to_tracing() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_flow_config_has_empty_flow() {
+        let config = FlowConfig::default();
+        assert_eq!(config.flow.name, "default-flow");
+        assert!(config.flow.processors.is_empty());
+        assert!(config.flow.connections.is_empty());
+        assert!(config.api.enabled);
+        assert_eq!(config.api.port, 8080);
+    }
+
+    #[test]
+    fn empty_toml_deserializes_to_empty_flow() {
+        let config: FlowConfig = toml::from_str("").unwrap();
+        assert_eq!(config.flow.name, "default-flow");
+        assert!(config.flow.processors.is_empty());
+        assert!(config.flow.connections.is_empty());
+    }
+
+    #[test]
+    fn minimal_toml_with_flow_name_only() {
+        let toml_str = r#"
+            [flow]
+            name = "my-flow"
+        "#;
+        let config: FlowConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.flow.name, "my-flow");
+        assert!(config.flow.processors.is_empty());
+        assert!(config.flow.connections.is_empty());
+    }
 }

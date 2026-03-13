@@ -10,28 +10,6 @@ use crate::connection::flow_connection::FlowConnection;
 use crate::id::IdGenerator;
 use crate::repository::content_repo::ContentRepository;
 
-/// Engine-internal extension of `ProcessSession` with routing and metrics methods.
-///
-/// Implemented by `CoreProcessSession`. `ProcessorNode` uses this supertrait so
-/// it can access pending transfer data and session metrics after `on_trigger`
-/// without depending on the concrete type. Security components that wrap the
-/// session (e.g. audit middleware) should implement this trait as well.
-pub trait EngineSession: ProcessSession {
-    /// Take pending transfers for routing. Drains the internal buffer.
-    fn take_transfers(&mut self) -> Vec<(FlowFile, &'static str)>;
-    /// Whether this session has been committed.
-    fn is_committed(&self) -> bool;
-    /// Number of FlowFiles acquired from input connections this session.
-    fn acquired_count(&self) -> usize;
-    /// Total bytes of FlowFiles acquired from input connections this session.
-    fn acquired_bytes(&self) -> u64;
-    /// Upcast to `&mut dyn ProcessSession` for passing to the processor supervisor.
-    ///
-    /// Required because Rust does not automatically coerce `dyn SubTrait` to
-    /// `dyn SuperTrait` at trait object boundaries.
-    fn as_process_session_mut(&mut self) -> &mut dyn ProcessSession;
-}
-
 /// Pending transfer: a FlowFile waiting to be routed to a relationship.
 struct PendingTransfer {
     flowfile: FlowFile,
@@ -55,6 +33,8 @@ pub struct CoreProcessSession {
     created_content_claims: Vec<u64>,
     committed: bool,
     yield_duration_ms: u64,
+    /// IDs of FlowFiles removed during `commit()`, for WAL DELETE ops.
+    committed_remove_ids: Vec<u64>,
 }
 
 impl CoreProcessSession {
@@ -74,7 +54,36 @@ impl CoreProcessSession {
             created_content_claims: Vec::new(),
             committed: false,
             yield_duration_ms,
+            committed_remove_ids: Vec::new(),
         }
+    }
+
+    /// Get pending transfers for routing by the engine after commit.
+    pub fn take_transfers(&mut self) -> Vec<(FlowFile, &'static str)> {
+        self.pending_transfers
+            .drain(..)
+            .map(|t| (t.flowfile, t.relationship_name))
+            .collect()
+    }
+
+    /// Check if the session was committed.
+    pub fn is_committed(&self) -> bool {
+        self.committed
+    }
+
+    /// Number of FlowFiles acquired from input connections this session.
+    pub fn acquired_count(&self) -> usize {
+        self.acquired_flowfiles.len()
+    }
+
+    /// Total bytes of FlowFiles acquired from input connections this session.
+    pub fn acquired_bytes(&self) -> u64 {
+        self.acquired_flowfiles.iter().map(|ff| ff.size).sum()
+    }
+
+    /// Take the IDs of FlowFiles removed during `commit()` for WAL DELETE ops.
+    pub fn take_committed_remove_ids(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.committed_remove_ids)
     }
 }
 
@@ -188,6 +197,9 @@ impl ProcessSession for CoreProcessSession {
     }
 
     fn commit(&mut self) {
+        // Capture remove IDs before decrementing refs (for WAL DELETE ops).
+        self.committed_remove_ids = self.pending_removes.iter().map(|ff| ff.id).collect();
+
         // Decrement ref counts for removed FlowFiles.
         for ff in self.pending_removes.drain(..) {
             if let Some(claim) = &ff.content_claim {
@@ -218,31 +230,6 @@ impl ProcessSession for CoreProcessSession {
         self.pending_transfers.clear();
         self.pending_removes.clear();
         self.committed = false;
-    }
-}
-
-impl EngineSession for CoreProcessSession {
-    fn take_transfers(&mut self) -> Vec<(FlowFile, &'static str)> {
-        self.pending_transfers
-            .drain(..)
-            .map(|t| (t.flowfile, t.relationship_name))
-            .collect()
-    }
-
-    fn is_committed(&self) -> bool {
-        self.committed
-    }
-
-    fn acquired_count(&self) -> usize {
-        self.acquired_flowfiles.len()
-    }
-
-    fn acquired_bytes(&self) -> u64 {
-        self.acquired_flowfiles.iter().map(|ff| ff.size).sum()
-    }
-
-    fn as_process_session_mut(&mut self) -> &mut dyn ProcessSession {
-        self
     }
 }
 

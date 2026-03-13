@@ -30,6 +30,8 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # stable
+        with:
+          toolchain: stable
 
       - name: Cache cargo registry & target
         uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
@@ -81,7 +83,7 @@ jobs:
           mkdir -p staging/runifi
           cp target/release/runifi staging/runifi/
           cp target/release/runifi-cli staging/runifi/
-          cp config/flow.toml staging/runifi/flow.example.toml
+          cp config/examples/demo-pipeline.toml staging/runifi/flow.example.toml
           cp dist/runifi.service staging/runifi/
           cp dist/runifi.env staging/runifi/
           cp LICENSE staging/runifi/

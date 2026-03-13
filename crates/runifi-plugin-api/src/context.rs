@@ -7,6 +7,14 @@ pub trait ProcessContext: Send + Sync {
     /// Get a resolved property value by name.
     fn get_property(&self, name: &str) -> PropertyValue;
 
+    /// Return the names of all configured properties.
+    ///
+    /// This includes both declared descriptor properties and any dynamic
+    /// (user-defined) properties set on the processor instance.
+    fn property_names(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// The configured instance name of this processor.
     fn name(&self) -> &str;
 

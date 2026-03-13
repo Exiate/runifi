@@ -7,9 +7,9 @@ A high-performance data flow engine built in Rust. Routes, transforms, and trans
 
 ## Features
 
-- **Micro transfers** — 5 KB files at 5,000+/sec (sensor data, logs, events)
-- **Standard transfers** — 30 MB files (photos, documents, media) at 500+ MB/s
-- **Bulk transfers** — multi-GB files (disk images, databases) at 800+ MB/s
+- **Micro transfers** — small files at high throughput (sensor data, logs, events)
+- **Standard transfers** — medium files (photos, documents, media)
+- **Bulk transfers** — large files (disk images, databases, backups)
 - **Visual flow designer** — web dashboard on port 8080 with drag-and-drop canvas
 - **Fault tolerance** — per-processor circuit breakers with exponential backoff
 - **Plugin system** — extend with custom processors, sources, and sinks
@@ -66,7 +66,7 @@ The server binary is at `target/release/runifi` and the CLI at `target/release/r
 
 ## Configuration
 
-Flows are defined in TOML. See [`config/flow.toml`](config/flow.toml) for a complete example.
+Flows are defined in TOML. See [`config/examples/demo-pipeline.toml`](config/examples/demo-pipeline.toml) for a complete example.
 
 ```toml
 [flow]
@@ -87,10 +87,16 @@ relationship = "success"
 destination = "log-attributes"
 ```
 
-### Run with a config
+### Run (blank canvas)
 
 ```bash
-cargo run -p runifi -- config/flow.toml
+cargo run -p runifi
+```
+
+### Run with the demo pipeline
+
+```bash
+cargo run -p runifi -- config/examples/demo-pipeline.toml
 ```
 
 ## Web Dashboard

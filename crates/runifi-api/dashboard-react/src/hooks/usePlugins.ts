@@ -1,7 +1,7 @@
 // Fetches available processor types from GET /api/v1/plugins
 
 import { useState, useEffect } from 'react';
-import type { PluginDescriptor, PluginsResponse } from '../types/api';
+import type { PluginDescriptor } from '../types/api';
 
 // Fallback plugins when the backend is not yet ready
 const FALLBACK_PLUGINS: PluginDescriptor[] = [
@@ -98,11 +98,23 @@ export function usePlugins(): UsePluginsResult {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
       })
-      .then((data: PluginDescriptor[] | PluginsResponse) => {
+      .then((data: any) => {
         if (!cancelled) {
-          // API may return a plain array or {plugins: [...]}
-          const list = Array.isArray(data) ? data : data.plugins;
-          setPlugins(list ?? FALLBACK_PLUGINS);
+          // API may return bare array or { plugins: [...] }
+          const raw: unknown[] = Array.isArray(data) ? data : (data.plugins ?? []);
+          // Backend only returns type_name + kind — fill in display_name/description from fallbacks
+          const merged: PluginDescriptor[] = raw.map((item: any) => {
+            const fallback = FALLBACK_PLUGINS.find((f) => f.type_name === item.type_name);
+            return {
+              type_name: item.type_name ?? '',
+              display_name: item.display_name ?? fallback?.display_name ?? item.type_name ?? '',
+              description: item.description ?? fallback?.description ?? '',
+              kind: item.kind ?? 'processor',
+              relationships: item.relationships ?? fallback?.relationships ?? ['success'],
+              properties: item.properties ?? fallback?.properties ?? [],
+            };
+          });
+          setPlugins(merged);
           setLoading(false);
         }
       })

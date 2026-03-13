@@ -134,6 +134,11 @@ impl FlowConnection {
         self.bytes.load(Ordering::Relaxed)
     }
 
+    /// Get the back-pressure configuration for this connection.
+    pub fn back_pressure_config(&self) -> BackPressureConfig {
+        self.config
+    }
+
     /// Get a handle to the notify for async wakeup.
     pub fn notifier(&self) -> Arc<Notify> {
         self.notify.clone()

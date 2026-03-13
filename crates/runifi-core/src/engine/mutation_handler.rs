@@ -19,6 +19,7 @@ use crate::connection::query::FlowConnectionQuery;
 use crate::id::IdGenerator;
 use crate::registry::plugin_registry::PluginRegistry;
 use crate::repository::content_repo::ContentRepository;
+use crate::repository::flowfile_repo::FlowFileRepository;
 
 use super::flow_engine::scheduling_display;
 
@@ -37,6 +38,7 @@ pub struct DefaultMutationHandler {
     pub parent_cancel: CancellationToken,
     pub proc_tokens: Arc<parking_lot::Mutex<HashMap<String, CancellationToken>>>,
     pub runtime_conn_id: usize,
+    pub flowfile_repo: Arc<dyn FlowFileRepository>,
     pub audit_logger: Arc<dyn AuditLogger>,
 }
 
@@ -119,6 +121,7 @@ impl DefaultMutationHandler {
             child_token.clone(),
             metrics.clone(),
             self.bulletin_board.clone(),
+            self.flowfile_repo.clone(),
         );
 
         let input_h = pn.input_connections_handle();

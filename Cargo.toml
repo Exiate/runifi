@@ -41,6 +41,7 @@ rustls = "0.23"
 bytes = { version = "1", features = ["serde"] }
 memmap2 = "0.9"              # Memory-mapped files for large transfers
 io-uring = "0.7"             # Linux io_uring for zero-copy IO
+crc32fast = "1"              # Fast CRC32 checksums for content integrity
 
 # Async utilities
 futures = "0.3"
@@ -55,6 +56,7 @@ inventory = "0.3"            # Compile-time plugin registration
 slab = "0.4"                 # Slab allocator for FlowFile IDs
 parking_lot = "0.12"         # Fast synchronization primitives
 smallvec = "2"               # Small-buffer-optimized Vec
+regex-lite = "0.1"           # Lightweight regex for expression language
 aes-gcm = "0.10"             # AES-256-GCM authenticated encryption
 zeroize = { version = "1", features = ["derive"] }  # Secure memory zeroing
 hex = "0.4"                  # Hex encoding/decoding for keys
@@ -68,11 +70,11 @@ axum = "0.8"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 tower-http = { version = "0.6", features = ["cors", "limit"] }
 tower = { version = "0.5", features = ["util"] }
-governor = "0.8"
+governor = "0.10"
 tokio-stream = { version = "0.1", features = ["time"] }
 include_dir = "0.7"
 subtle = "2"
-rand = "0.8"
+rand = "0.9"
 urlencoding = "2"
 
 # Internal crates
