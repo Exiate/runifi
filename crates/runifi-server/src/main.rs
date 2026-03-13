@@ -1,6 +1,8 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 use runifi_core::audit::{
@@ -30,13 +32,77 @@ use runifi_core::repository::static_key_provider::StaticKeyProvider;
 // Ensure processor registrations are linked in.
 extern crate runifi_processors;
 
+/// RuniFi — high-performance data flow engine.
+///
+/// A Rust reimplementation of Apache NiFi, purpose-built for ultra-low-latency
+/// and high-throughput file transfers.
+#[derive(Parser, Debug)]
+#[command(version, about)]
+struct Cli {
+    /// Path to flow config TOML file.
+    #[arg(short, long, default_value = "config/flow.toml")]
+    config: PathBuf,
+
+    /// API server bind address (overrides config file).
+    #[arg(short, long)]
+    bind: Option<String>,
+
+    /// API server port (overrides config file).
+    #[arg(short, long)]
+    port: Option<u16>,
+
+    /// Log level (overrides RUST_LOG env var).
+    #[arg(long)]
+    log_level: Option<String>,
+
+    /// Runtime persistence directory (overrides config file).
+    #[arg(long)]
+    conf_dir: Option<PathBuf>,
+
+    /// WAL FlowFile repository directory (overrides config file).
+    #[arg(long)]
+    wal_dir: Option<PathBuf>,
+}
+
+/// Apply CLI overrides to the loaded config.
+fn apply_cli_overrides(config: &mut FlowConfig, cli: &Cli) {
+    if let Some(ref bind) = cli.bind {
+        config.api.bind_address = bind.clone();
+    }
+    if let Some(port) = cli.port {
+        config.api.port = port;
+    }
+    if let Some(ref dir) = cli.conf_dir {
+        config.engine.conf_dir = dir.clone();
+    }
+    if let Some(ref dir) = cli.wal_dir {
+        let wal_config = config
+            .engine
+            .flowfile_repository
+            .wal
+            .get_or_insert_with(|| runifi_core::config::flow_config::WalRepoConfigToml {
+                dir: dir.clone(),
+                fsync_mode: "always".to_string(),
+                checkpoint_interval_secs: 120,
+            });
+        wal_config.dir = dir.clone();
+        // If the user specifies a WAL dir, ensure the repo type is set to WAL.
+        config.engine.flowfile_repository.repo_type = "wal".to_string();
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
+    let cli = Cli::parse();
+
+    // Determine log filter: CLI flag > RUST_LOG env > default "info".
+    let log_filter = if let Some(ref level) = cli.log_level {
+        EnvFilter::new(level)
+    } else {
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
+    };
+
+    tracing_subscriber::fmt().with_env_filter(log_filter).init();
 
     tracing::info!("RuniFi v{} starting...", env!("CARGO_PKG_VERSION"));
 
@@ -50,51 +116,31 @@ async fn main() -> Result<()> {
     );
 
     // Load seed flow configuration (TOML), defaulting to an empty flow.
-    let config_path = std::env::args().nth(1);
+    let config_path = &cli.config;
 
-    let config: FlowConfig = match &config_path {
-        Some(path) => {
+    let mut config: FlowConfig = match std::fs::read_to_string(config_path) {
+        Ok(config_str) => {
+            let path_str = config_path.display().to_string();
             // Check config file permissions (Unix only).
-            if let Err(e) = check_config_permissions(path) {
+            if let Err(e) = check_config_permissions(&path_str) {
                 tracing::error!(error = %e, "Config file permission check failed");
                 return Err(anyhow::anyhow!("{}", e));
             }
-
-            let config_str = std::fs::read_to_string(path).context("Failed to read config file")?;
             // Expand environment variable references before parsing.
             let config_str = expand_env_vars(&config_str);
             let cfg: FlowConfig =
                 toml::from_str(&config_str).context("Failed to parse flow configuration")?;
-            tracing::info!(flow = %cfg.flow.name, path = %path, "Loaded seed flow configuration");
+            tracing::info!(flow = %cfg.flow.name, path = %path_str, "Loaded seed flow configuration");
             cfg
         }
-        None => {
-            // Try the default path; if it doesn't exist, start with an empty flow.
-            let default_path = "config/flow.toml";
-            match std::fs::read_to_string(default_path) {
-                Ok(config_str) => {
-                    // Check permissions on default path too.
-                    if let Err(e) = check_config_permissions(default_path) {
-                        tracing::error!(error = %e, "Config file permission check failed");
-                        return Err(anyhow::anyhow!("{}", e));
-                    }
-                    let config_str = expand_env_vars(&config_str);
-                    let cfg: FlowConfig = toml::from_str(&config_str)
-                        .context("Failed to parse flow configuration")?;
-                    tracing::info!(
-                        flow = %cfg.flow.name,
-                        path = %default_path,
-                        "Loaded seed flow configuration"
-                    );
-                    cfg
-                }
-                Err(_) => {
-                    tracing::info!("No config file found, starting with blank canvas");
-                    FlowConfig::default()
-                }
-            }
+        Err(_) => {
+            tracing::info!("No config file found, starting with blank canvas");
+            FlowConfig::default()
         }
     };
+
+    // Apply CLI overrides on top of the config file values.
+    apply_cli_overrides(&mut config, &cli);
 
     // Resolve the encryption key from config (needed for ENC() decryption).
     let encryption_key: Option<Vec<u8>> = config
@@ -108,17 +154,14 @@ async fn main() -> Result<()> {
     // Warn if the encryption key appears to be stored as plaintext in the config file.
     if encryption_key.is_some()
         && let Some(enc) = config.api.encryption.as_ref()
+        && let Ok(raw_config) = std::fs::read_to_string(config_path)
+        && raw_config.contains(&enc.key)
     {
-        let raw_path = config_path.as_deref().unwrap_or("config/flow.toml");
-        if let Ok(raw_config) = std::fs::read_to_string(raw_path)
-            && raw_config.contains(&enc.key)
-        {
-            tracing::warn!(
-                "Encryption key appears to be stored as plaintext in the config file. \
-                 Consider using environment variable substitution: \
-                 key = \"${{RUNIFI_ENCRYPTION_KEY}}\""
-            );
-        }
+        tracing::warn!(
+            "Encryption key appears to be stored as plaintext in the config file. \
+             Consider using environment variable substitution: \
+             key = \"${{RUNIFI_ENCRYPTION_KEY}}\""
+        );
     }
 
     // Check for persisted runtime flow state.
@@ -551,4 +594,143 @@ async fn wait_for_shutdown() {
         .await
         .expect("Failed to listen for Ctrl+C");
     tracing::info!("Received shutdown signal");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn cli_defaults() {
+        let cli = Cli::parse_from(["runifi"]);
+        assert_eq!(cli.config, PathBuf::from("config/flow.toml"));
+        assert!(cli.bind.is_none());
+        assert!(cli.port.is_none());
+        assert!(cli.log_level.is_none());
+        assert!(cli.conf_dir.is_none());
+        assert!(cli.wal_dir.is_none());
+    }
+
+    #[test]
+    fn cli_config_short_flag() {
+        let cli = Cli::parse_from(["runifi", "-c", "my/flow.toml"]);
+        assert_eq!(cli.config, PathBuf::from("my/flow.toml"));
+    }
+
+    #[test]
+    fn cli_config_long_flag() {
+        let cli = Cli::parse_from(["runifi", "--config", "my/flow.toml"]);
+        assert_eq!(cli.config, PathBuf::from("my/flow.toml"));
+    }
+
+    #[test]
+    fn cli_bind_and_port() {
+        let cli = Cli::parse_from(["runifi", "-b", "0.0.0.0", "-p", "9090"]);
+        assert_eq!(cli.bind.as_deref(), Some("0.0.0.0"));
+        assert_eq!(cli.port, Some(9090));
+    }
+
+    #[test]
+    fn cli_log_level() {
+        let cli = Cli::parse_from(["runifi", "--log-level", "debug"]);
+        assert_eq!(cli.log_level.as_deref(), Some("debug"));
+    }
+
+    #[test]
+    fn cli_conf_dir_and_wal_dir() {
+        let cli = Cli::parse_from([
+            "runifi",
+            "--conf-dir",
+            "/data/conf",
+            "--wal-dir",
+            "/data/wal",
+        ]);
+        assert_eq!(cli.conf_dir, Some(PathBuf::from("/data/conf")));
+        assert_eq!(cli.wal_dir, Some(PathBuf::from("/data/wal")));
+    }
+
+    #[test]
+    fn cli_all_flags_combined() {
+        let cli = Cli::parse_from([
+            "runifi",
+            "-c",
+            "test.toml",
+            "-b",
+            "192.168.1.1",
+            "-p",
+            "3000",
+            "--log-level",
+            "trace",
+            "--conf-dir",
+            "/tmp/conf",
+            "--wal-dir",
+            "/tmp/wal",
+        ]);
+        assert_eq!(cli.config, PathBuf::from("test.toml"));
+        assert_eq!(cli.bind.as_deref(), Some("192.168.1.1"));
+        assert_eq!(cli.port, Some(3000));
+        assert_eq!(cli.log_level.as_deref(), Some("trace"));
+        assert_eq!(cli.conf_dir, Some(PathBuf::from("/tmp/conf")));
+        assert_eq!(cli.wal_dir, Some(PathBuf::from("/tmp/wal")));
+    }
+
+    #[test]
+    fn apply_overrides_bind_and_port() {
+        let mut config = FlowConfig::default();
+        let cli = Cli::parse_from(["runifi", "-b", "10.0.0.1", "-p", "4000"]);
+        apply_cli_overrides(&mut config, &cli);
+        assert_eq!(config.api.bind_address, "10.0.0.1");
+        assert_eq!(config.api.port, 4000);
+    }
+
+    #[test]
+    fn apply_overrides_conf_dir() {
+        let mut config = FlowConfig::default();
+        let cli = Cli::parse_from(["runifi", "--conf-dir", "/var/runifi/conf"]);
+        apply_cli_overrides(&mut config, &cli);
+        assert_eq!(config.engine.conf_dir, PathBuf::from("/var/runifi/conf"));
+    }
+
+    #[test]
+    fn apply_overrides_wal_dir_sets_repo_type() {
+        let mut config = FlowConfig::default();
+        assert_eq!(config.engine.flowfile_repository.repo_type, "memory");
+        let cli = Cli::parse_from(["runifi", "--wal-dir", "/var/runifi/wal"]);
+        apply_cli_overrides(&mut config, &cli);
+        assert_eq!(config.engine.flowfile_repository.repo_type, "wal");
+        let wal = config.engine.flowfile_repository.wal.as_ref().unwrap();
+        assert_eq!(wal.dir, PathBuf::from("/var/runifi/wal"));
+    }
+
+    #[test]
+    fn apply_overrides_no_flags_leaves_defaults() {
+        let mut config = FlowConfig::default();
+        let original_bind = config.api.bind_address.clone();
+        let original_port = config.api.port;
+        let original_conf = config.engine.conf_dir.clone();
+        let cli = Cli::parse_from(["runifi"]);
+        apply_cli_overrides(&mut config, &cli);
+        assert_eq!(config.api.bind_address, original_bind);
+        assert_eq!(config.api.port, original_port);
+        assert_eq!(config.engine.conf_dir, original_conf);
+        assert!(config.engine.flowfile_repository.wal.is_none());
+    }
+
+    #[test]
+    fn cli_version_flag() {
+        let result = Cli::try_parse_from(["runifi", "--version"]);
+        // --version causes clap to exit with an error containing version info.
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
+    }
+
+    #[test]
+    fn cli_help_flag() {
+        let result = Cli::try_parse_from(["runifi", "--help"]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
+    }
 }
