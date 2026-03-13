@@ -56,7 +56,10 @@ async fn main() -> Result<()> {
     let content_repo = Arc::new(InMemoryContentRepository::new());
 
     // Build the flow engine.
+    let registry = Arc::new(registry);
     let mut engine = FlowEngine::new(&config.flow.name, content_repo);
+    // Provide the registry so the engine can hot-add processors at runtime.
+    engine.set_registry(registry.clone());
 
     // Add processors from config.
     let mut node_ids = std::collections::HashMap::new();

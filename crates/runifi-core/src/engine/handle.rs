@@ -3,11 +3,15 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Instant;
 
+use dashmap::DashMap;
 use parking_lot::RwLock;
+use tokio::sync::{mpsc, oneshot};
 
 use super::bulletin::BulletinBoard;
 use super::metrics::ProcessorMetrics;
+use super::mutation::{MutationCommand, MutationError};
 use super::processor_node::SchedulingStrategy;
+use crate::connection::back_pressure::BackPressureConfig;
 use crate::connection::flow_connection::FlowConnection;
 use crate::repository::content_repo::ContentRepository;
 
@@ -92,27 +96,45 @@ pub enum PluginKind {
     Sink,
 }
 
-/// A Clone-able, Send+Sync handle for API queries against a running engine.
+/// Canvas position for a processor node (UI metadata only, not core engine data).
+#[derive(Debug, Clone, Copy)]
+pub struct Position {
+    pub x: f64,
+    pub y: f64,
+}
+
+/// A Clone-able, Send+Sync handle for API queries and mutations against a running engine.
 ///
-/// Created by `FlowEngine::start()` before tasks are spawned, providing
-/// read-only access to metrics and connection state without holding
-/// a reference to the engine itself.
+/// Created by `FlowEngine::start()`. The processor and connection lists use
+/// interior mutability (`RwLock`) so that runtime topology changes are visible
+/// to all handle clones without reinitialising the handle.
+///
+/// Topology mutations (add/remove processor/connection) are serialised through
+/// a `tokio::mpsc` command channel processed by the engine mutation task.
 #[derive(Clone)]
 pub struct EngineHandle {
     pub flow_name: String,
     pub started_at: Instant,
-    pub processors: Arc<Vec<ProcessorInfo>>,
-    pub connections: Arc<Vec<ConnectionInfo>>,
+    /// Live processor list — read via `processors.read()`.
+    pub processors: Arc<RwLock<Vec<ProcessorInfo>>>,
+    /// Live connection list — read via `connections.read()`.
+    pub connections: Arc<RwLock<Vec<ConnectionInfo>>>,
     pub plugin_types: Arc<Vec<PluginTypeInfo>>,
     pub bulletin_board: Arc<BulletinBoard>,
     pub content_repo: Arc<dyn ContentRepository>,
+    /// Canvas position store (processor name -> position). UI metadata only.
+    pub positions: Arc<DashMap<String, Position>>,
+    /// Sender half of the engine mutation command channel.
+    pub(crate) mutation_tx: mpsc::Sender<MutationCommand>,
 }
 
 impl EngineHandle {
+    // ── Lifecycle controls ───────────────────────────────────────────────────
+
     /// Request a circuit breaker reset for a processor by name.
     /// Returns `true` if the processor was found and the flag was set.
     pub fn request_circuit_reset(&self, name: &str) -> bool {
-        for info in self.processors.iter() {
+        for info in self.processors.read().iter() {
             if info.name == name {
                 info.metrics
                     .reset_requested
@@ -126,7 +148,7 @@ impl EngineHandle {
     /// Stop a processor by name (set enabled=false).
     /// Returns `true` if the processor was found.
     pub fn stop_processor(&self, name: &str) -> bool {
-        for info in self.processors.iter() {
+        for info in self.processors.read().iter() {
             if info.name == name {
                 info.metrics
                     .enabled
@@ -142,16 +164,9 @@ impl EngineHandle {
 
     /// Start a processor by name (set enabled=true).
     /// Returns `true` if the processor was found.
-    ///
-    /// Acquires a read lock on properties to synchronize with concurrent
-    /// config updates, ensuring the "config only changes while stopped"
-    /// invariant is maintained.
     pub fn start_processor(&self, name: &str) -> bool {
-        for info in self.processors.iter() {
+        for info in self.processors.read().iter() {
             if info.name == name {
-                // Hold the read lock while setting enabled to synchronize
-                // with update_processor_properties which holds the write lock
-                // before checking state.
                 let _props = info.properties.read();
                 info.metrics
                     .enabled
@@ -168,7 +183,7 @@ impl EngineHandle {
     /// Pause a processor by name (set paused=true).
     /// Returns `true` if the processor was found.
     pub fn pause_processor(&self, name: &str) -> bool {
-        for info in self.processors.iter() {
+        for info in self.processors.read().iter() {
             if info.name == name {
                 info.metrics
                     .paused
@@ -182,7 +197,7 @@ impl EngineHandle {
     /// Resume a processor by name (set paused=false).
     /// Returns `true` if the processor was found.
     pub fn resume_processor(&self, name: &str) -> bool {
-        for info in self.processors.iter() {
+        for info in self.processors.read().iter() {
             if info.name == name {
                 info.metrics
                     .paused
@@ -193,10 +208,20 @@ impl EngineHandle {
         false
     }
 
-    /// Get the processor info for a processor by name.
-    pub fn get_processor_info(&self, name: &str) -> Option<&ProcessorInfo> {
-        self.processors.iter().find(|p| p.name == name)
+    // ── Reads ────────────────────────────────────────────────────────────────
+
+    /// Get a cloned `ProcessorInfo` for a processor by name.
+    ///
+    /// Returns a clone so callers never hold the `RwLock` across an await point.
+    pub fn get_processor_info(&self, name: &str) -> Option<ProcessorInfo> {
+        self.processors
+            .read()
+            .iter()
+            .find(|p| p.name == name)
+            .cloned()
     }
+
+    // ── Config updates ───────────────────────────────────────────────────────
 
     /// Update properties for a processor by name.
     /// Returns `Ok(())` if successful, or an error describing the failure.
@@ -205,17 +230,18 @@ impl EngineHandle {
         name: &str,
         new_properties: HashMap<String, String>,
     ) -> Result<(), ConfigUpdateError> {
-        let info = self
-            .processors
+        let processors = self.processors.read();
+        let info = processors
             .iter()
             .find(|p| p.name == name)
-            .ok_or_else(|| ConfigUpdateError::NotFound(format!("Processor not found: {}", name)))?;
+            .ok_or_else(|| {
+                ConfigUpdateError::NotFound(format!("Processor not found: {}", name))
+            })?;
 
         // Acquire the write lock BEFORE checking state to prevent TOCTOU race
         // with concurrent start requests.
         let mut props = info.properties.write();
 
-        // Require processor to be stopped (enabled=false and not active).
         let enabled = info
             .metrics
             .enabled
@@ -231,7 +257,6 @@ impl EngineHandle {
             ));
         }
 
-        // Validate required properties.
         for desc in &info.property_descriptors {
             if desc.required {
                 let has_value = new_properties.contains_key(&desc.name);
@@ -245,7 +270,6 @@ impl EngineHandle {
             }
         }
 
-        // Validate allowed values.
         for (key, value) in &new_properties {
             if let Some(desc) = info.property_descriptors.iter().find(|d| d.name == *key)
                 && let Some(ref allowed) = desc.allowed_values
@@ -258,9 +282,103 @@ impl EngineHandle {
             }
         }
 
-        // Apply the new properties.
         *props = new_properties;
-
         Ok(())
+    }
+
+    // ── Runtime topology mutations ───────────────────────────────────────────
+
+    /// Add a new processor at runtime (hot-add).
+    ///
+    /// The processor starts in STOPPED state.
+    pub async fn add_processor(
+        &self,
+        name: String,
+        type_name: String,
+        properties: HashMap<String, String>,
+        scheduling_strategy: String,
+        interval_ms: u64,
+    ) -> Result<(), MutationError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.mutation_tx
+            .send(MutationCommand::AddProcessor {
+                name,
+                type_name,
+                properties,
+                scheduling_strategy,
+                interval_ms,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| MutationError::EngineNotRunning)?;
+        reply_rx.await.map_err(|_| MutationError::EngineNotRunning)?
+    }
+
+    /// Remove a processor at runtime (hot-remove).
+    ///
+    /// The processor must be STOPPED and have no active connections.
+    pub async fn remove_processor(&self, name: String) -> Result<(), MutationError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.mutation_tx
+            .send(MutationCommand::RemoveProcessor {
+                name,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| MutationError::EngineNotRunning)?;
+        reply_rx.await.map_err(|_| MutationError::EngineNotRunning)?
+    }
+
+    /// Add a new connection at runtime (hot-add).
+    ///
+    /// Returns the generated connection ID on success.
+    pub async fn add_connection(
+        &self,
+        source_name: String,
+        relationship: String,
+        dest_name: String,
+        config: BackPressureConfig,
+    ) -> Result<String, MutationError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.mutation_tx
+            .send(MutationCommand::AddConnection {
+                source_name,
+                relationship,
+                dest_name,
+                config,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| MutationError::EngineNotRunning)?;
+        reply_rx.await.map_err(|_| MutationError::EngineNotRunning)?
+    }
+
+    /// Remove a connection at runtime (hot-remove).
+    ///
+    /// If `force=false` and the queue is non-empty, returns `MutationError::QueueNotEmpty`.
+    /// With `force=true` the queue is drained and FlowFiles are discarded with a warning.
+    pub async fn remove_connection(&self, id: String, force: bool) -> Result<(), MutationError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.mutation_tx
+            .send(MutationCommand::RemoveConnection {
+                id,
+                force,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| MutationError::EngineNotRunning)?;
+        reply_rx.await.map_err(|_| MutationError::EngineNotRunning)?
+    }
+
+    // ── Position metadata ────────────────────────────────────────────────────
+
+    /// Store the canvas position for a processor (UI metadata).
+    pub fn set_position(&self, name: &str, x: f64, y: f64) {
+        self.positions.insert(name.to_string(), Position { x, y });
+    }
+
+    /// Read the canvas position for a processor.
+    pub fn get_position(&self, name: &str) -> Option<Position> {
+        self.positions.get(name).map(|p| *p)
     }
 }

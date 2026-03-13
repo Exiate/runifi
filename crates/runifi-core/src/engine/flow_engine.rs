@@ -2,12 +2,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use dashmap::DashMap;
+use parking_lot::RwLock;
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use runifi_plugin_api::Processor;
-
-use parking_lot::RwLock;
 
 use super::bulletin::BulletinBoard;
 use super::handle::{
@@ -15,11 +16,13 @@ use super::handle::{
     RelationshipInfo,
 };
 use super::metrics::ProcessorMetrics;
+use super::mutation::{MutationCommand, MutationError};
 use super::processor_node::{ProcessorNode, SchedulingStrategy};
 use crate::connection::back_pressure::BackPressureConfig;
 use crate::connection::flow_connection::FlowConnection;
 use crate::error::{Result, RuniFiError};
 use crate::id::IdGenerator;
+use crate::registry::plugin_registry::PluginRegistry;
 use crate::repository::content_repo::ContentRepository;
 
 /// A unique identifier for a processor node in the engine.
@@ -28,24 +31,24 @@ pub type NodeId = usize;
 /// A unique identifier for a connection in the engine.
 pub type ConnId = usize;
 
-/// The core flow engine — orchestrates a DAG of processors and connections.
+/// The core flow engine - orchestrates a DAG of processors and connections.
 ///
-/// Lifecycle: build the graph with `add_processor` / `connect`, then `start()`.
-/// The engine spawns one tokio task per processor. Call `stop()` for graceful shutdown.
+/// While running, topology mutations are serialised through a `tokio::mpsc`
+/// command channel drained by the `mutation_handler` task spawned during
+/// `start()`. This keeps all topology writes sequential.
 pub struct FlowEngine {
     flow_name: String,
     content_repo: Arc<dyn ContentRepository>,
     id_gen: Arc<IdGenerator>,
     cancel_token: CancellationToken,
     bulletin_board: Arc<BulletinBoard>,
+    registry: Option<Arc<PluginRegistry>>,
 
-    // Build-phase state (consumed on start).
     nodes: Vec<NodeBuilder>,
     connections: Vec<ConnBuilder>,
     next_node_id: NodeId,
     next_conn_id: ConnId,
 
-    // Run-phase state.
     task_handles: Vec<JoinHandle<()>>,
     running: bool,
     handle: Option<EngineHandle>,
@@ -76,6 +79,7 @@ impl FlowEngine {
             id_gen: Arc::new(IdGenerator::new()),
             cancel_token: CancellationToken::new(),
             bulletin_board: Arc::new(BulletinBoard::default()),
+            registry: None,
             nodes: Vec::new(),
             connections: Vec::new(),
             next_node_id: 0,
@@ -84,6 +88,11 @@ impl FlowEngine {
             running: false,
             handle: None,
         }
+    }
+
+    /// Provide a plugin registry for hot-add type validation.
+    pub fn set_registry(&mut self, registry: Arc<PluginRegistry>) {
+        self.registry = Some(registry);
     }
 
     /// Add a processor to the engine. Returns a node ID for wiring connections.
@@ -128,7 +137,7 @@ impl FlowEngine {
         id
     }
 
-    /// Start the engine — validates the DAG and spawns a task per processor.
+    /// Start the engine - validates the DAG and spawns a task per processor.
     pub async fn start(&mut self) -> Result<()> {
         if self.running {
             return Err(RuniFiError::EngineAlreadyRunning);
@@ -142,7 +151,7 @@ impl FlowEngine {
             flow_connections.push((conn.source_node, conn.relationship, conn.dest_node, fc));
         }
 
-        // Create metrics per processor.
+        // Create metrics and shared props per processor.
         let mut processor_infos: Vec<ProcessorInfo> = Vec::new();
         let mut metrics_by_node: HashMap<NodeId, Arc<ProcessorMetrics>> = HashMap::new();
         let mut shared_props_by_node: HashMap<NodeId, Arc<RwLock<HashMap<String, String>>>> =
@@ -152,37 +161,36 @@ impl FlowEngine {
             let metrics = Arc::new(ProcessorMetrics::new());
             metrics_by_node.insert(node_builder.id, metrics.clone());
 
-            // Extract property descriptors and relationships from the processor instance.
-            let (prop_descriptors, relationships) = if let Some(ref proc) = node_builder.processor {
-                let pds = proc
-                    .property_descriptors()
-                    .into_iter()
-                    .map(|pd| PropertyDescriptorInfo {
-                        name: pd.name.to_string(),
-                        description: pd.description.to_string(),
-                        required: pd.required,
-                        default_value: pd.default_value.map(|v| v.to_string()),
-                        sensitive: pd.sensitive,
-                        allowed_values: pd
-                            .allowed_values
-                            .map(|av| av.iter().map(|v| v.to_string()).collect()),
-                    })
-                    .collect();
-                let rels = proc
-                    .relationships()
-                    .into_iter()
-                    .map(|r| RelationshipInfo {
-                        name: r.name.to_string(),
-                        description: r.description.to_string(),
-                        auto_terminated: r.auto_terminated,
-                    })
-                    .collect();
-                (pds, rels)
-            } else {
-                (Vec::new(), Vec::new())
-            };
+            let (prop_descriptors, relationships) =
+                if let Some(ref proc) = node_builder.processor {
+                    let pds = proc
+                        .property_descriptors()
+                        .into_iter()
+                        .map(|pd| PropertyDescriptorInfo {
+                            name: pd.name.to_string(),
+                            description: pd.description.to_string(),
+                            required: pd.required,
+                            default_value: pd.default_value.map(|v| v.to_string()),
+                            sensitive: pd.sensitive,
+                            allowed_values: pd
+                                .allowed_values
+                                .map(|av| av.iter().map(|v| v.to_string()).collect()),
+                        })
+                        .collect();
+                    let rels = proc
+                        .relationships()
+                        .into_iter()
+                        .map(|r| RelationshipInfo {
+                            name: r.name.to_string(),
+                            description: r.description.to_string(),
+                            auto_terminated: r.auto_terminated,
+                        })
+                        .collect();
+                    (pds, rels)
+                } else {
+                    (Vec::new(), Vec::new())
+                };
 
-            // Shared mutable properties.
             let shared_props = Arc::new(RwLock::new(node_builder.properties.clone()));
             shared_props_by_node.insert(node_builder.id, shared_props.clone());
 
@@ -198,7 +206,6 @@ impl FlowEngine {
         }
 
         // Build ConnectionInfo for the handle.
-        // We need a name-lookup map for source/dest node IDs.
         let node_names: HashMap<NodeId, String> =
             self.nodes.iter().map(|n| (n.id, n.name.clone())).collect();
 
@@ -213,8 +220,14 @@ impl FlowEngine {
             })
             .collect();
 
+        // Wrap in shared mutable arcs visible from the handle.
+        let live_procs = Arc::new(RwLock::new(processor_infos));
+        let live_conns = Arc::new(RwLock::new(connection_infos));
+
         // Build ProcessorNodes.
         let mut processor_nodes: Vec<ProcessorNode> = Vec::new();
+        let mut proc_tokens: HashMap<String, CancellationToken> = HashMap::new();
+
         for node_builder in &mut self.nodes {
             let processor = node_builder
                 .processor
@@ -240,17 +253,17 @@ impl FlowEngine {
                 shared_props,
                 self.content_repo.clone(),
                 self.id_gen.clone(),
-                child_token,
+                child_token.clone(),
                 metrics,
                 self.bulletin_board.clone(),
             );
 
-            // Wire connections.
             for (src, rel, dst, fc) in &flow_connections {
                 if *src == node_builder.id {
-                    // Find the relationship object from the processor.
                     let relationships = pn.relationships();
-                    if let Some(relationship) = relationships.into_iter().find(|r| r.name == *rel) {
+                    if let Some(relationship) =
+                        relationships.into_iter().find(|r| r.name == *rel)
+                    {
                         pn.add_output(relationship, fc.clone());
                     }
                 }
@@ -259,18 +272,24 @@ impl FlowEngine {
                 }
             }
 
+            proc_tokens.insert(node_builder.name.clone(), child_token);
             processor_nodes.push(pn);
         }
 
-        // Build the EngineHandle before spawning tasks.
+        // Create the mutation command channel.
+        let (mutation_tx, mutation_rx) = mpsc::channel::<MutationCommand>(64);
+
+        // Build the EngineHandle.
         let engine_handle = EngineHandle {
             flow_name: self.flow_name.clone(),
             started_at: Instant::now(),
-            processors: Arc::new(processor_infos),
-            connections: Arc::new(connection_infos),
-            plugin_types: Arc::new(Vec::new()), // populated by server after start
+            processors: live_procs.clone(),
+            connections: live_conns.clone(),
+            plugin_types: Arc::new(Vec::new()),
             bulletin_board: self.bulletin_board.clone(),
             content_repo: self.content_repo.clone(),
+            positions: Arc::new(DashMap::new()),
+            mutation_tx,
         };
         self.handle = Some(engine_handle);
 
@@ -280,25 +299,62 @@ impl FlowEngine {
             self.task_handles.push(handle);
         }
 
-        // Spawn a dedicated metrics tick task that updates rolling windows once per second.
+        // Spawn the metrics tick task.
         {
-            let all_metrics: Vec<Arc<ProcessorMetrics>> =
+            let original_metrics: Vec<Arc<ProcessorMetrics>> =
                 metrics_by_node.values().cloned().collect();
             let tick_token = self.cancel_token.child_token();
+            let live_procs_tick = live_procs.clone();
             let tick_handle = tokio::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_secs(1));
                 loop {
                     tokio::select! {
                         _ = tick_token.cancelled() => break,
                         _ = interval.tick() => {
-                            for m in &all_metrics {
+                            for m in &original_metrics {
                                 m.record_tick();
+                            }
+                            let procs = live_procs_tick.read();
+                            for p in procs.iter() {
+                                let is_original = original_metrics
+                                    .iter()
+                                    .any(|m| Arc::ptr_eq(m, &p.metrics));
+                                if !is_original {
+                                    p.metrics.record_tick();
+                                }
                             }
                         }
                     }
                 }
             });
             self.task_handles.push(tick_handle);
+        }
+
+        // Spawn the mutation handler task.
+        {
+            let mutation_cancel = self.cancel_token.child_token();
+            let content_repo = self.content_repo.clone();
+            let id_gen = self.id_gen.clone();
+            let bulletin_board = self.bulletin_board.clone();
+            let registry = self.registry.clone();
+            let parent_cancel = self.cancel_token.clone();
+
+            let shared_tokens: Arc<parking_lot::Mutex<HashMap<String, CancellationToken>>> =
+                Arc::new(parking_lot::Mutex::new(proc_tokens));
+
+            let mutation_handle = tokio::spawn(run_mutation_handler(
+                mutation_rx,
+                mutation_cancel,
+                live_procs,
+                live_conns,
+                content_repo,
+                id_gen,
+                bulletin_board,
+                registry,
+                parent_cancel,
+                shared_tokens,
+            ));
+            self.task_handles.push(mutation_handle);
         }
 
         self.running = true;
@@ -311,7 +367,7 @@ impl FlowEngine {
         Ok(())
     }
 
-    /// Stop the engine gracefully — cancels all tasks and waits for them to complete.
+    /// Stop the engine gracefully.
     pub async fn stop(&mut self) {
         if !self.running {
             return;
@@ -344,4 +400,321 @@ impl FlowEngine {
             handle.plugin_types = Arc::new(plugin_types);
         }
     }
+}
+
+// ── Mutation handler ──────────────────────────────────────────────────────────
+
+#[allow(clippy::too_many_arguments)]
+async fn run_mutation_handler(
+    mut rx: mpsc::Receiver<MutationCommand>,
+    cancel: CancellationToken,
+    live_procs: Arc<RwLock<Vec<ProcessorInfo>>>,
+    live_conns: Arc<RwLock<Vec<ConnectionInfo>>>,
+    content_repo: Arc<dyn ContentRepository>,
+    id_gen: Arc<IdGenerator>,
+    bulletin_board: Arc<BulletinBoard>,
+    registry: Option<Arc<PluginRegistry>>,
+    parent_cancel: CancellationToken,
+    proc_tokens: Arc<parking_lot::Mutex<HashMap<String, CancellationToken>>>,
+) {
+    let mut runtime_conn_id: usize = 0;
+
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                tracing::debug!("Mutation handler cancelled");
+                break;
+            }
+            cmd = rx.recv() => {
+                let Some(cmd) = cmd else {
+                    tracing::debug!("Mutation channel closed");
+                    break;
+                };
+
+                match cmd {
+                    MutationCommand::AddProcessor {
+                        name, type_name, properties,
+                        scheduling_strategy, interval_ms, reply,
+                    } => {
+                        let result = handle_add_processor(
+                            &name, &type_name, properties,
+                            &scheduling_strategy, interval_ms,
+                            &live_procs, &content_repo, &id_gen,
+                            &bulletin_board, &registry,
+                            &parent_cancel, &proc_tokens,
+                        );
+                        let _ = reply.send(result);
+                    }
+
+                    MutationCommand::RemoveProcessor { name, reply } => {
+                        let result = handle_remove_processor(
+                            &name, &live_procs, &live_conns, &proc_tokens,
+                        ).await;
+                        let _ = reply.send(result);
+                    }
+
+                    MutationCommand::AddConnection {
+                        source_name, relationship, dest_name, config, reply,
+                    } => {
+                        runtime_conn_id += 1;
+                        let conn_id = format!("runtime-conn-{}", runtime_conn_id);
+                        let result = handle_add_connection(
+                            conn_id, &source_name, &relationship, &dest_name,
+                            config, &live_procs, &live_conns,
+                        );
+                        let _ = reply.send(result);
+                    }
+
+                    MutationCommand::RemoveConnection { id, force, reply } => {
+                        let result = handle_remove_connection(&id, force, &live_conns);
+                        let _ = reply.send(result);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_add_processor(
+    name: &str,
+    type_name: &str,
+    properties: HashMap<String, String>,
+    scheduling_strategy: &str,
+    interval_ms: u64,
+    live_procs: &Arc<RwLock<Vec<ProcessorInfo>>>,
+    content_repo: &Arc<dyn ContentRepository>,
+    id_gen: &Arc<IdGenerator>,
+    bulletin_board: &Arc<BulletinBoard>,
+    registry: &Option<Arc<PluginRegistry>>,
+    parent_cancel: &CancellationToken,
+    proc_tokens: &Arc<parking_lot::Mutex<HashMap<String, CancellationToken>>>,
+) -> std::result::Result<(), MutationError> {
+    let reg = registry
+        .as_ref()
+        .ok_or_else(|| MutationError::Internal("No plugin registry available".into()))?;
+
+    let processor: Box<dyn Processor> = reg
+        .create_processor(type_name)
+        .ok_or_else(|| MutationError::UnknownType(type_name.to_string()))?;
+
+    if live_procs.read().iter().any(|p| p.name == name) {
+        return Err(MutationError::DuplicateName(name.to_string()));
+    }
+
+    let scheduling = if scheduling_strategy == "event" {
+        SchedulingStrategy::EventDriven
+    } else {
+        SchedulingStrategy::TimerDriven { interval_ms }
+    };
+
+    let metrics = Arc::new(ProcessorMetrics::new());
+    metrics
+        .enabled
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+
+    let prop_descriptors: Vec<PropertyDescriptorInfo> = processor
+        .property_descriptors()
+        .into_iter()
+        .map(|pd| PropertyDescriptorInfo {
+            name: pd.name.to_string(),
+            description: pd.description.to_string(),
+            required: pd.required,
+            default_value: pd.default_value.map(|v| v.to_string()),
+            sensitive: pd.sensitive,
+            allowed_values: pd
+                .allowed_values
+                .map(|av| av.iter().map(|v| v.to_string()).collect()),
+        })
+        .collect();
+
+    let relationships: Vec<RelationshipInfo> = processor
+        .relationships()
+        .into_iter()
+        .map(|r| RelationshipInfo {
+            name: r.name.to_string(),
+            description: r.description.to_string(),
+            auto_terminated: r.auto_terminated,
+        })
+        .collect();
+
+    let shared_props = Arc::new(RwLock::new(properties));
+    let child_token = parent_cancel.child_token();
+
+    let pn = ProcessorNode::new(
+        name.to_string(),
+        format!("runtime-{}", name),
+        processor,
+        scheduling.clone(),
+        shared_props.clone(),
+        content_repo.clone(),
+        id_gen.clone(),
+        child_token.clone(),
+        metrics.clone(),
+        bulletin_board.clone(),
+    );
+
+    proc_tokens.lock().insert(name.to_string(), child_token);
+    tokio::spawn(pn.run());
+
+    live_procs.write().push(ProcessorInfo {
+        name: name.to_string(),
+        type_name: type_name.to_string(),
+        scheduling,
+        metrics,
+        property_descriptors: prop_descriptors,
+        relationships,
+        properties: shared_props,
+    });
+
+    tracing::info!(name, type_name, "Hot-added processor");
+    Ok(())
+}
+
+async fn handle_remove_processor(
+    name: &str,
+    live_procs: &Arc<RwLock<Vec<ProcessorInfo>>>,
+    live_conns: &Arc<RwLock<Vec<ConnectionInfo>>>,
+    proc_tokens: &Arc<parking_lot::Mutex<HashMap<String, CancellationToken>>>,
+) -> std::result::Result<(), MutationError> {
+    {
+        let procs = live_procs.read();
+        let info = procs
+            .iter()
+            .find(|p| p.name == name)
+            .ok_or_else(|| MutationError::ProcessorNotFound(name.to_string()))?;
+
+        let enabled = info
+            .metrics
+            .enabled
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let active = info
+            .metrics
+            .active
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if enabled || active {
+            return Err(MutationError::ProcessorNotStopped);
+        }
+    }
+
+    {
+        let conns = live_conns.read();
+        let conn_ids: Vec<String> = conns
+            .iter()
+            .filter(|c| c.source_name == name || c.dest_name == name)
+            .map(|c| c.id.clone())
+            .collect();
+        if !conn_ids.is_empty() {
+            return Err(MutationError::ProcessorHasConnections(conn_ids.join(", ")));
+        }
+    }
+
+    if let Some(token) = proc_tokens.lock().remove(name) {
+        token.cancel();
+    }
+
+    live_procs.write().retain(|p| p.name != name);
+
+    tracing::info!(name, "Hot-removed processor");
+    Ok(())
+}
+
+fn handle_add_connection(
+    conn_id: String,
+    source_name: &str,
+    relationship: &str,
+    dest_name: &str,
+    config: BackPressureConfig,
+    live_procs: &Arc<RwLock<Vec<ProcessorInfo>>>,
+    live_conns: &Arc<RwLock<Vec<ConnectionInfo>>>,
+) -> std::result::Result<String, MutationError> {
+    {
+        let procs = live_procs.read();
+
+        let src = procs
+            .iter()
+            .find(|p| p.name == source_name)
+            .ok_or_else(|| MutationError::ProcessorNotFound(source_name.to_string()))?;
+
+        if !src.relationships.iter().any(|r| r.name == relationship) {
+            return Err(MutationError::UnknownRelationship(
+                relationship.to_string(),
+                source_name.to_string(),
+            ));
+        }
+
+        if procs.iter().all(|p| p.name != dest_name) {
+            return Err(MutationError::ProcessorNotFound(dest_name.to_string()));
+        }
+    }
+
+    {
+        let conns = live_conns.read();
+        if conns.iter().any(|c| {
+            c.source_name == source_name
+                && c.relationship == relationship
+                && c.dest_name == dest_name
+        }) {
+            return Err(MutationError::DuplicateConnection(
+                source_name.to_string(),
+                relationship.to_string(),
+                dest_name.to_string(),
+            ));
+        }
+    }
+
+    let fc = Arc::new(FlowConnection::new(conn_id.clone(), config));
+
+    live_conns.write().push(ConnectionInfo {
+        id: conn_id.clone(),
+        source_name: source_name.to_string(),
+        relationship: relationship.to_string(),
+        dest_name: dest_name.to_string(),
+        connection: fc,
+    });
+
+    tracing::info!(
+        id = %conn_id,
+        source = source_name,
+        relationship,
+        destination = dest_name,
+        "Hot-added connection"
+    );
+    Ok(conn_id)
+}
+
+fn handle_remove_connection(
+    id: &str,
+    force: bool,
+    live_conns: &Arc<RwLock<Vec<ConnectionInfo>>>,
+) -> std::result::Result<(), MutationError> {
+    let queue_count = {
+        let conns = live_conns.read();
+        let info = conns
+            .iter()
+            .find(|c| c.id == id)
+            .ok_or_else(|| MutationError::ConnectionNotFound(id.to_string()))?;
+        info.connection.count()
+    };
+
+    if queue_count > 0 && !force {
+        return Err(MutationError::QueueNotEmpty(queue_count));
+    }
+
+    if queue_count > 0 {
+        let conns = live_conns.read();
+        if let Some(info) = conns.iter().find(|c| c.id == id) {
+            let removed = info.connection.clear_queue();
+            tracing::warn!(
+                connection_id = %id,
+                discarded = removed,
+                "Force-removing connection with non-empty queue - FlowFiles discarded"
+            );
+        }
+    }
+
+    live_conns.write().retain(|c| c.id != id);
+
+    tracing::info!(id, "Hot-removed connection");
+    Ok(())
 }

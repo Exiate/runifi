@@ -64,7 +64,7 @@ async fn list_processor_bulletins(
     Query(query): Query<BulletinQuery>,
 ) -> Result<Json<Vec<BulletinResponse>>, ApiError> {
     // Verify the processor exists.
-    let exists = state.handle.processors.iter().any(|p| p.name == name);
+    let exists = state.handle.processors.read().iter().any(|p| p.name == name);
     if !exists {
         return Err(ApiError::ProcessorNotFound(name));
     }
