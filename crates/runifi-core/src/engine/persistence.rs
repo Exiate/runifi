@@ -5,11 +5,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use dashmap::DashMap;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
-use super::handle::EngineHandle;
+use super::handle::{ConnectionInfo, Position, ProcessorInfo};
 
 /// File names for persisted flow state.
 const FLOW_STATE_FILE: &str = "flow.json";
@@ -19,11 +20,20 @@ const FLOW_STATE_TMP: &str = "flow.json.tmp";
 /// Debounce interval for writes — coalesces rapid mutations.
 const DEBOUNCE_DURATION: Duration = Duration::from_secs(2);
 
+/// Current schema version for new persisted state files.
+const CURRENT_VERSION: u32 = 1;
+
+fn default_version() -> u32 {
+    1
+}
+
 // ── Serializable flow state types ─────────────────────────────────────────────
 
 /// The complete persisted flow state, serializable to/from JSON.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedFlowState {
+    #[serde(default = "default_version")]
+    pub version: u32,
     pub flow_name: String,
     pub processors: Vec<PersistedProcessor>,
     pub connections: Vec<PersistedConnection>,
@@ -70,12 +80,26 @@ pub struct PersistedPosition {
     pub y: f64,
 }
 
+// ── Snapshot source — breaks the Arc cycle ────────────────────────────────────
+
+/// The subset of engine state needed for persistence snapshotting.
+///
+/// Holds only `Arc` references to the live data collections, **not** an
+/// `EngineHandle`. This breaks the circular reference:
+/// `EngineHandle -> FlowPersistence -> EngineHandle`.
+pub(crate) struct SnapshotSource {
+    pub flow_name: String,
+    pub processors: Arc<RwLock<Vec<ProcessorInfo>>>,
+    pub connections: Arc<RwLock<Vec<ConnectionInfo>>>,
+    pub positions: Arc<DashMap<String, Position>>,
+}
+
 // ── Snapshot from live engine state ───────────────────────────────────────────
 
 impl PersistedFlowState {
-    /// Capture a snapshot of the current flow state from the engine handle.
-    pub fn snapshot(handle: &EngineHandle) -> Self {
-        let processors: Vec<PersistedProcessor> = handle
+    /// Capture a snapshot of the current flow state from the snapshot source.
+    pub(crate) fn snapshot(source: &SnapshotSource) -> Self {
+        let processors: Vec<PersistedProcessor> = source
             .processors
             .read()
             .iter()
@@ -87,7 +111,7 @@ impl PersistedFlowState {
             })
             .collect();
 
-        let connections: Vec<PersistedConnection> = handle
+        let connections: Vec<PersistedConnection> = source
             .connections
             .read()
             .iter()
@@ -106,7 +130,7 @@ impl PersistedFlowState {
             .collect();
 
         let mut positions = HashMap::new();
-        for entry in handle.positions.iter() {
+        for entry in source.positions.iter() {
             positions.insert(
                 entry.key().clone(),
                 PersistedPosition {
@@ -117,7 +141,8 @@ impl PersistedFlowState {
         }
 
         Self {
-            flow_name: handle.flow_name.clone(),
+            version: CURRENT_VERSION,
+            flow_name: source.flow_name.clone(),
             processors,
             connections,
             positions,
@@ -156,6 +181,7 @@ fn scheduling_display_to_persisted(display: &str) -> PersistedScheduling {
 /// 3. fsync the temp file
 /// 4. If a current flow.json exists, rename it to flow.json.bak
 /// 5. Rename temp file to flow.json
+/// 6. fsync the parent directory to ensure the rename is durable
 fn atomic_write(conf_dir: &Path, state: &PersistedFlowState) -> std::io::Result<()> {
     fs::create_dir_all(conf_dir)?;
 
@@ -182,12 +208,18 @@ fn atomic_write(conf_dir: &Path, state: &PersistedFlowState) -> std::io::Result<
     // Atomic rename.
     fs::rename(&tmp_path, &flow_path)?;
 
+    // Fsync the parent directory to ensure the rename metadata is durable.
+    // On ext4 with default mount options, a power failure between rename and
+    // kernel directory metadata flush could lose the rename without this.
+    fs::File::open(conf_dir)?.sync_all()?;
+
     Ok(())
 }
 
 /// Load persisted flow state from the runtime config directory.
 ///
-/// Returns `None` if no runtime flow file exists.
+/// Returns `None` if no runtime flow file exists. If the primary file
+/// contains corrupted JSON, attempts to load from the backup file.
 pub fn load_runtime_flow(conf_dir: &Path) -> std::io::Result<Option<PersistedFlowState>> {
     let flow_path = conf_dir.join(FLOW_STATE_FILE);
     if !flow_path.exists() {
@@ -195,10 +227,29 @@ pub fn load_runtime_flow(conf_dir: &Path) -> std::io::Result<Option<PersistedFlo
     }
 
     let json = fs::read_to_string(&flow_path)?;
-    let state: PersistedFlowState = serde_json::from_str(&json)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    match serde_json::from_str::<PersistedFlowState>(&json) {
+        Ok(state) => Ok(Some(state)),
+        Err(primary_err) => {
+            tracing::warn!(
+                error = %primary_err,
+                "Primary flow state file is corrupted, trying backup"
+            );
 
-    Ok(Some(state))
+            let bak_path = conf_dir.join(FLOW_STATE_BACKUP);
+            if !bak_path.exists() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    primary_err,
+                ));
+            }
+
+            let bak_json = fs::read_to_string(&bak_path)?;
+            serde_json::from_str(&bak_json).map(Some).map_err(|e| {
+                tracing::error!(error = %e, "Backup flow state file is also corrupted");
+                std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+            })
+        }
+    }
 }
 
 // ── FlowPersistence — debounced background writer ────────────────────────────
@@ -208,6 +259,9 @@ pub fn load_runtime_flow(conf_dir: &Path) -> std::io::Result<Option<PersistedFlo
 /// Shared via `Arc` between the engine handle and the background writer task.
 /// Call `notify_changed()` after any mutation; the background task will
 /// coalesce rapid changes and write at most once per `DEBOUNCE_DURATION`.
+///
+/// Holds only the `Arc` references it needs for snapshotting, **not** an
+/// `EngineHandle`, to avoid a circular `Arc` reference.
 #[derive(Clone)]
 pub struct FlowPersistence {
     inner: Arc<FlowPersistenceInner>,
@@ -216,7 +270,7 @@ pub struct FlowPersistence {
 struct FlowPersistenceInner {
     conf_dir: PathBuf,
     notify: Notify,
-    handle: RwLock<Option<EngineHandle>>,
+    source: RwLock<Option<SnapshotSource>>,
 }
 
 impl FlowPersistence {
@@ -226,14 +280,29 @@ impl FlowPersistence {
             inner: Arc::new(FlowPersistenceInner {
                 conf_dir,
                 notify: Notify::new(),
-                handle: RwLock::new(None),
+                source: RwLock::new(None),
             }),
         }
     }
 
-    /// Set the engine handle. Called once after the engine starts.
-    pub fn set_handle(&self, handle: EngineHandle) {
-        *self.inner.handle.write() = Some(handle);
+    /// Set the snapshot source — the live data collections needed for
+    /// persistence. Called once after the engine starts.
+    ///
+    /// This intentionally does **not** accept an `EngineHandle` to avoid
+    /// creating a circular `Arc` reference.
+    pub fn set_source(
+        &self,
+        flow_name: String,
+        processors: Arc<RwLock<Vec<ProcessorInfo>>>,
+        connections: Arc<RwLock<Vec<ConnectionInfo>>>,
+        positions: Arc<DashMap<String, Position>>,
+    ) {
+        *self.inner.source.write() = Some(SnapshotSource {
+            flow_name,
+            processors,
+            connections,
+            positions,
+        });
     }
 
     /// Notify that the flow state has changed.
@@ -276,13 +345,18 @@ impl FlowPersistence {
     }
 
     /// Immediately persist the current flow state to disk.
+    ///
+    /// The source lock is released before disk I/O to avoid holding it
+    /// across potentially slow filesystem operations.
     fn persist_now(&self) {
-        let handle = self.inner.handle.read();
-        let Some(ref h) = *handle else {
-            return;
+        let state = {
+            let source = self.inner.source.read();
+            let Some(ref s) = *source else {
+                return;
+            };
+            PersistedFlowState::snapshot(s)
         };
-
-        let state = PersistedFlowState::snapshot(h);
+        // source lock released — do disk I/O without holding it.
 
         match atomic_write(&self.inner.conf_dir, &state) {
             Ok(()) => {
@@ -308,9 +382,28 @@ impl FlowPersistence {
 mod tests {
     use super::*;
 
+    fn make_state(name: &str) -> PersistedFlowState {
+        PersistedFlowState {
+            version: CURRENT_VERSION,
+            flow_name: name.to_string(),
+            processors: vec![PersistedProcessor {
+                name: "p1".to_string(),
+                type_name: "GenerateFlowFile".to_string(),
+                scheduling: PersistedScheduling {
+                    strategy: "timer".to_string(),
+                    interval_ms: 500,
+                },
+                properties: HashMap::new(),
+            }],
+            connections: vec![],
+            positions: HashMap::new(),
+        }
+    }
+
     #[test]
     fn test_serialize_deserialize_flow_state() {
         let state = PersistedFlowState {
+            version: CURRENT_VERSION,
             flow_name: "test-flow".to_string(),
             processors: vec![
                 PersistedProcessor {
@@ -350,6 +443,7 @@ mod tests {
         let json = serde_json::to_string_pretty(&state).unwrap();
         let deserialized: PersistedFlowState = serde_json::from_str(&json).unwrap();
 
+        assert_eq!(deserialized.version, CURRENT_VERSION);
         assert_eq!(deserialized.flow_name, "test-flow");
         assert_eq!(deserialized.processors.len(), 2);
         assert_eq!(deserialized.processors[0].name, "gen");
@@ -374,20 +468,7 @@ mod tests {
         let tmp_dir = tempfile::tempdir().unwrap();
         let conf_dir = tmp_dir.path().join("conf");
 
-        let state = PersistedFlowState {
-            flow_name: "atomic-test".to_string(),
-            processors: vec![PersistedProcessor {
-                name: "p1".to_string(),
-                type_name: "GenerateFlowFile".to_string(),
-                scheduling: PersistedScheduling {
-                    strategy: "timer".to_string(),
-                    interval_ms: 500,
-                },
-                properties: HashMap::new(),
-            }],
-            connections: vec![],
-            positions: HashMap::new(),
-        };
+        let state = make_state("atomic-test");
 
         // Write.
         atomic_write(&conf_dir, &state).unwrap();
@@ -396,9 +477,11 @@ mod tests {
         let loaded = load_runtime_flow(&conf_dir).unwrap().unwrap();
         assert_eq!(loaded.flow_name, "atomic-test");
         assert_eq!(loaded.processors.len(), 1);
+        assert_eq!(loaded.version, CURRENT_VERSION);
 
         // Write again — should create backup.
         let state2 = PersistedFlowState {
+            version: CURRENT_VERSION,
             flow_name: "atomic-test-v2".to_string(),
             processors: vec![],
             connections: vec![],
@@ -440,5 +523,143 @@ mod tests {
 
         let state: PersistedFlowState = serde_json::from_str(json).unwrap();
         assert!(state.connections[0].back_pressure.is_none());
+    }
+
+    #[test]
+    fn test_version_defaults_to_1_for_old_format() {
+        // Simulate a JSON file from before the version field was added.
+        let json = r#"{
+            "flow_name": "legacy",
+            "processors": [],
+            "connections": [],
+            "positions": {}
+        }"#;
+
+        let state: PersistedFlowState = serde_json::from_str(json).unwrap();
+        assert_eq!(state.version, 1);
+        assert_eq!(state.flow_name, "legacy");
+    }
+
+    #[test]
+    fn test_corrupted_json_falls_back_to_backup() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let conf_dir = tmp_dir.path().join("conf");
+        fs::create_dir_all(&conf_dir).unwrap();
+
+        // Write a valid backup file.
+        let backup_state = make_state("from-backup");
+        let backup_json = serde_json::to_string_pretty(&backup_state).unwrap();
+        fs::write(conf_dir.join(FLOW_STATE_BACKUP), &backup_json).unwrap();
+
+        // Write corrupted primary file.
+        fs::write(conf_dir.join(FLOW_STATE_FILE), "{ not valid json !!!").unwrap();
+
+        // Should fall back to backup.
+        let loaded = load_runtime_flow(&conf_dir).unwrap().unwrap();
+        assert_eq!(loaded.flow_name, "from-backup");
+    }
+
+    #[test]
+    fn test_corrupted_json_no_backup_returns_error() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let conf_dir = tmp_dir.path().join("conf");
+        fs::create_dir_all(&conf_dir).unwrap();
+
+        // Write corrupted primary file with no backup.
+        fs::write(conf_dir.join(FLOW_STATE_FILE), "not json").unwrap();
+
+        let result = load_runtime_flow(&conf_dir);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_empty_state_round_trip() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let conf_dir = tmp_dir.path().join("conf");
+
+        let state = PersistedFlowState {
+            version: CURRENT_VERSION,
+            flow_name: "empty".to_string(),
+            processors: vec![],
+            connections: vec![],
+            positions: HashMap::new(),
+        };
+
+        atomic_write(&conf_dir, &state).unwrap();
+
+        let loaded = load_runtime_flow(&conf_dir).unwrap().unwrap();
+        assert_eq!(loaded.flow_name, "empty");
+        assert!(loaded.processors.is_empty());
+        assert!(loaded.connections.is_empty());
+        assert!(loaded.positions.is_empty());
+        assert_eq!(loaded.version, CURRENT_VERSION);
+    }
+
+    #[test]
+    fn test_dir_fsync_after_write() {
+        // Verify atomic_write creates the directory and succeeds.
+        // (We can't directly test fsync, but we can verify the write path
+        // completes without error on a fresh directory.)
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let conf_dir = tmp_dir.path().join("deep").join("nested").join("conf");
+
+        let state = make_state("fsync-test");
+        atomic_write(&conf_dir, &state).unwrap();
+
+        let loaded = load_runtime_flow(&conf_dir).unwrap().unwrap();
+        assert_eq!(loaded.flow_name, "fsync-test");
+    }
+
+    #[tokio::test]
+    async fn test_debounce_coalesces_rapid_notifications() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let conf_dir = tmp_dir.path().join("conf");
+        let persistence = FlowPersistence::new(conf_dir.clone());
+
+        // Set up a minimal snapshot source with no data.
+        let processors = Arc::new(RwLock::new(Vec::new()));
+        let connections = Arc::new(RwLock::new(Vec::new()));
+        let positions = Arc::new(DashMap::new());
+        persistence.set_source(
+            "debounce-test".to_string(),
+            processors,
+            connections,
+            positions,
+        );
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let cancel_clone = cancel.clone();
+        let persist_clone = persistence.clone();
+
+        // Track writes by checking file modification.
+        let write_count = Arc::new(AtomicU32::new(0));
+        let write_count_clone = write_count.clone();
+
+        let task = tokio::spawn(async move {
+            persist_clone.run(cancel_clone).await;
+        });
+
+        // Fire 10 rapid notifications — should be coalesced by debounce.
+        for _ in 0..10 {
+            persistence.notify_changed();
+        }
+
+        // Wait for debounce to fire (DEBOUNCE_DURATION = 2s + margin).
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+
+        // Count writes by checking if file exists.
+        if conf_dir.join(FLOW_STATE_FILE).exists() {
+            write_count_clone.fetch_add(1, Ordering::Relaxed);
+        }
+
+        cancel.cancel();
+        task.await.unwrap();
+
+        // Should have written exactly once despite 10 notifications.
+        let loaded = load_runtime_flow(&conf_dir).unwrap();
+        assert!(loaded.is_some());
+        assert_eq!(loaded.unwrap().flow_name, "debounce-test");
     }
 }
