@@ -96,11 +96,13 @@ export function usePlugins(): UsePluginsResult {
     fetch('/api/v1/plugins')
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json() as Promise<PluginsResponse>;
+        return res.json();
       })
-      .then((data) => {
+      .then((data: PluginDescriptor[] | PluginsResponse) => {
         if (!cancelled) {
-          setPlugins(data.plugins);
+          // API may return a plain array or {plugins: [...]}
+          const list = Array.isArray(data) ? data : data.plugins;
+          setPlugins(list ?? FALLBACK_PLUGINS);
           setLoading(false);
         }
       })
