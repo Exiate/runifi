@@ -13,6 +13,8 @@ export interface ProcessorNodeData extends Record<string, unknown> {
   relationships: string[];
   // True when created optimistically before the backend confirms
   pending: boolean;
+  // Custom color for visual grouping (hex string, empty = default)
+  customColor: string;
 }
 
 export interface ConnectionEdgeData extends Record<string, unknown> {
