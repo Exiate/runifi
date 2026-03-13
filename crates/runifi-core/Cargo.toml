@@ -23,6 +23,7 @@ futures = { workspace = true }
 memmap2 = { workspace = true }
 crc32fast = { workspace = true }
 toml = { workspace = true }
+regex-lite = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
