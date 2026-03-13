@@ -18,16 +18,7 @@ allow = [
     "Zlib",
     "CC0-1.0",
 ]
-# Deny copyleft licenses
-deny = [
-    "GPL-2.0",
-    "GPL-3.0",
-    "AGPL-3.0",
-    "LGPL-2.0",
-    "LGPL-2.1",
-    "LGPL-3.0",
-]
-# Confidence threshold for license detection
+# Anything not in `allow` is automatically denied (copyleft, etc.)
 confidence-threshold = 0.8
 
 [bans]
