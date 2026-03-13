@@ -55,10 +55,22 @@ export interface FlowEdgeResponse {
   destination: string;
 }
 
+export interface FlowLabelResponse {
+  id: string;
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  background_color: string;
+  font_size: number;
+}
+
 export interface FlowResponse {
   name: string;
   processors: FlowNodeResponse[];
   connections: FlowEdgeResponse[];
+  labels?: FlowLabelResponse[];
 }
 
 export interface BulletinResponse {

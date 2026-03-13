@@ -113,6 +113,21 @@ pub struct FlowResponse {
     pub name: String,
     pub processors: Vec<FlowNodeResponse>,
     pub connections: Vec<FlowEdgeResponse>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<FlowLabelResponse>,
+}
+
+/// A label in the flow topology response.
+#[derive(Serialize)]
+pub struct FlowLabelResponse {
+    pub id: String,
+    pub text: String,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub background_color: String,
+    pub font_size: f64,
 }
 
 #[derive(Serialize)]
@@ -442,4 +457,67 @@ pub struct CreateServiceRequest {
 #[derive(Deserialize)]
 pub struct UpdateServiceConfigRequest {
     pub properties: HashMap<String, String>,
+}
+
+// ── Label DTOs ────────────────────────────────────────────────────────
+
+/// Response for a canvas label.
+#[derive(Serialize)]
+pub struct LabelResponse {
+    pub id: String,
+    pub text: String,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub background_color: String,
+    pub font_size: f64,
+}
+
+/// Request body for `POST /api/v1/process-groups/root/labels`.
+#[derive(Deserialize)]
+pub struct CreateLabelRequest {
+    /// Label text content.
+    #[serde(default)]
+    pub text: String,
+    /// Canvas X position.
+    #[serde(default)]
+    pub x: f64,
+    /// Canvas Y position.
+    #[serde(default)]
+    pub y: f64,
+    /// Label width in pixels.
+    #[serde(default = "default_label_width")]
+    pub width: f64,
+    /// Label height in pixels.
+    #[serde(default = "default_label_height")]
+    pub height: f64,
+    /// Background colour (CSS hex string).
+    #[serde(default)]
+    pub background_color: String,
+    /// Font size in pixels.
+    #[serde(default = "default_font_size")]
+    pub font_size: f64,
+}
+
+fn default_label_width() -> f64 {
+    150.0
+}
+fn default_label_height() -> f64 {
+    40.0
+}
+fn default_font_size() -> f64 {
+    14.0
+}
+
+/// Request body for `PUT /api/v1/process-groups/root/labels/{id}`.
+#[derive(Deserialize)]
+pub struct UpdateLabelRequest {
+    pub text: Option<String>,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    pub width: Option<f64>,
+    pub height: Option<f64>,
+    pub background_color: Option<String>,
+    pub font_size: Option<f64>,
 }

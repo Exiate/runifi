@@ -324,13 +324,40 @@ async fn main() -> Result<()> {
     engine.start().await.context("Failed to start engine")?;
     tracing::info!("Flow engine is running");
 
-    // Restore positions from persisted state. Uses restore_position() to
-    // avoid triggering an unnecessary persist of the state just loaded.
+    // Restore positions and labels from persisted state. Uses restore_position()
+    // to avoid triggering an unnecessary persist of the state just loaded.
     if let Some(ref state) = runtime_flow
         && let Some(handle) = engine.handle()
     {
         for (name, pos) in &state.positions {
             handle.restore_position(name, pos.x, pos.y);
+        }
+        // Restore labels directly into the shared labels vec (no persist trigger).
+        {
+            let mut labels = handle.labels.write();
+            let mut max_label_id: u64 = 0;
+            for pl in &state.labels {
+                // Extract numeric suffix from "label-N" for counter reset.
+                if let Some(suffix) = pl.id.strip_prefix("label-")
+                    && let Ok(n) = suffix.parse::<u64>()
+                {
+                    max_label_id = max_label_id.max(n);
+                }
+                labels.push(runifi_core::engine::handle::LabelInfo {
+                    id: pl.id.clone(),
+                    text: pl.text.clone(),
+                    x: pl.x,
+                    y: pl.y,
+                    width: pl.width,
+                    height: pl.height,
+                    background_color: pl.background_color.clone(),
+                    font_size: pl.font_size,
+                });
+            }
+            // Reset the label ID counter so new labels don't collide.
+            if max_label_id > 0 {
+                runifi_core::engine::handle::reset_label_id_counter(max_label_id + 1);
+            }
         }
     }
 

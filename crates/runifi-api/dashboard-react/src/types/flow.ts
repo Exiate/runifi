@@ -17,6 +17,16 @@ export interface ProcessorNodeData extends Record<string, unknown> {
   customColor: string;
 }
 
+export interface LabelNodeData extends Record<string, unknown> {
+  labelId: string;
+  text: string;
+  width: number;
+  height: number;
+  backgroundColor: string;
+  fontSize: number;
+  pending: boolean;
+}
+
 export interface ConnectionEdgeData extends Record<string, unknown> {
   relationship: string;
   queuedCount: number;

@@ -2,7 +2,9 @@ use axum::extract::State;
 use axum::routing::get;
 use axum::{Json, Router, middleware};
 
-use crate::dto::{FlowEdgeResponse, FlowNodeResponse, FlowResponse, PositionResponse};
+use crate::dto::{
+    FlowEdgeResponse, FlowLabelResponse, FlowNodeResponse, FlowResponse, PositionResponse,
+};
 use crate::rbac;
 use crate::state::ApiState;
 
@@ -40,9 +42,25 @@ async fn get_flow(State(state): State<ApiState>) -> Json<FlowResponse> {
         })
         .collect();
 
+    let labels: Vec<FlowLabelResponse> = handle
+        .list_labels()
+        .into_iter()
+        .map(|l| FlowLabelResponse {
+            id: l.id,
+            text: l.text,
+            x: l.x,
+            y: l.y,
+            width: l.width,
+            height: l.height,
+            background_color: l.background_color,
+            font_size: l.font_size,
+        })
+        .collect();
+
     Json(FlowResponse {
         name: handle.flow_name.clone(),
         processors,
         connections,
+        labels,
     })
 }
