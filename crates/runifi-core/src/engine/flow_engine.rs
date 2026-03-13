@@ -23,6 +23,7 @@ use super::processor_node::{
 };
 use crate::connection::back_pressure::BackPressureConfig;
 use crate::connection::flow_connection::FlowConnection;
+use crate::connection::query::FlowConnectionQuery;
 use crate::error::{Result, RuniFiError};
 use crate::id::IdGenerator;
 use crate::registry::plugin_registry::PluginRegistry;
@@ -208,12 +209,23 @@ impl FlowEngine {
 
         let connection_infos: Vec<ConnectionInfo> = flow_connections
             .iter()
-            .map(|(src, rel, dst, fc)| ConnectionInfo {
-                id: fc.id.clone(),
-                source_name: node_names.get(src).cloned().unwrap_or_default(),
-                relationship: rel.to_string(),
-                dest_name: node_names.get(dst).cloned().unwrap_or_default(),
-                connection: fc.clone(),
+            .map(|(src, rel, dst, fc)| {
+                let src_name = node_names.get(src).cloned().unwrap_or_default();
+                let dst_name = node_names.get(dst).cloned().unwrap_or_default();
+                let rel_str = rel.to_string();
+                let query = Arc::new(FlowConnectionQuery::new(
+                    src_name.clone(),
+                    rel_str.clone(),
+                    dst_name.clone(),
+                    fc.clone(),
+                ));
+                ConnectionInfo {
+                    id: fc.id.clone(),
+                    source_name: src_name,
+                    relationship: rel_str,
+                    dest_name: dst_name,
+                    connection: query,
+                }
             })
             .collect();
 
@@ -785,12 +797,18 @@ fn handle_add_connection(
     src_output_h.write().push((src_rel, Arc::clone(&fc)));
 
     // Record in live_conns for API visibility.
+    let query = Arc::new(FlowConnectionQuery::new(
+        source_name.to_string(),
+        relationship.to_string(),
+        dest_name.to_string(),
+        Arc::clone(&fc),
+    ));
     live_conns.write().push(ConnectionInfo {
         id: conn_id.clone(),
         source_name: source_name.to_string(),
         relationship: relationship.to_string(),
         dest_name: dest_name.to_string(),
-        connection: fc,
+        connection: query,
     });
 
     tracing::info!(
@@ -814,7 +832,7 @@ fn handle_remove_connection(
             .iter()
             .find(|c| c.id == id)
             .ok_or_else(|| MutationError::ConnectionNotFound(id.to_string()))?;
-        info.connection.count()
+        info.connection.queue_count()
     };
 
     if queue_count > 0 && !force {

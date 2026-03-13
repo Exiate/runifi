@@ -14,7 +14,7 @@ use super::processor_node::{
     SchedulingStrategy, SharedInputConnections, SharedInputNotifiers, SharedOutputConnections,
 };
 use crate::connection::back_pressure::BackPressureConfig;
-use crate::connection::flow_connection::FlowConnection;
+use crate::connection::query::ConnectionQuery;
 use crate::repository::content_repo::ContentRepository;
 
 /// Error type for processor configuration updates.
@@ -89,7 +89,7 @@ pub struct ConnectionInfo {
     pub source_name: String,
     pub relationship: String,
     pub dest_name: String,
-    pub connection: Arc<FlowConnection>,
+    pub connection: Arc<dyn ConnectionQuery>,
 }
 
 /// Information about a registered plugin type.
