@@ -405,6 +405,9 @@ impl FlowEngine {
         // Create the mutation command channel.
         let (mutation_tx, mutation_rx) = mpsc::channel::<MutationCommand>(64);
 
+        // Shared position store.
+        let positions = Arc::new(DashMap::new());
+
         // Build the EngineHandle.
         let engine_handle = EngineHandle {
             flow_name: self.flow_name.clone(),
@@ -414,16 +417,23 @@ impl FlowEngine {
             plugin_types: Arc::new(Vec::new()),
             bulletin_board: self.bulletin_board.clone(),
             content_repo: self.content_repo.clone(),
-            positions: Arc::new(DashMap::new()),
+            positions: positions.clone(),
             audit_logger: self.audit_logger.clone(),
             service_registry: self.service_registry.clone(),
             mutation_tx,
             persistence: self.persistence.clone(),
         };
 
-        // Wire persistence: give it the handle and spawn the background writer.
+        // Wire persistence: pass only the data collections it needs for
+        // snapshotting (not the full EngineHandle) to break the Arc cycle.
         if let Some(ref persistence) = self.persistence {
-            persistence.set_handle(engine_handle.clone());
+            persistence.set_source(
+                self.flow_name.clone(),
+                live_procs.clone(),
+                live_conns.clone(),
+                positions,
+                self.service_registry.clone(),
+            );
             let persist_token = self.cancel_token.child_token();
             let persist_clone = persistence.clone();
             let persist_handle = tokio::spawn(async move {
