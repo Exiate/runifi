@@ -23,6 +23,7 @@ include_dir = { workspace = true }
 bytes = { workspace = true }
 subtle = { workspace = true }
 rand = { workspace = true }
+urlencoding = { workspace = true }
 
 [dev-dependencies]
 axum-test = "16"

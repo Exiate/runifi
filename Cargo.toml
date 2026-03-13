@@ -72,6 +72,7 @@ tokio-stream = { version = "0.1", features = ["time"] }
 include_dir = "0.7"
 subtle = "2"
 rand = "0.8"
+urlencoding = "2"
 
 # Internal crates
 runifi-plugin-api = { path = "crates/runifi-plugin-api" }

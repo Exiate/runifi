@@ -163,8 +163,12 @@ fn extract_api_key(req: &Request) -> Option<String> {
     // 2. Check ?api_key=<key> query parameter.
     if let Some(query) = req.uri().query() {
         for pair in query.split('&') {
-            if let Some(value) = pair.strip_prefix("api_key=") {
-                let decoded = value.trim();
+            if let Some((key, value)) = pair.split_once('=')
+                && key == "api_key"
+            {
+                // URL-decode the value (e.g. %20 -> space).
+                let decoded = urlencoding::decode(value).unwrap_or_default();
+                let decoded = decoded.trim();
                 if !decoded.is_empty() {
                     return Some(decoded.to_string());
                 }
@@ -211,13 +215,13 @@ fn has_bearer_auth(req: &Request) -> bool {
 fn extract_csrf_cookie(req: &Request) -> Option<String> {
     let cookie_header = req.headers().get(header::COOKIE)?;
     let cookie_str = cookie_header.to_str().ok()?;
+    let prefix = format!("{}=", CSRF_COOKIE_NAME);
     for part in cookie_str.split(';') {
         let part = part.trim();
-        if let Some(value) = part.strip_prefix(CSRF_COOKIE_NAME) {
-            let value = value.strip_prefix('=')?;
-            if !value.is_empty() {
-                return Some(value.to_string());
-            }
+        if let Some(value) = part.strip_prefix(&prefix)
+            && !value.is_empty()
+        {
+            return Some(value.to_string());
         }
     }
     None
@@ -314,5 +318,70 @@ mod tests {
     fn test_hex_encode() {
         assert_eq!(hex_encode(&[0x00, 0xff, 0xab]), "00ffab");
         assert_eq!(hex_encode(&[]), "");
+    }
+
+    #[test]
+    fn test_extract_csrf_cookie_exact_name() {
+        // Should match "runifi_csrf=token" exactly, not "runifi_csrf_other=token".
+        let mut req = Request::builder()
+            .header(header::COOKIE, "runifi_csrf_other=bad; runifi_csrf=good")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let token = extract_csrf_cookie(&req);
+        assert_eq!(token.as_deref(), Some("good"));
+
+        // Only the prefixed name should NOT match.
+        req = Request::builder()
+            .header(header::COOKIE, "runifi_csrf_other=bad")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert!(extract_csrf_cookie(&req).is_none());
+    }
+
+    #[test]
+    fn test_extract_api_key_from_query() {
+        // Basic query parameter.
+        let req = Request::builder()
+            .uri("/api/v1/events?api_key=my-secret")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(extract_api_key(&req).as_deref(), Some("my-secret"));
+
+        // With other params before and after.
+        let req = Request::builder()
+            .uri("/api/v1/events?foo=bar&api_key=my-key&baz=qux")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(extract_api_key(&req).as_deref(), Some("my-key"));
+
+        // URL-encoded value.
+        let req = Request::builder()
+            .uri("/api/v1/events?api_key=key%20with%20spaces")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(extract_api_key(&req).as_deref(), Some("key with spaces"));
+
+        // No api_key param.
+        let req = Request::builder()
+            .uri("/api/v1/events?other=val")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert!(extract_api_key(&req).is_none());
+    }
+
+    #[test]
+    fn test_extract_api_key_from_bearer() {
+        let req = Request::builder()
+            .header(header::AUTHORIZATION, "Bearer my-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(extract_api_key(&req).as_deref(), Some("my-token"));
+
+        // Empty bearer should return None.
+        let req = Request::builder()
+            .header(header::AUTHORIZATION, "Bearer ")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert!(extract_api_key(&req).is_none());
     }
 }
