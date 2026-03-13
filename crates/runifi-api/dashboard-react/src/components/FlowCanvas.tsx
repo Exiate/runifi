@@ -1,5 +1,3 @@
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore -- CSS import resolved by Vite at build time
 import '@xyflow/react/dist/style.css';
 
 import { useCallback, useEffect, useMemo, useRef } from 'react';
@@ -122,7 +120,10 @@ function FlowCanvasInner({ topology, liveMetrics }: FlowCanvasProps) {
     setEdges((prev) =>
       prev.map((edge) => {
         const live = liveMetrics.connections.find(
-          (c) => c.source_name === edge.source && c.dest_name === edge.target,
+          (c) =>
+            c.source_name === edge.source &&
+            c.dest_name === edge.target &&
+            c.relationship === edge.data?.relationship,
         );
         if (!live) return edge;
 

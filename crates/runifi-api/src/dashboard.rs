@@ -1,4 +1,5 @@
 use axum::Router;
+use axum::extract::Path;
 use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
@@ -11,31 +12,55 @@ static DASHBOARD_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/dashboard-dist
 pub fn routes() -> Router<ApiState> {
     Router::new()
         .route("/", get(index))
-        .route("/assets/app.js", get(app_js))
-        .route("/assets/app.css", get(app_css))
+        // Catch-all for static assets under /assets/
+        .route("/assets/{*path}", get(serve_asset))
 }
 
-async fn index() -> Html<&'static str> {
-    let file = DASHBOARD_DIR
-        .get_file("index.html")
-        .expect("index.html must exist in dashboard-dist/");
-    Html(file.contents_utf8().unwrap_or(""))
-}
-
-async fn app_js() -> Response {
-    serve_static("assets/app.js", "application/javascript")
-}
-
-async fn app_css() -> Response {
-    serve_static("assets/app.css", "text/css")
-}
-
-fn serve_static(path: &str, content_type: &str) -> Response {
-    match DASHBOARD_DIR.get_file(path) {
-        Some(file) => {
-            let body = file.contents_utf8().unwrap_or("");
-            (StatusCode::OK, [(header::CONTENT_TYPE, content_type)], body).into_response()
-        }
+async fn index() -> Response {
+    match DASHBOARD_DIR.get_file("index.html") {
+        Some(file) => Html(file.contents_utf8().unwrap_or("")).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn serve_asset(Path(path): Path<String>) -> Response {
+    let asset_path = format!("assets/{path}");
+    serve_static(&asset_path)
+}
+
+fn serve_static(path: &str) -> Response {
+    let Some(file) = DASHBOARD_DIR.get_file(path) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+
+    let content_type = mime_for_path(path);
+    let bytes = file.contents();
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, content_type)],
+        bytes,
+    )
+        .into_response()
+}
+
+fn mime_for_path(path: &str) -> &'static str {
+    if path.ends_with(".html") {
+        "text/html; charset=utf-8"
+    } else if path.ends_with(".js") || path.ends_with(".mjs") {
+        "application/javascript; charset=utf-8"
+    } else if path.ends_with(".css") {
+        "text/css; charset=utf-8"
+    } else if path.ends_with(".svg") {
+        "image/svg+xml"
+    } else if path.ends_with(".png") {
+        "image/png"
+    } else if path.ends_with(".ico") {
+        "image/x-icon"
+    } else if path.ends_with(".woff2") {
+        "font/woff2"
+    } else if path.ends_with(".woff") {
+        "font/woff"
+    } else {
+        "application/octet-stream"
     }
 }

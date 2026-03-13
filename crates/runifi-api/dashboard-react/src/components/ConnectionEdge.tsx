@@ -34,8 +34,6 @@ function ConnectionEdgeInner({
   const relationship = data?.relationship ?? '';
 
   const edgeColor = backPressured ? 'var(--danger)' : 'var(--border)';
-  const labelBg = backPressured ? 'rgba(248,113,113,0.15)' : 'rgba(26,29,39,0.9)';
-  const queueColor = backPressured ? 'var(--danger)' : 'var(--text-dim)';
 
   return (
     <>
@@ -45,46 +43,18 @@ function ConnectionEdgeInner({
         style={{ stroke: edgeColor, strokeWidth: 2 }}
       />
       <EdgeLabelRenderer>
+        {/* position/transform must stay inline — required by React Flow's EdgeLabelRenderer */}
         <div
           style={{
             position: 'absolute',
             transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)`,
-            pointerEvents: 'all',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            gap: '2px',
           }}
-          className="nodrag nopan"
+          className={`conn-edge-label nodrag nopan${backPressured ? ' back-pressured' : ''}`}
           aria-label={`Connection ${relationship} — ${queuedCount} queued`}
         >
-          <span
-            style={{
-              background: labelBg,
-              border: `1px solid ${backPressured ? 'var(--danger)' : 'var(--border)'}`,
-              borderRadius: '3px',
-              padding: '1px 5px',
-              fontSize: '10px',
-              fontWeight: 600,
-              color: 'var(--accent)',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {relationship}
-          </span>
+          <span className="conn-edge-rel-badge">{relationship}</span>
           {queuedCount > 0 && (
-            <span
-              style={{
-                background: labelBg,
-                border: `1px solid ${backPressured ? 'var(--danger)' : 'var(--border)'}`,
-                borderRadius: '3px',
-                padding: '1px 5px',
-                fontSize: '10px',
-                color: queueColor,
-                fontVariantNumeric: 'tabular-nums',
-                whiteSpace: 'nowrap',
-              }}
-            >
+            <span className={`conn-edge-queue-badge${backPressured ? ' back-pressured' : ''}`}>
               {queuedCount.toLocaleString()} queued
             </span>
           )}
