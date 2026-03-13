@@ -23,3 +23,5 @@ futures = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
+runifi-processors = { path = "../runifi-processors" }
+inventory = { workspace = true }

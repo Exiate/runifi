@@ -25,12 +25,14 @@ async fn sse_events(
 
         let processors: Vec<ProcessorResponse> = handle
             .processors
+            .read()
             .iter()
             .map(ProcessorResponse::from_info)
             .collect();
 
         let connections: Vec<ConnectionResponse> = handle
             .connections
+            .read()
             .iter()
             .map(|info| ConnectionResponse {
                 id: info.id.clone(),
@@ -43,7 +45,6 @@ async fn sse_events(
             })
             .collect();
 
-        // Include latest bulletins per processor in the SSE event.
         let bulletins: Vec<BulletinResponse> = handle
             .bulletin_board
             .latest_per_processor()

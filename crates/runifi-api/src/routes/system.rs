@@ -15,7 +15,7 @@ async fn get_system(State(state): State<ApiState>) -> Json<SystemResponse> {
         flow_name: handle.flow_name.clone(),
         uptime_secs: handle.started_at.elapsed().as_secs(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        processor_count: handle.processors.len(),
-        connection_count: handle.connections.len(),
+        processor_count: handle.processors.read().len(),
+        connection_count: handle.connections.read().len(),
     })
 }

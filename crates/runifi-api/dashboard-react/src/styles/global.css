@@ -1,0 +1,468 @@
+/* ── CSS variables — dark theme matching original dashboard ─── */
+:root {
+  --bg: #0f1117;
+  --surface: #1a1d27;
+  --surface-hover: #222636;
+  --border: #2a2e3d;
+  --text: #e1e4ed;
+  --text-dim: #8b90a0;
+  --accent: #4f8ff7;
+  --success: #34d399;
+  --danger: #f87171;
+  --warning: #fbbf24;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+/* ── App layout ─────────────────────────────────────────────── */
+
+.app-layout {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.app-main {
+  flex: 1;
+  padding: 1.5rem 2rem;
+  max-width: 1600px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+/* ── Header ─────────────────────────────────────────────────── */
+
+.app-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 2rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.header-left h1 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+}
+
+.separator {
+  color: var(--border);
+}
+
+.flow-name {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.status {
+  font-weight: 500;
+}
+
+.status.connected {
+  color: var(--success);
+}
+
+.status.disconnected {
+  color: var(--danger);
+}
+
+.status.connecting {
+  color: var(--text-dim);
+}
+
+/* ── Summary bar ─────────────────────────────────────────────── */
+
+.summary-bar {
+  display: flex;
+  gap: 1px;
+  background: var(--border);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.summary-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem 1rem;
+  background: var(--surface);
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.summary-label {
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.summary-value {
+  font-size: 1.1rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.summary-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.summary-indicator.healthy {
+  background: var(--success);
+  box-shadow: 0 0 6px rgba(52, 211, 153, 0.5);
+}
+
+.summary-indicator.warning {
+  background: var(--warning);
+  box-shadow: 0 0 6px rgba(251, 191, 36, 0.5);
+}
+
+.summary-indicator.danger {
+  background: var(--danger);
+  box-shadow: 0 0 6px rgba(248, 113, 113, 0.5);
+}
+
+.summary-state-pills {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.state-pill {
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 0.15rem 0.45rem;
+  border-radius: 3px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.state-pill.running {
+  background: rgba(52, 211, 153, 0.15);
+  color: var(--success);
+}
+
+.state-pill.paused {
+  background: rgba(251, 191, 36, 0.15);
+  color: var(--warning);
+}
+
+.state-pill.stopped {
+  background: rgba(248, 113, 113, 0.15);
+  color: var(--danger);
+}
+
+.state-pill.circuit-open {
+  background: rgba(248, 113, 113, 0.25);
+  color: var(--danger);
+}
+
+/* ── DAG section ────────────────────────────────────────────── */
+
+.dag-section {
+  margin-bottom: 2rem;
+}
+
+.dag-section h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 1rem;
+}
+
+/* ── Flow canvas container ──────────────────────────────────── */
+
+.flow-canvas-wrapper {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  height: 560px;
+  overflow: hidden;
+  position: relative;
+}
+
+.canvas-placeholder,
+.canvas-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 200px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+}
+
+.canvas-error {
+  color: var(--danger);
+}
+
+/* ── React Flow overrides ────────────────────────────────────── */
+
+.react-flow__background {
+  background: var(--bg) !important;
+}
+
+.react-flow__controls {
+  background: var(--surface) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 6px !important;
+  box-shadow: none !important;
+}
+
+.react-flow__controls-button {
+  background: var(--surface) !important;
+  border: none !important;
+  border-bottom: 1px solid var(--border) !important;
+  color: var(--text-dim) !important;
+  fill: var(--text-dim) !important;
+}
+
+.react-flow__controls-button:hover {
+  background: var(--surface-hover) !important;
+  fill: var(--text) !important;
+}
+
+.react-flow__controls-button:last-child {
+  border-bottom: none !important;
+}
+
+.react-flow__minimap {
+  background: var(--surface) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 6px !important;
+}
+
+.react-flow__attribution {
+  background: transparent !important;
+  color: var(--text-dim) !important;
+  font-size: 0.6rem !important;
+}
+
+.react-flow__attribution a {
+  color: var(--text-dim) !important;
+}
+
+/* ── Processor node ─────────────────────────────────────────── */
+
+.processor-node {
+  background: var(--bg);
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  width: 220px;
+  min-height: 100px;
+  font-family: var(--font);
+  transition: border-color 0.2s;
+  cursor: default;
+}
+
+.processor-node:hover {
+  border-color: var(--accent);
+}
+
+.proc-node-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.proc-node-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.proc-node-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
+  display: block;
+}
+
+.proc-node-type {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
+  display: block;
+}
+
+.proc-node-badges {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+.state-badge {
+  font-size: 0.62rem;
+  font-weight: 700;
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.state-badge.running {
+  background: rgba(52, 211, 153, 0.15);
+  color: var(--success);
+}
+
+.state-badge.paused {
+  background: rgba(251, 191, 36, 0.15);
+  color: var(--warning);
+}
+
+.state-badge.stopped {
+  background: rgba(139, 144, 160, 0.15);
+  color: var(--text-dim);
+}
+
+.state-badge.circuit-open {
+  background: rgba(248, 113, 113, 0.2);
+  color: var(--danger);
+}
+
+.bulletin-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  cursor: help;
+}
+
+.bulletin-dot.warn {
+  background: var(--warning);
+  box-shadow: 0 0 4px var(--warning);
+}
+
+.bulletin-dot.error {
+  background: var(--danger);
+  box-shadow: 0 0 4px var(--danger);
+}
+
+.proc-node-metrics {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.3rem 0.75rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+
+.proc-node-metric {
+  display: flex;
+  flex-direction: column;
+}
+
+.proc-node-metric-label {
+  font-size: 0.6rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.proc-node-metric-value {
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.proc-node-metric-value.danger {
+  color: var(--danger);
+}
+
+/* ── React Flow handle styling ──────────────────────────────── */
+
+.react-flow__handle {
+  background: var(--border) !important;
+  border-color: var(--border) !important;
+  width: 8px !important;
+  height: 8px !important;
+}
+
+.react-flow__handle:hover {
+  background: var(--accent) !important;
+}
+
+/* ── Responsive ─────────────────────────────────────────────── */
+
+@media (max-width: 768px) {
+  .app-header {
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.75rem 1rem;
+  }
+
+  .summary-bar {
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .summary-item {
+    flex-direction: row;
+    justify-content: space-between;
+    padding: 0.5rem 1rem;
+  }
+
+  .app-main {
+    padding: 1rem;
+  }
+
+  .flow-canvas-wrapper {
+    height: 400px;
+  }
+}
