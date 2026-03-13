@@ -310,7 +310,8 @@ impl ProcessorNode {
                 let input_conns_snapshot: Vec<Arc<FlowConnection>> =
                     self.input_connections.read().clone();
 
-                // Build session and invoke processor in a blocking thread.
+                // Create session directly — CoreProcessSession handles content repo,
+                // ID generation, connection routing, and WAL tracking.
                 let mut session = CoreProcessSession::new(
                     self.content_repo.clone(),
                     self.id_gen.clone(),
@@ -320,10 +321,8 @@ impl ProcessorNode {
 
                 // Invoke with fault isolation via spawn_blocking.
                 let result = {
-                    // We need to pass mutable references into spawn_blocking.
-                    // Since the processor is !Send across await points in some cases,
-                    // we do the invocation inline here (it's synchronous anyway).
-                    self.supervisor.invoke(&ctx, &mut session)
+                    self.supervisor
+                        .invoke(&ctx, &mut session as &mut dyn ProcessSession)
                 };
 
                 // Sync supervisor metrics to shared atomics.

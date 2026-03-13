@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use dashmap::DashMap;
 use runifi_plugin_api::ContentClaim;
 
@@ -77,8 +77,17 @@ impl ContentRepository for InMemoryContentRepository {
             let prev = entry.value().1.fetch_sub(1, Ordering::AcqRel);
             prev == 1
         };
-        if should_remove {
-            self.store.remove(&resource_id);
+        if should_remove && let Some((_, (data, _))) = self.store.remove(&resource_id) {
+            // Secure deletion: overwrite the buffer with zeros before dropping.
+            // Convert Bytes -> BytesMut (always succeeds since we hold the sole
+            // reference after removal from DashMap), then zero via write_volatile
+            // to prevent the compiler from eliding the zeroing as a dead store.
+            let mut mutable = BytesMut::from(data);
+            for byte in mutable.iter_mut() {
+                // SAFETY: write_volatile prevents optimization of the zero write.
+                unsafe { std::ptr::write_volatile(byte, 0) };
+            }
+            drop(mutable);
         }
         Ok(())
     }

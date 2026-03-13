@@ -74,19 +74,12 @@ impl From<MetricsSnapshot> for MetricsResponse {
 
 impl ProcessorResponse {
     pub fn from_info(info: &ProcessorInfo) -> Self {
-        use runifi_core::engine::processor_node::SchedulingStrategy;
-        let scheduling = match &info.scheduling {
-            SchedulingStrategy::TimerDriven { interval_ms } => {
-                format!("timer ({}ms)", interval_ms)
-            }
-            SchedulingStrategy::EventDriven => "event".to_string(),
-        };
         let snapshot = info.metrics.snapshot();
         let state = snapshot.state.as_str().to_string();
         Self {
             name: info.name.clone(),
             type_name: info.type_name.clone(),
-            scheduling,
+            scheduling: info.scheduling_display.clone(),
             state,
             metrics: snapshot.into(),
         }
@@ -261,14 +254,16 @@ pub struct ProcessorConfigUpdateRequest {
 
 impl ProcessorConfigResponse {
     pub fn from_info(info: &ProcessorInfo) -> Self {
-        use runifi_core::engine::processor_node::SchedulingStrategy;
-
-        let (strategy, interval_ms) = match &info.scheduling {
-            SchedulingStrategy::TimerDriven { interval_ms } => {
-                ("timer".to_string(), Some(*interval_ms))
-            }
-            SchedulingStrategy::EventDriven => ("event".to_string(), None),
-        };
+        // Parse the display string to extract strategy/interval for the config response.
+        // Format is "timer-driven (Nms)" or "event-driven".
+        let (strategy, interval_ms) =
+            if let Some(rest) = info.scheduling_display.strip_prefix("timer-driven (") {
+                let ms_str = rest.trim_end_matches("ms)");
+                let interval = ms_str.parse::<u64>().unwrap_or(1000);
+                ("timer".to_string(), Some(interval))
+            } else {
+                ("event".to_string(), None)
+            };
 
         let raw_properties = info.properties.read().clone();
 

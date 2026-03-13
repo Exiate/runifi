@@ -90,7 +90,7 @@ async fn engine_restart_recovers_flowfiles_from_wal() {
     // Check that FlowFiles have accumulated in the connection queue.
     let conns1 = handle1.connections.read();
     assert!(!conns1.is_empty(), "should have at least one connection");
-    let queued_before_stop = conns1[0].connection.count();
+    let queued_before_stop = conns1[0].connection.queue_count();
     assert!(queued_before_stop > 0, "expected FlowFiles in queue, got 0");
     let queued_ids_before: Vec<u64> = conns1[0]
         .connection
@@ -114,7 +114,7 @@ async fn engine_restart_recovers_flowfiles_from_wal() {
     let handle2 = engine2.handle().expect("handle must exist");
     let conns2 = handle2.connections.read();
     assert!(!conns2.is_empty());
-    let queued_after_recovery = conns2[0].connection.count();
+    let queued_after_recovery = conns2[0].connection.queue_count();
 
     // The recovered count should be >= what we had before stop.
     // (Could be slightly more if GenerateFlowFile produced one more before shutdown.)

@@ -1,32 +1,30 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{get, post, put};
-use axum::{Json, Router};
-
-use runifi_core::engine::processor_node::SchedulingStrategy;
+use axum::routing::{delete as delete_method, get, post, put};
+use axum::{Json, Router, middleware};
 
 use crate::dto::{
     CreateProcessorRequest, ProcessorConfigResponse, ProcessorConfigUpdateRequest,
     ProcessorDetailResponse, ProcessorResponse, RelationshipResponse, UpdatePositionRequest,
 };
 use crate::error::ApiError;
+use crate::rbac;
 use crate::state::ApiState;
 
 pub fn routes() -> Router<ApiState> {
-    Router::new()
-        .route(
-            "/api/v1/processors",
-            get(list_processors).post(create_processor),
-        )
-        .route(
-            "/api/v1/processors/{name}",
-            get(get_processor).delete(delete_processor),
-        )
+    // GET endpoints — ViewFlow (Viewer+)
+    let view_routes = Router::new()
+        .route("/api/v1/processors", get(list_processors))
+        .route("/api/v1/processors/{name}", get(get_processor))
         .route(
             "/api/v1/processors/{name}/config",
-            get(get_processor_config).put(update_processor_config),
+            get(get_processor_config),
         )
+        .layer(middleware::from_fn(rbac::require_view_flow));
+
+    // POST lifecycle endpoints — OperateProcessors (Operator+)
+    let operate_routes = Router::new()
         .route(
             "/api/v1/processors/{name}/reset-circuit",
             post(reset_circuit),
@@ -35,7 +33,27 @@ pub fn routes() -> Router<ApiState> {
         .route("/api/v1/processors/{name}/start", post(start_processor))
         .route("/api/v1/processors/{name}/pause", post(pause_processor))
         .route("/api/v1/processors/{name}/resume", post(resume_processor))
+        .layer(middleware::from_fn(rbac::require_operate_processors));
+
+    // Flow mutation endpoints — ModifyFlow (Admin only)
+    let modify_routes = Router::new()
+        .route("/api/v1/processors", post(create_processor))
+        .route("/api/v1/processors/{name}", delete_method(delete_processor))
         .route("/api/v1/processors/{name}/position", put(update_position))
+        .layer(middleware::from_fn(rbac::require_modify_flow));
+
+    // Config update endpoint — ManageConfig (Admin only)
+    let config_routes = Router::new()
+        .route(
+            "/api/v1/processors/{name}/config",
+            put(update_processor_config),
+        )
+        .layer(middleware::from_fn(rbac::require_manage_config));
+
+    view_routes
+        .merge(operate_routes)
+        .merge(modify_routes)
+        .merge(config_routes)
 }
 
 async fn list_processors(State(state): State<ApiState>) -> Json<Vec<ProcessorResponse>> {
@@ -61,7 +79,6 @@ async fn get_processor(
     Ok(Json(ProcessorResponse::from_info(&info)))
 }
 
-/// Validate a processor name: non-empty, max 128 chars, only `[a-zA-Z0-9_-]`.
 fn validate_processor_name(name: &str) -> Result<(), ApiError> {
     if name.is_empty() {
         return Err(ApiError::BadRequest(
@@ -84,13 +101,108 @@ fn validate_processor_name(name: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// Validate properties against the processor type's property descriptors.
+/// Rejects unknown property keys, missing required properties, and invalid allowed values.
+fn validate_properties(
+    properties: &std::collections::HashMap<String, String>,
+    descriptors: &[runifi_plugin_api::PropertyDescriptor],
+) -> Result<(), ApiError> {
+    // Build a set of known property names.
+    let known_names: std::collections::HashSet<&str> = descriptors.iter().map(|d| d.name).collect();
+
+    // Reject unknown property keys.
+    for key in properties.keys() {
+        if !known_names.contains(key.as_str()) {
+            return Err(ApiError::BadRequest(format!(
+                "Unknown property '{}'. Valid properties: {:?}",
+                key,
+                known_names.iter().collect::<Vec<_>>()
+            )));
+        }
+    }
+
+    // Validate required properties are present (or have defaults).
+    for desc in descriptors {
+        if desc.required && desc.default_value.is_none() && !properties.contains_key(desc.name) {
+            return Err(ApiError::BadRequest(format!(
+                "Required property '{}' is missing",
+                desc.name
+            )));
+        }
+    }
+
+    // Validate allowed values.
+    for (key, value) in properties {
+        if let Some(desc) = descriptors.iter().find(|d| d.name == key)
+            && let Some(allowed) = desc.allowed_values
+            && !allowed.iter().any(|v| *v == value)
+        {
+            return Err(ApiError::BadRequest(format!(
+                "Invalid value '{}' for property '{}'. Allowed: {:?}",
+                value, key, allowed
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 /// Create a new processor instance at runtime.
 async fn create_processor(
     State(state): State<ApiState>,
     Json(body): Json<CreateProcessorRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    // Fix 4: validate the processor name before sending to the engine.
+    // Validate the processor name before sending to the engine.
     validate_processor_name(&body.name)?;
+
+    // Look up the processor type to get its property descriptors for validation.
+    let plugin_types = &state.handle.plugin_types;
+    let type_exists = plugin_types.iter().any(|p| p.type_name == body.type_name);
+    if !type_exists {
+        return Err(ApiError::BadRequest(format!(
+            "Unknown processor type: {}. Check /api/v1/plugins for available types.",
+            body.type_name
+        )));
+    }
+
+    // Get property descriptors from an existing processor of the same type,
+    // or validate after creation using the info that comes back.
+    let descriptors: Vec<runifi_plugin_api::PropertyDescriptor> = state
+        .handle
+        .processors
+        .read()
+        .iter()
+        .find(|p| p.type_name == body.type_name)
+        .map(|p| {
+            p.property_descriptors
+                .iter()
+                .map(|d| runifi_plugin_api::PropertyDescriptor {
+                    name: Box::leak(d.name.clone().into_boxed_str()),
+                    description: Box::leak(d.description.clone().into_boxed_str()),
+                    required: d.required,
+                    default_value: d
+                        .default_value
+                        .as_ref()
+                        .map(|v| &*Box::leak(v.clone().into_boxed_str())),
+                    sensitive: d.sensitive,
+                    allowed_values: d.allowed_values.as_ref().map(|vals| {
+                        let leaked: &'static [&'static str] = Box::leak(
+                            vals.iter()
+                                .map(|v| &*Box::leak(v.clone().into_boxed_str()))
+                                .collect::<Vec<&'static str>>()
+                                .into_boxed_slice(),
+                        );
+                        leaked
+                    }),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // If we found descriptors, validate upfront.
+    if !descriptors.is_empty() {
+        validate_properties(&body.properties, &descriptors)?;
+    }
 
     state
         .handle
@@ -104,12 +216,48 @@ async fn create_processor(
         .await
         .map_err(ApiError::from)?;
 
+    // If we didn't have descriptors earlier (first processor of this type),
+    // validate now and roll back if invalid.
+    if descriptors.is_empty()
+        && let Some(info) = state.handle.get_processor_info(&body.name)
+        && !info.property_descriptors.is_empty()
+    {
+        let post_descriptors: Vec<runifi_plugin_api::PropertyDescriptor> = info
+            .property_descriptors
+            .iter()
+            .map(|d| runifi_plugin_api::PropertyDescriptor {
+                name: Box::leak(d.name.clone().into_boxed_str()),
+                description: Box::leak(d.description.clone().into_boxed_str()),
+                required: d.required,
+                default_value: d
+                    .default_value
+                    .as_ref()
+                    .map(|v| &*Box::leak(v.clone().into_boxed_str())),
+                sensitive: d.sensitive,
+                allowed_values: d.allowed_values.as_ref().map(|vals| {
+                    let leaked: &'static [&'static str] = Box::leak(
+                        vals.iter()
+                            .map(|v| &*Box::leak(v.clone().into_boxed_str()))
+                            .collect::<Vec<&'static str>>()
+                            .into_boxed_slice(),
+                    );
+                    leaked
+                }),
+            })
+            .collect();
+
+        if let Err(e) = validate_properties(&body.properties, &post_descriptors) {
+            // Roll back: remove the processor we just created.
+            let _ = state.handle.remove_processor(body.name.clone()).await;
+            return Err(e);
+        }
+    }
+
     // Store canvas position if provided.
     if let Some(pos) = body.position {
         state.handle.set_position(&body.name, pos.x, pos.y);
     }
 
-    // Build detailed response.
     let info = state
         .handle
         .get_processor_info(&body.name)
@@ -117,11 +265,7 @@ async fn create_processor(
 
     let snapshot = info.metrics.snapshot();
     let state_str = snapshot.state.as_str().to_string();
-
-    let scheduling_str = match &info.scheduling {
-        SchedulingStrategy::TimerDriven { interval_ms } => format!("timer ({}ms)", interval_ms),
-        SchedulingStrategy::EventDriven => "event".to_string(),
-    };
+    let scheduling_str = info.scheduling_display.clone();
 
     let relationships: Vec<RelationshipResponse> = info
         .relationships
@@ -148,7 +292,6 @@ async fn create_processor(
     Ok((StatusCode::CREATED, Json(detail)).into_response())
 }
 
-/// Remove a processor at runtime.
 async fn delete_processor(
     State(state): State<ApiState>,
     Path(name): Path<String>,
@@ -159,19 +302,16 @@ async fn delete_processor(
         .await
         .map_err(ApiError::from)?;
 
-    // Remove stored position.
     state.handle.positions.remove(&name);
 
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Update the canvas position for a processor.
 async fn update_position(
     State(state): State<ApiState>,
     Path(name): Path<String>,
     Json(body): Json<UpdatePositionRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    // Validate processor exists.
     if state.handle.get_processor_info(&name).is_none() {
         return Err(ApiError::ProcessorNotFound(name));
     }

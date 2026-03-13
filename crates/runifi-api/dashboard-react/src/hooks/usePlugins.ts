@@ -98,7 +98,7 @@ export function usePlugins(): UsePluginsResult {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
       })
-      .then((data) => {
+      .then((data: any) => {
         if (!cancelled) {
           // API may return bare array or { plugins: [...] }
           const raw: unknown[] = Array.isArray(data) ? data : (data.plugins ?? []);

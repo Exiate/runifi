@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
 use super::handle::EngineHandle;
-use super::processor_node::SchedulingStrategy;
 
 /// File names for persisted flow state.
 const FLOW_STATE_FILE: &str = "flow.json";
@@ -83,7 +82,7 @@ impl PersistedFlowState {
             .map(|p| PersistedProcessor {
                 name: p.name.clone(),
                 type_name: p.type_name.clone(),
-                scheduling: scheduling_to_persisted(&p.scheduling),
+                scheduling: scheduling_display_to_persisted(&p.scheduling_display),
                 properties: p.properties.read().clone(),
             })
             .collect();
@@ -126,16 +125,25 @@ impl PersistedFlowState {
     }
 }
 
-fn scheduling_to_persisted(s: &SchedulingStrategy) -> PersistedScheduling {
-    match s {
-        SchedulingStrategy::TimerDriven { interval_ms } => PersistedScheduling {
+/// Parse a scheduling display string (e.g. "timer-driven (1000ms)", "event-driven")
+/// back into a `PersistedScheduling`.
+fn scheduling_display_to_persisted(display: &str) -> PersistedScheduling {
+    if display.starts_with("timer-driven") {
+        // Parse "timer-driven (1000ms)" → interval_ms = 1000
+        let interval_ms = display
+            .strip_prefix("timer-driven (")
+            .and_then(|s| s.strip_suffix("ms)"))
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(100);
+        PersistedScheduling {
             strategy: "timer".to_string(),
-            interval_ms: *interval_ms,
-        },
-        SchedulingStrategy::EventDriven => PersistedScheduling {
+            interval_ms,
+        }
+    } else {
+        PersistedScheduling {
             strategy: "event".to_string(),
             interval_ms: 100,
-        },
+        }
     }
 }
 

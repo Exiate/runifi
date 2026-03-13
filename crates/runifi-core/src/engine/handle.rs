@@ -12,10 +12,11 @@ use super::metrics::ProcessorMetrics;
 use super::mutation::{MutationCommand, MutationError};
 use super::persistence::FlowPersistence;
 use super::processor_node::{
-    SchedulingStrategy, SharedInputConnections, SharedInputNotifiers, SharedOutputConnections,
+    SharedInputConnections, SharedInputNotifiers, SharedOutputConnections,
 };
+use crate::audit::{AuditAction, AuditEvent, AuditLogger, AuditTarget};
 use crate::connection::back_pressure::BackPressureConfig;
-use crate::connection::flow_connection::FlowConnection;
+use crate::connection::query::ConnectionQuery;
 use crate::repository::content_repo::ContentRepository;
 
 /// Error type for processor configuration updates.
@@ -65,7 +66,9 @@ pub struct RelationshipInfo {
 pub struct ProcessorInfo {
     pub name: String,
     pub type_name: String,
-    pub scheduling: SchedulingStrategy,
+    /// Human-readable scheduling description, e.g. "timer-driven (1000ms)" or "event-driven".
+    /// The concrete `SchedulingStrategy` enum is kept internal to the engine.
+    pub scheduling_display: String,
     pub metrics: Arc<ProcessorMetrics>,
     /// Property descriptors (static metadata from the processor type).
     pub property_descriptors: Vec<PropertyDescriptorInfo>,
@@ -90,7 +93,7 @@ pub struct ConnectionInfo {
     pub source_name: String,
     pub relationship: String,
     pub dest_name: String,
-    pub connection: Arc<FlowConnection>,
+    pub connection: Arc<dyn ConnectionQuery>,
 }
 
 /// Information about a registered plugin type.
@@ -135,6 +138,8 @@ pub struct EngineHandle {
     pub content_repo: Arc<dyn ContentRepository>,
     /// Canvas position store (processor name -> position). UI metadata only.
     pub positions: Arc<DashMap<String, Position>>,
+    /// Structured audit logger for compliance events.
+    pub audit_logger: Arc<dyn AuditLogger>,
     /// Sender half of the engine mutation command channel.
     pub(crate) mutation_tx: mpsc::Sender<MutationCommand>,
     /// Flow persistence layer (debounced background writer).
@@ -177,6 +182,10 @@ impl EngineHandle {
                 info.metrics
                     .paused
                     .store(false, std::sync::atomic::Ordering::Relaxed);
+                self.audit_logger.log(&AuditEvent::success(
+                    AuditAction::ProcessorStopped,
+                    AuditTarget::processor(name),
+                ));
                 return true;
             }
         }
@@ -195,6 +204,10 @@ impl EngineHandle {
                 info.metrics
                     .paused
                     .store(false, std::sync::atomic::Ordering::Relaxed);
+                self.audit_logger.log(&AuditEvent::success(
+                    AuditAction::ProcessorStarted,
+                    AuditTarget::processor(name),
+                ));
                 return true;
             }
         }
@@ -209,6 +222,10 @@ impl EngineHandle {
                 info.metrics
                     .paused
                     .store(true, std::sync::atomic::Ordering::Relaxed);
+                self.audit_logger.log(&AuditEvent::success(
+                    AuditAction::ProcessorPaused,
+                    AuditTarget::processor(name),
+                ));
                 return true;
             }
         }
@@ -223,6 +240,10 @@ impl EngineHandle {
                 info.metrics
                     .paused
                     .store(false, std::sync::atomic::Ordering::Relaxed);
+                self.audit_logger.log(&AuditEvent::success(
+                    AuditAction::ProcessorResumed,
+                    AuditTarget::processor(name),
+                ));
                 return true;
             }
         }
@@ -304,6 +325,10 @@ impl EngineHandle {
         *props = new_properties;
         drop(props);
         drop(processors);
+        self.audit_logger.log(&AuditEvent::success(
+            AuditAction::ProcessorConfigured,
+            AuditTarget::processor(name),
+        ));
         self.notify_persist();
         Ok(())
     }

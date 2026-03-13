@@ -351,7 +351,7 @@ function FlowCanvasInner({
           state: 'stopped',
           metrics: null,
           bulletin: null,
-          relationships: plugin.relationships,
+          relationships: plugin.relationships ?? ['success'],
           pending: true,
           customColor: '',
         },
@@ -854,7 +854,7 @@ function FlowCanvasInner({
 
       {draggedPlugin && (
         <div className="canvas-drop-hint" aria-hidden="true">
-          Drop to add {draggedPlugin.display_name}
+          Drop to add {draggedPlugin.display_name ?? draggedPlugin.type_name}
         </div>
       )}
 
