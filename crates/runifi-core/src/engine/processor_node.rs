@@ -30,6 +30,8 @@ pub enum SchedulingStrategy {
     TimerDriven { interval_ms: u64 },
     /// Trigger when input data is available.
     EventDriven,
+    /// Trigger based on a CRON expression.
+    CronDriven { expression: String },
 }
 
 /// Runtime context for a single processor instance.
@@ -492,13 +494,48 @@ impl ProcessorNode {
                 // the lock so we never hold parking_lot across an await point.
                 let notifiers: Vec<Arc<Notify>> = self.input_notifiers.read().clone();
                 if notifiers.is_empty() {
-                    // No inputs wired — suspend forever (cancel token will break the loop).
+                    // No inputs wired -- suspend forever (cancel token will break the loop).
                     std::future::pending::<()>().await;
                 } else {
-                    // Race all input connection notifiers — wake on ANY data arrival.
+                    // Race all input connection notifiers -- wake on ANY data arrival.
                     let futures: Vec<_> =
                         notifiers.iter().map(|n| Box::pin(n.notified())).collect();
                     futures::future::select_all(futures).await;
+                }
+            }
+            SchedulingStrategy::CronDriven { expression } => {
+                use std::str::FromStr;
+                match cron::Schedule::from_str(expression) {
+                    Ok(schedule) => {
+                        let now = chrono::Utc::now();
+                        if let Some(next) = schedule.upcoming(chrono::Utc).next() {
+                            let delay = (next - now).to_std().unwrap_or_default();
+                            tracing::debug!(
+                                processor = %self.name,
+                                next_fire = %next,
+                                delay_ms = delay.as_millis(),
+                                "CRON: waiting for next fire time"
+                            );
+                            tokio::time::sleep(delay).await;
+                        } else {
+                            // No upcoming fire time -- sleep for a long time.
+                            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            processor = %self.name,
+                            expression = %expression,
+                            error = %e,
+                            "Invalid CRON expression, falling back to 60s interval"
+                        );
+                        self.bulletin_board.add(
+                            &self.name,
+                            BulletinSeverity::Error,
+                            format!("Invalid CRON expression '{}': {}", expression, e),
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    }
                 }
             }
         }

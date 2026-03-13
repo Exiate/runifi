@@ -61,6 +61,7 @@ slab = "0.4"                 # Slab allocator for FlowFile IDs
 parking_lot = "0.12"         # Fast synchronization primitives
 smallvec = "2"               # Small-buffer-optimized Vec
 regex-lite = "0.1"           # Lightweight regex for expression language
+cron = "0.15"                # CRON expression parsing for scheduled processors
 jsonpath_lib = "0.3"         # JSONPath query engine for JSON processors
 jsonpath-rust = "1.0"        # JSONPath expression evaluation
 aes-gcm = "0.10"             # AES-256-GCM authenticated encryption

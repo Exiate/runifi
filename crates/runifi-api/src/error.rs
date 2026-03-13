@@ -151,9 +151,12 @@ impl From<MutationError> for ApiError {
             )),
             MutationError::EngineNotRunning => ApiError::EngineNotRunning,
             MutationError::InvalidSchedulingStrategy(s) => ApiError::BadRequest(format!(
-                "Invalid scheduling strategy '{}'; must be 'timer' or 'event'",
+                "Invalid scheduling strategy '{}'; must be 'timer', 'event', or 'cron'",
                 s
             )),
+            MutationError::InvalidCronExpression(expr, msg) => {
+                ApiError::BadRequest(format!("Invalid CRON expression '{}': {}", expr, msg))
+            }
             MutationError::Internal(msg) => ApiError::ConfigError(msg),
         }
     }

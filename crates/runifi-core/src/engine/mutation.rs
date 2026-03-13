@@ -17,6 +17,8 @@ pub enum MutationCommand {
         properties: HashMap<String, String>,
         scheduling_strategy: String,
         interval_ms: u64,
+        /// CRON expression (only used when scheduling_strategy = "cron").
+        cron_expression: Option<String>,
         reply: oneshot::Sender<Result<(), MutationError>>,
     },
 
@@ -76,8 +78,11 @@ pub enum MutationError {
     #[error("engine not running")]
     EngineNotRunning,
 
-    #[error("invalid scheduling strategy '{0}'; must be 'timer' or 'event'")]
+    #[error("invalid scheduling strategy '{0}'; must be 'timer', 'event', or 'cron'")]
     InvalidSchedulingStrategy(String),
+
+    #[error("invalid CRON expression '{0}': {1}")]
+    InvalidCronExpression(String, String),
 
     #[error("{0}")]
     Internal(String),

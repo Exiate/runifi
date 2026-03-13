@@ -11,11 +11,13 @@ use runifi_core::audit::{
 use runifi_core::auth::jwt::JwtConfig;
 use runifi_core::auth::store::UserStore;
 use runifi_core::config::flow_config::FlowConfig;
+use runifi_core::config::flow_config::parse_duration_str;
 use runifi_core::config::permissions::check_config_permissions;
 use runifi_core::config::property_encryption::{
     decrypt_property_value, expand_env_vars, is_encrypted_value,
 };
 use runifi_core::connection::back_pressure::BackPressureConfig;
+use runifi_core::connection::flow_connection::QueuePriority;
 use runifi_core::engine::flow_engine::FlowEngine;
 use runifi_core::engine::handle::{PluginKind, PluginTypeInfo};
 use runifi_core::engine::persistence::{
@@ -651,6 +653,13 @@ fn load_from_persisted_state(
 
         let scheduling = match proc_state.scheduling.strategy.as_str() {
             "event" => SchedulingStrategy::EventDriven,
+            "cron" => SchedulingStrategy::CronDriven {
+                expression: proc_state
+                    .scheduling
+                    .expression
+                    .clone()
+                    .unwrap_or_else(|| "0 * * * * *".to_string()),
+            },
             _ => SchedulingStrategy::TimerDriven {
                 interval_ms: proc_state.scheduling.interval_ms,
             },
@@ -727,8 +736,19 @@ fn load_from_persisted_state(
             None => BackPressureConfig::default(),
         };
 
+        let expiration = conn_state
+            .expiration
+            .as_deref()
+            .and_then(parse_duration_str);
+        let priority = parse_queue_priority(
+            conn_state.priority.as_deref(),
+            conn_state.priority_attribute.as_deref(),
+        );
+
         let rel_name: &'static str = Box::leak(conn_state.relationship.clone().into_boxed_str());
-        engine.connect(source_id, rel_name, dest_id, bp_config);
+        engine.connect_with_options(
+            source_id, rel_name, dest_id, bp_config, expiration, priority,
+        );
 
         tracing::info!(
             source = %conn_state.source,
@@ -739,6 +759,17 @@ fn load_from_persisted_state(
     }
 
     Ok(())
+}
+
+/// Parse queue priority from config strings.
+fn parse_queue_priority(priority: Option<&str>, priority_attribute: Option<&str>) -> QueuePriority {
+    match priority {
+        Some("NewestFirst") => QueuePriority::NewestFirst,
+        Some("PriorityAttribute") => {
+            QueuePriority::PriorityAttribute(priority_attribute.unwrap_or("priority").to_string())
+        }
+        _ => QueuePriority::Fifo,
+    }
 }
 
 /// Load processors and connections from the seed TOML config.
@@ -757,6 +788,13 @@ fn load_from_seed_config(
 
         let scheduling = match proc_config.scheduling.strategy.as_str() {
             "event" => SchedulingStrategy::EventDriven,
+            "cron" => SchedulingStrategy::CronDriven {
+                expression: proc_config
+                    .scheduling
+                    .expression
+                    .clone()
+                    .unwrap_or_else(|| "0 * * * * *".to_string()),
+            },
             _ => SchedulingStrategy::TimerDriven {
                 interval_ms: proc_config.scheduling.interval_ms,
             },
@@ -851,8 +889,19 @@ fn load_from_seed_config(
             None => BackPressureConfig::default(),
         };
 
+        let expiration = conn_config
+            .expiration
+            .as_deref()
+            .and_then(parse_duration_str);
+        let priority = parse_queue_priority(
+            conn_config.priority.as_deref(),
+            conn_config.priority_attribute.as_deref(),
+        );
+
         let rel_name: &'static str = Box::leak(conn_config.relationship.clone().into_boxed_str());
-        engine.connect(source_id, rel_name, dest_id, bp_config);
+        engine.connect_with_options(
+            source_id, rel_name, dest_id, bp_config, expiration, priority,
+        );
 
         tracing::info!(
             source = %conn_config.source,
