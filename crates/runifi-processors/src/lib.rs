@@ -13,4 +13,7 @@ pub mod get_file;
 #[cfg(feature = "filesystem")]
 pub mod put_file;
 
+#[cfg(feature = "transformation")]
+pub mod split_content;
+
 pub mod distributed_map_cache;

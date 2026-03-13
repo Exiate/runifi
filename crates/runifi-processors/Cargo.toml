@@ -7,10 +7,11 @@ license.workspace = true
 
 [features]
 default = ["all"]
-all = ["filesystem", "routing", "debug"]
+all = ["filesystem", "routing", "debug", "transformation"]
 filesystem = []
 routing = []
 debug = []
+transformation = []
 
 [dependencies]
 runifi-plugin-api = { workspace = true }
