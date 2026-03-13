@@ -360,6 +360,12 @@ async fn main() -> Result<()> {
             kind: PluginKind::Sink,
         });
     }
+    for name in registry.service_types() {
+        plugin_types.push(PluginTypeInfo {
+            type_name: name.to_string(),
+            kind: PluginKind::Service,
+        });
+    }
     engine.set_plugin_types(plugin_types);
 
     // Start the API server if enabled.
@@ -370,9 +376,16 @@ async fn main() -> Result<()> {
             .clone();
 
         let api_config = config.api.clone();
+        let api_registry = registry.clone();
 
         Some(tokio::spawn(async move {
-            if let Err(e) = runifi_api::start_api_server(engine_handle, &api_config).await {
+            if let Err(e) = runifi_api::start_api_server_with_registry(
+                engine_handle,
+                &api_config,
+                Some(api_registry),
+            )
+            .await
+            {
                 tracing::error!(error = %e, "API server failed");
             }
         }))
@@ -455,6 +468,37 @@ fn load_from_persisted_state(
             name = %proc_state.name,
             type_name = %proc_state.type_name,
             "Added processor (from persisted state)"
+        );
+    }
+
+    // Load controller services from persisted state.
+    for svc_state in &state.services {
+        let service = registry
+            .create_service(&svc_state.type_name)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Unknown service type in persisted state: {}",
+                    svc_state.type_name
+                )
+            })?;
+
+        let service_registry = engine.service_registry();
+        let mut reg = service_registry.write();
+        reg.add_service(svc_state.name.clone(), svc_state.type_name.clone(), service)
+            .map_err(|e| anyhow::anyhow!("Failed to add service '{}': {}", svc_state.name, e))?;
+
+        if !svc_state.properties.is_empty() {
+            reg.configure_service(&svc_state.name, svc_state.properties.clone())
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to configure service '{}': {}", svc_state.name, e)
+                })?;
+        }
+        drop(reg);
+
+        tracing::info!(
+            name = %svc_state.name,
+            type_name = %svc_state.type_name,
+            "Added controller service (from persisted state)"
         );
     }
 
@@ -555,6 +599,36 @@ fn load_from_seed_config(
             name = %proc_config.name,
             type_name = %proc_config.type_name,
             "Added processor"
+        );
+    }
+
+    // Load controller services from seed config.
+    for svc_config in &config.flow.services {
+        let service = registry
+            .create_service(&svc_config.type_name)
+            .ok_or_else(|| anyhow::anyhow!("Unknown service type: {}", svc_config.type_name))?;
+
+        let service_registry = engine.service_registry();
+        let mut reg = service_registry.write();
+        reg.add_service(
+            svc_config.name.clone(),
+            svc_config.type_name.clone(),
+            service,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to add service '{}': {}", svc_config.name, e))?;
+
+        if !svc_config.properties.is_empty() {
+            reg.configure_service(&svc_config.name, svc_config.properties.clone())
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to configure service '{}': {}", svc_config.name, e)
+                })?;
+        }
+        drop(reg);
+
+        tracing::info!(
+            name = %svc_config.name,
+            type_name = %svc_config.type_name,
+            "Added controller service"
         );
     }
 

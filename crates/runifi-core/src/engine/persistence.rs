@@ -38,6 +38,8 @@ pub struct PersistedFlowState {
     pub processors: Vec<PersistedProcessor>,
     pub connections: Vec<PersistedConnection>,
     pub positions: HashMap<String, PersistedPosition>,
+    #[serde(default)]
+    pub services: Vec<PersistedService>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +82,13 @@ pub struct PersistedPosition {
     pub y: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedService {
+    pub name: String,
+    pub type_name: String,
+    pub properties: HashMap<String, String>,
+}
+
 // ── Snapshot source — breaks the Arc cycle ────────────────────────────────────
 
 /// The subset of engine state needed for persistence snapshotting.
@@ -92,6 +101,7 @@ pub(crate) struct SnapshotSource {
     pub processors: Arc<RwLock<Vec<ProcessorInfo>>>,
     pub connections: Arc<RwLock<Vec<ConnectionInfo>>>,
     pub positions: Arc<DashMap<String, Position>>,
+    pub service_registry: crate::registry::service_registry::SharedServiceRegistry,
 }
 
 // ── Snapshot from live engine state ───────────────────────────────────────────
@@ -140,12 +150,25 @@ impl PersistedFlowState {
             );
         }
 
+        let services: Vec<PersistedService> = source
+            .service_registry
+            .read()
+            .list_services()
+            .into_iter()
+            .map(|s| PersistedService {
+                name: s.name,
+                type_name: s.type_name,
+                properties: s.properties,
+            })
+            .collect();
+
         Self {
             version: CURRENT_VERSION,
             flow_name: source.flow_name.clone(),
             processors,
             connections,
             positions,
+            services,
         }
     }
 }
@@ -296,12 +319,14 @@ impl FlowPersistence {
         processors: Arc<RwLock<Vec<ProcessorInfo>>>,
         connections: Arc<RwLock<Vec<ConnectionInfo>>>,
         positions: Arc<DashMap<String, Position>>,
+        service_registry: crate::registry::service_registry::SharedServiceRegistry,
     ) {
         *self.inner.source.write() = Some(SnapshotSource {
             flow_name,
             processors,
             connections,
             positions,
+            service_registry,
         });
     }
 
@@ -397,6 +422,7 @@ mod tests {
             }],
             connections: vec![],
             positions: HashMap::new(),
+            services: vec![],
         }
     }
 
@@ -438,6 +464,11 @@ mod tests {
                 "gen".to_string(),
                 PersistedPosition { x: 100.0, y: 200.0 },
             )]),
+            services: vec![PersistedService {
+                name: "my-cache".to_string(),
+                type_name: "DistributedMapCacheServer".to_string(),
+                properties: HashMap::from([("Port".to_string(), "4557".to_string())]),
+            }],
         };
 
         let json = serde_json::to_string_pretty(&state).unwrap();
@@ -486,6 +517,7 @@ mod tests {
             processors: vec![],
             connections: vec![],
             positions: HashMap::new(),
+            services: vec![],
         };
         atomic_write(&conf_dir, &state2).unwrap();
 
@@ -583,6 +615,7 @@ mod tests {
             processors: vec![],
             connections: vec![],
             positions: HashMap::new(),
+            services: vec![],
         };
 
         atomic_write(&conf_dir, &state).unwrap();
@@ -622,11 +655,13 @@ mod tests {
         let processors = Arc::new(RwLock::new(Vec::new()));
         let connections = Arc::new(RwLock::new(Vec::new()));
         let positions = Arc::new(DashMap::new());
+        let service_registry = crate::registry::service_registry::SharedServiceRegistry::new();
         persistence.set_source(
             "debounce-test".to_string(),
             processors,
             connections,
             positions,
+            service_registry,
         );
 
         let cancel = tokio_util::sync::CancellationToken::new();

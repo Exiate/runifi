@@ -17,6 +17,7 @@ use super::processor_node::{
 use crate::audit::{AuditAction, AuditEvent, AuditLogger, AuditTarget};
 use crate::connection::back_pressure::BackPressureConfig;
 use crate::connection::query::ConnectionQuery;
+use crate::registry::service_registry::{ServiceError, ServiceInfo, SharedServiceRegistry};
 use crate::repository::content_repo::ContentRepository;
 
 /// Error type for processor configuration updates.
@@ -108,6 +109,7 @@ pub enum PluginKind {
     Processor,
     Source,
     Sink,
+    Service,
 }
 
 /// Canvas position for a processor node (UI metadata only, not core engine data).
@@ -140,6 +142,8 @@ pub struct EngineHandle {
     pub positions: Arc<DashMap<String, Position>>,
     /// Structured audit logger for compliance events.
     pub audit_logger: Arc<dyn AuditLogger>,
+    /// Controller service registry.
+    pub service_registry: SharedServiceRegistry,
     /// Sender half of the engine mutation command channel.
     pub(crate) mutation_tx: mpsc::Sender<MutationCommand>,
     /// Flow persistence layer (debounced background writer).
@@ -461,5 +465,89 @@ impl EngineHandle {
     /// Read the canvas position for a processor.
     pub fn get_position(&self, name: &str) -> Option<Position> {
         self.positions.get(name).map(|p| *p)
+    }
+
+    // ── Controller service management ─────────────────────────────────────
+
+    /// Add a new controller service instance.
+    pub fn add_service(
+        &self,
+        name: String,
+        type_name: String,
+        service: Box<dyn runifi_plugin_api::ControllerService>,
+    ) -> Result<(), ServiceError> {
+        let mut reg = self.service_registry.write();
+        reg.add_service(name.clone(), type_name, service)?;
+        drop(reg);
+        self.audit_logger.log(&AuditEvent::success(
+            AuditAction::ServiceCreated,
+            AuditTarget::service(&name),
+        ));
+        self.notify_persist();
+        Ok(())
+    }
+
+    /// Configure a controller service with properties.
+    pub fn configure_service(
+        &self,
+        name: &str,
+        properties: HashMap<String, String>,
+    ) -> Result<(), ServiceError> {
+        let mut reg = self.service_registry.write();
+        reg.configure_service(name, properties)?;
+        drop(reg);
+        self.audit_logger.log(&AuditEvent::success(
+            AuditAction::ServiceConfigured,
+            AuditTarget::service(name),
+        ));
+        self.notify_persist();
+        Ok(())
+    }
+
+    /// Enable a controller service.
+    pub fn enable_service(&self, name: &str) -> Result<(), ServiceError> {
+        let mut reg = self.service_registry.write();
+        reg.enable_service(name)?;
+        drop(reg);
+        self.audit_logger.log(&AuditEvent::success(
+            AuditAction::ServiceEnabled,
+            AuditTarget::service(name),
+        ));
+        Ok(())
+    }
+
+    /// Disable a controller service.
+    pub fn disable_service(&self, name: &str) -> Result<(), ServiceError> {
+        let mut reg = self.service_registry.write();
+        reg.disable_service(name)?;
+        drop(reg);
+        self.audit_logger.log(&AuditEvent::success(
+            AuditAction::ServiceDisabled,
+            AuditTarget::service(name),
+        ));
+        Ok(())
+    }
+
+    /// Remove a controller service.
+    pub fn remove_service(&self, name: &str) -> Result<(), ServiceError> {
+        let mut reg = self.service_registry.write();
+        reg.remove_service(name)?;
+        drop(reg);
+        self.audit_logger.log(&AuditEvent::success(
+            AuditAction::ServiceRemoved,
+            AuditTarget::service(name),
+        ));
+        self.notify_persist();
+        Ok(())
+    }
+
+    /// List all controller services.
+    pub fn list_services(&self) -> Vec<ServiceInfo> {
+        self.service_registry.read().list_services()
+    }
+
+    /// Get info about a specific controller service.
+    pub fn get_service_info(&self, name: &str) -> Option<ServiceInfo> {
+        self.service_registry.read().get_service(name)
     }
 }

@@ -3,6 +3,7 @@ use axum::response::{IntoResponse, Response};
 
 use runifi_core::engine::handle::ConfigUpdateError;
 use runifi_core::engine::mutation::MutationError;
+use runifi_core::registry::service_registry::ServiceError;
 
 /// API error type with automatic HTTP status mapping.
 #[derive(Debug, thiserror::Error)]
@@ -13,6 +14,9 @@ pub enum ApiError {
 
     #[error("Connection not found: {0}")]
     ConnectionNotFound(String),
+
+    #[error("Service not found: {0}")]
+    ServiceNotFound(String),
 
     #[error("FlowFile not found: {0}")]
     FlowFileNotFound(u64),
@@ -45,6 +49,7 @@ impl ApiError {
         match self {
             ApiError::ProcessorNotFound(_) => StatusCode::NOT_FOUND,
             ApiError::ConnectionNotFound(_) => StatusCode::NOT_FOUND,
+            ApiError::ServiceNotFound(_) => StatusCode::NOT_FOUND,
             ApiError::FlowFileNotFound(_) => StatusCode::NOT_FOUND,
             ApiError::ContentNotAvailable(_) => StatusCode::NOT_FOUND,
             ApiError::ConfigError(_) => StatusCode::CONFLICT,
@@ -62,6 +67,7 @@ impl ApiError {
         match self {
             ApiError::ProcessorNotFound(_) => "Resource not found",
             ApiError::ConnectionNotFound(_) => "Resource not found",
+            ApiError::ServiceNotFound(_) => "Resource not found",
             ApiError::FlowFileNotFound(_) => "Resource not found",
             ApiError::ContentNotAvailable(_) => "Content not available",
             ApiError::ConfigError(_) => "Configuration conflict",
@@ -144,6 +150,35 @@ impl From<MutationError> for ApiError {
                 s
             )),
             MutationError::Internal(msg) => ApiError::ConfigError(msg),
+        }
+    }
+}
+
+impl From<ServiceError> for ApiError {
+    fn from(err: ServiceError) -> Self {
+        match err {
+            ServiceError::NotFound(name) => ApiError::ServiceNotFound(name),
+            ServiceError::DuplicateName(name) => {
+                ApiError::Conflict(format!("A service named '{}' already exists", name))
+            }
+            ServiceError::UnknownType(name) => {
+                ApiError::BadRequest(format!("Unknown service type: {}", name))
+            }
+            ServiceError::InvalidState {
+                name,
+                current_state,
+                expected_state,
+            } => ApiError::Conflict(format!(
+                "Service '{}' is in state {}, expected {}",
+                name, current_state, expected_state
+            )),
+            ServiceError::HasReferences { name, processors } => ApiError::Conflict(format!(
+                "Service '{}' is referenced by processors: {}",
+                name, processors
+            )),
+            ServiceError::ConfigFailed(msg) => ApiError::BadRequest(msg),
+            ServiceError::ValidationFailed(msg) => ApiError::BadRequest(msg),
+            ServiceError::EnableFailed(msg) => ApiError::ConfigError(msg),
         }
     }
 }

@@ -216,6 +216,8 @@ pub struct FlowDefinition {
     pub processors: Vec<ProcessorConfig>,
     #[serde(default)]
     pub connections: Vec<ConnectionConfig>,
+    #[serde(default)]
+    pub services: Vec<ServiceConfig>,
 }
 
 impl Default for FlowDefinition {
@@ -224,8 +226,31 @@ impl Default for FlowDefinition {
             name: default_flow_name(),
             processors: Vec::new(),
             connections: Vec::new(),
+            services: Vec::new(),
         }
     }
+}
+
+/// Configuration for a controller service instance in the flow.
+///
+/// ```toml
+/// [[flow.services]]
+/// name = "my-cache"
+/// type = "DistributedMapCacheServer"
+/// [flow.services.properties]
+/// "Port" = "4557"
+/// "Maximum Cache Entries" = "10000"
+/// ```
+#[derive(Debug, Deserialize)]
+pub struct ServiceConfig {
+    /// Unique instance name.
+    pub name: String,
+    /// Service type name — must match a registered `ControllerServiceDescriptor`.
+    #[serde(rename = "type")]
+    pub type_name: String,
+    /// Service-specific properties.
+    #[serde(default)]
+    pub properties: HashMap<String, String>,
 }
 
 fn default_flow_name() -> String {
