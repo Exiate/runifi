@@ -16,6 +16,8 @@ const PADDING_Y = 60;
 /**
  * Compute layered positions for React Flow nodes using Kahn's topological
  * sort. Returns fully formed ProcNode objects ready for React Flow.
+ * The `relationships` and `pending` fields are set to defaults here and
+ * overridden by the caller once the plugin list is available.
  */
 export function computeLayout(
   processors: FlowNodeResponse[],
@@ -95,6 +97,8 @@ export function computeLayout(
       state: 'stopped',
       metrics: null,
       bulletin: null,
+      relationships: ['success'], // overridden by caller once plugins are loaded
+      pending: false,
     },
   }));
 }

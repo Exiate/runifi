@@ -1,12 +1,13 @@
 import { memo, useMemo } from 'react';
 import type { SseMetricsEvent } from '../types/api';
-import { formatRate } from '../utils/format';
+import { formatRate, formatBytes } from '../utils/format';
 
 interface SummaryBarProps {
   metrics: SseMetricsEvent | null;
+  onOpenBulletins?: () => void;
 }
 
-function SummaryBarInner({ metrics }: SummaryBarProps) {
+function SummaryBarInner({ metrics, onOpenBulletins }: SummaryBarProps) {
   const stats = useMemo(() => {
     if (!metrics) return null;
 
@@ -21,13 +22,29 @@ function SummaryBarInner({ metrics }: SummaryBarProps) {
     const backPressureCount = metrics.connections.filter((c) => c.back_pressured).length;
 
     const totalFFOutRate = procs.reduce((s, p) => s + p.metrics.flowfiles_out_rate, 0);
+    const totalBytesOutRate = procs.reduce((s, p) => s + p.metrics.bytes_out_rate, 0);
+
+    const warnCount = metrics.bulletins.filter((b) => b.severity === 'warn').length;
+    const errorCount = metrics.bulletins.filter((b) => b.severity === 'error').length;
 
     const hasUnhealthy = counts['circuit-open'] > 0;
     const hasWarning = counts.stopped > 0 || counts.paused > 0 || backPressureCount > 0;
     const procHealth = hasUnhealthy ? 'danger' : hasWarning ? 'warning' : 'healthy';
     const bpHealth = backPressureCount > 0 ? 'danger' : 'healthy';
+    const bulletinHealth = errorCount > 0 ? 'danger' : warnCount > 0 ? 'warning' : 'healthy';
 
-    return { counts, totalQueued, backPressureCount, totalFFOutRate, procHealth, bpHealth };
+    return {
+      counts,
+      totalQueued,
+      backPressureCount,
+      totalFFOutRate,
+      totalBytesOutRate,
+      warnCount,
+      errorCount,
+      procHealth,
+      bpHealth,
+      bulletinHealth,
+    };
   }, [metrics]);
 
   if (!stats) {
@@ -40,14 +57,27 @@ function SummaryBarInner({ metrics }: SummaryBarProps) {
     );
   }
 
-  const { counts, totalQueued, backPressureCount, totalFFOutRate, procHealth, bpHealth } = stats;
+  const {
+    counts,
+    totalQueued,
+    backPressureCount,
+    totalFFOutRate,
+    totalBytesOutRate,
+    warnCount,
+    errorCount,
+    procHealth,
+    bpHealth,
+    bulletinHealth,
+  } = stats;
   const procTotal = Object.values(counts).reduce((a, b) => a + b, 0);
 
   return (
     <section className="summary-bar" aria-label="System summary">
       <div className="summary-item">
         <span className="summary-label">Processors</span>
-        <span className="summary-value">{procTotal}</span>
+        <span className="summary-value">
+          {counts.running} / {procTotal} Running
+        </span>
         <span
           className={`summary-indicator ${procHealth}`}
           aria-label={`Processor health: ${procHealth}`}
@@ -61,7 +91,9 @@ function SummaryBarInner({ metrics }: SummaryBarProps) {
 
       <div className="summary-item">
         <span className="summary-label">Throughput</span>
-        <span className="summary-value">{formatRate(totalFFOutRate, 'FF')}</span>
+        <span className="summary-value">
+          {formatRate(totalFFOutRate, 'FF')} &middot; {formatBytes(Math.round(totalBytesOutRate))}/s
+        </span>
       </div>
 
       <div className="summary-item">
@@ -88,6 +120,31 @@ function SummaryBarInner({ metrics }: SummaryBarProps) {
         <span
           className={`summary-indicator ${bpHealth}`}
           aria-label={`Back-pressure: ${bpHealth}`}
+        />
+      </div>
+
+      <div className="summary-item">
+        <span className="summary-label">Bulletins</span>
+        <button
+          className={`summary-bulletins-btn${onOpenBulletins ? ' clickable' : ''}`}
+          onClick={onOpenBulletins}
+          disabled={!onOpenBulletins}
+          aria-label={`Bulletins: ${warnCount} warnings, ${errorCount} errors`}
+          title="Open bulletin board"
+        >
+          {errorCount > 0 && (
+            <span className="bulletin-count error">{errorCount} err</span>
+          )}
+          {warnCount > 0 && (
+            <span className="bulletin-count warn">{warnCount} warn</span>
+          )}
+          {errorCount === 0 && warnCount === 0 && (
+            <span className="bulletin-count ok">Clear</span>
+          )}
+        </button>
+        <span
+          className={`summary-indicator ${bulletinHealth}`}
+          aria-label={`Bulletin health: ${bulletinHealth}`}
         />
       </div>
     </section>
