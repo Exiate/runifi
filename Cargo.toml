@@ -61,7 +61,7 @@ hex = "0.4"                  # Hex encoding/decoding for keys
 base64 = "0.22"              # Base64 encoding for encrypted properties
 
 # Config
-toml = "0.8"
+toml = "1.0"
 
 # Web API
 axum = "0.8"
