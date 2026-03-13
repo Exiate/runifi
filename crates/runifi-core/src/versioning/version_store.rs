@@ -328,6 +328,7 @@ mod tests {
                     scheduling: PersistedScheduling {
                         strategy: "timer".to_string(),
                         interval_ms: 1000,
+                        expression: None,
                     },
                     properties: HashMap::from([("File Size".to_string(), "5120".to_string())]),
                 },
@@ -337,6 +338,7 @@ mod tests {
                     scheduling: PersistedScheduling {
                         strategy: "event".to_string(),
                         interval_ms: 100,
+                        expression: None,
                     },
                     properties: HashMap::new(),
                 },
@@ -346,6 +348,9 @@ mod tests {
                 relationship: "success".to_string(),
                 destination: "log".to_string(),
                 back_pressure: None,
+                expiration: None,
+                priority: None,
+                priority_attribute: None,
             }],
             positions: HashMap::new(),
             services: vec![],

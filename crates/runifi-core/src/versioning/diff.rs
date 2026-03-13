@@ -242,6 +242,7 @@ mod tests {
                     scheduling: PersistedScheduling {
                         strategy: "timer".to_string(),
                         interval_ms: 1000,
+                        expression: None,
                     },
                     properties: HashMap::new(),
                 })
@@ -253,6 +254,9 @@ mod tests {
                     relationship: rel.to_string(),
                     destination: dst.to_string(),
                     back_pressure: None,
+                    expiration: None,
+                    priority: None,
+                    priority_attribute: None,
                 })
                 .collect(),
             positions: HashMap::new(),

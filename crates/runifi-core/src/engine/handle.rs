@@ -759,6 +759,34 @@ impl EngineHandle {
             .iter()
             .map(|c| {
                 let bp = c.connection.back_pressure_config();
+                // Persist expiration and priority from the underlying FlowConnection.
+                let (expiration, priority, priority_attribute) =
+                    if let Some(fc) = c.connection.flow_connection() {
+                        let exp = fc.expiration().map(|d| {
+                            let secs = d.as_secs();
+                            if secs >= 86400 && secs % 86400 == 0 {
+                                format!("{}d", secs / 86400)
+                            } else if secs >= 3600 && secs % 3600 == 0 {
+                                format!("{}h", secs / 3600)
+                            } else if secs >= 60 && secs % 60 == 0 {
+                                format!("{}m", secs / 60)
+                            } else {
+                                format!("{}s", secs)
+                            }
+                        });
+                        let (prio, prio_attr) = match fc.queue_priority() {
+                            crate::connection::flow_connection::QueuePriority::Fifo => (None, None),
+                            crate::connection::flow_connection::QueuePriority::NewestFirst => {
+                                (Some("NewestFirst".to_string()), None)
+                            }
+                            crate::connection::flow_connection::QueuePriority::PriorityAttribute(
+                                attr,
+                            ) => (Some("PriorityAttribute".to_string()), Some(attr.clone())),
+                        };
+                        (exp, prio, prio_attr)
+                    } else {
+                        (None, None, None)
+                    };
                 PersistedConnection {
                     source: c.source_name.clone(),
                     relationship: c.relationship.clone(),
@@ -767,6 +795,9 @@ impl EngineHandle {
                         max_count: Some(bp.max_count),
                         max_bytes: Some(bp.max_bytes),
                     }),
+                    expiration,
+                    priority,
+                    priority_attribute,
                 }
             })
             .collect();
