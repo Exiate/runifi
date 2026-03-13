@@ -521,7 +521,7 @@ mod tests {
     fn find_occurrences_none() {
         let data = b"abcdefgh";
         let positions = find_all_occurrences(data, b"--");
-        assert_eq!(positions, vec![]);
+        assert_eq!(positions, Vec::<usize>::new());
     }
 
     #[test]
