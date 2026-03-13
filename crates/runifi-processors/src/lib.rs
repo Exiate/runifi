@@ -21,4 +21,7 @@ pub mod split_json;
 #[cfg(feature = "json")]
 pub mod flatten_json;
 
+#[cfg(feature = "extraction")]
+pub mod extract_text;
+
 pub mod distributed_map_cache;

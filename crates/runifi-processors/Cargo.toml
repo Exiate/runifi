@@ -7,12 +7,13 @@ license.workspace = true
 
 [features]
 default = ["all"]
-all = ["filesystem", "routing", "debug", "transformation", "json"]
+all = ["filesystem", "routing", "debug", "transformation", "json", "extraction"]
 filesystem = []
 routing = []
 debug = []
 transformation = ["serde_json", "jsonpath_lib"]
 json = ["serde_json"]
+extraction = []
 
 [dependencies]
 runifi-plugin-api = { workspace = true }
