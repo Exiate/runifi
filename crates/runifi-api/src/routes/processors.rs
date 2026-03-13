@@ -88,8 +88,7 @@ fn validate_properties(
     descriptors: &[runifi_plugin_api::PropertyDescriptor],
 ) -> Result<(), ApiError> {
     // Build a set of known property names.
-    let known_names: std::collections::HashSet<&str> =
-        descriptors.iter().map(|d| d.name).collect();
+    let known_names: std::collections::HashSet<&str> = descriptors.iter().map(|d| d.name).collect();
 
     // Reject unknown property keys.
     for key in properties.keys() {

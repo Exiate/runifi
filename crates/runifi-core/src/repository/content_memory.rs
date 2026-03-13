@@ -77,9 +77,7 @@ impl ContentRepository for InMemoryContentRepository {
             let prev = entry.value().1.fetch_sub(1, Ordering::AcqRel);
             prev == 1
         };
-        if should_remove
-            && let Some((_, (data, _))) = self.store.remove(&resource_id)
-        {
+        if should_remove && let Some((_, (data, _))) = self.store.remove(&resource_id) {
             // Secure deletion: overwrite the buffer with zeros before dropping.
             // Convert Bytes -> BytesMut (always succeeds since we hold the sole
             // reference after removal from DashMap), then zero via write_volatile

@@ -43,6 +43,41 @@ pub struct ApiConfig {
     /// Content encryption at rest configuration.
     #[serde(default)]
     pub encryption: Option<EncryptionConfig>,
+    /// Security configuration (API key auth, TLS).
+    #[serde(default)]
+    pub security: SecurityConfig,
+}
+
+/// Security configuration for API authentication and TLS.
+///
+/// ```toml
+/// [api.security]
+/// api_keys = ["key-abc123", "key-def456"]
+/// tls_enabled = false
+/// tls_cert_path = "/etc/runifi/cert.pem"
+/// tls_key_path = "/etc/runifi/key.pem"
+/// ```
+#[derive(Debug, Default, Deserialize, Clone)]
+pub struct SecurityConfig {
+    /// API keys for bearer-token authentication. If empty, auth is disabled.
+    #[serde(default)]
+    pub api_keys: Vec<String>,
+    /// Whether TLS is enabled for the API server.
+    #[serde(default)]
+    pub tls_enabled: bool,
+    /// Path to the TLS certificate file (PEM format).
+    #[serde(default)]
+    pub tls_cert_path: Option<String>,
+    /// Path to the TLS private key file (PEM format).
+    #[serde(default)]
+    pub tls_key_path: Option<String>,
+}
+
+impl SecurityConfig {
+    /// Returns `true` if API key authentication is enabled (at least one key configured).
+    pub fn auth_enabled(&self) -> bool {
+        !self.api_keys.is_empty()
+    }
 }
 
 /// Configuration for content encryption at rest.
@@ -79,6 +114,7 @@ impl Default for ApiConfig {
             max_sse_connections: default_max_sse_connections(),
             detailed_errors: false,
             encryption: None,
+            security: SecurityConfig::default(),
         }
     }
 }
@@ -88,7 +124,7 @@ fn default_api_enabled() -> bool {
 }
 
 fn default_bind_address() -> String {
-    "0.0.0.0".to_string()
+    "127.0.0.1".to_string()
 }
 
 fn default_api_port() -> u16 {

@@ -71,11 +71,7 @@ impl AuditEvent {
     }
 
     /// Convenience: build a failure event.
-    pub fn failure(
-        action: AuditAction,
-        target: AuditTarget,
-        reason: impl Into<String>,
-    ) -> Self {
+    pub fn failure(action: AuditAction, target: AuditTarget, reason: impl Into<String>) -> Self {
         Self::new(
             action,
             target,
@@ -155,9 +151,13 @@ impl AuditTarget {
 #[derive(Debug, Clone, Serialize)]
 pub enum AuditOutcome {
     Success,
-    Failure { reason: String },
+    Failure {
+        reason: String,
+    },
     /// Reserved for future RBAC integration.
-    Denied { reason: String },
+    Denied {
+        reason: String,
+    },
 }
 
 #[cfg(test)]

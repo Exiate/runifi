@@ -40,9 +40,8 @@ impl StaticKeyProvider {
 
     /// Create a provider from a single hex-encoded key.
     pub fn from_hex(key_id: KeyId, hex_key: &str) -> Result<Self, KeyError> {
-        let key_bytes = hex::decode(hex_key).map_err(|e| {
-            KeyError::Provider(format!("Invalid hex key: {}", e))
-        })?;
+        let key_bytes = hex::decode(hex_key)
+            .map_err(|e| KeyError::Provider(format!("Invalid hex key: {}", e)))?;
         let mut keys = HashMap::new();
         keys.insert(key_id.clone(), key_bytes);
         Self::new(keys, key_id)

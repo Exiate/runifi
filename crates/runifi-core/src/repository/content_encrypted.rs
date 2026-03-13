@@ -38,10 +38,7 @@ pub struct EncryptedContentRepository {
 }
 
 impl EncryptedContentRepository {
-    pub fn new(
-        inner: Arc<dyn ContentRepository>,
-        key_provider: Arc<dyn KeyProvider>,
-    ) -> Self {
+    pub fn new(inner: Arc<dyn ContentRepository>, key_provider: Arc<dyn KeyProvider>) -> Self {
         Self {
             inner,
             key_provider,
@@ -106,8 +103,7 @@ impl EncryptedContentRepository {
             .to_string();
 
         let nonce_start = 1 + key_id_len;
-        let nonce =
-            aes_gcm::Nonce::from_slice(&envelope[nonce_start..nonce_start + NONCE_SIZE]);
+        let nonce = aes_gcm::Nonce::from_slice(&envelope[nonce_start..nonce_start + NONCE_SIZE]);
 
         let ciphertext = &envelope[header_len..];
 
@@ -277,8 +273,7 @@ mod tests {
         let envelope_len = *repo_a.envelope_lengths.get(&claim.resource_id).unwrap();
 
         // Create a new repo with key B as active, but still holding key A.
-        let provider_ab =
-            make_provider(vec![("key-a", key_a()), ("key-b", key_b())], "key-b");
+        let provider_ab = make_provider(vec![("key-a", key_a()), ("key-b", key_b())], "key-b");
         let repo_b = EncryptedContentRepository::new(inner.clone(), provider_ab);
         // Transfer the envelope length metadata.
         repo_b

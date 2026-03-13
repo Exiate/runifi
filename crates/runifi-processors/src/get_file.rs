@@ -79,8 +79,7 @@ impl Processor for GetFile {
             .unwrap_or("10")
             .parse()
             .unwrap_or(10);
-        let follow_symlinks =
-            context.get_property("Follow Symlinks").unwrap_or("false") == "true";
+        let follow_symlinks = context.get_property("Follow Symlinks").unwrap_or("false") == "true";
 
         // Validate the input directory path has no `..` components.
         validate_directory_path(&input_dir)?;
@@ -109,10 +108,7 @@ impl Processor for GetFile {
                 }
                 if ft.is_symlink() && follow_symlinks {
                     // Check if symlink target is a file.
-                    e.path()
-                        .metadata()
-                        .ok()
-                        .is_some_and(|m| m.is_file())
+                    e.path().metadata().ok().is_some_and(|m| m.is_file())
                 } else {
                     false
                 }
@@ -158,12 +154,7 @@ impl Processor for GetFile {
             }
             flowfile.set_attribute(
                 Arc::from("path"),
-                Arc::from(
-                    path.parent()
-                        .unwrap_or(dir)
-                        .to_string_lossy()
-                        .as_ref(),
-                ),
+                Arc::from(path.parent().unwrap_or(dir).to_string_lossy().as_ref()),
             );
             flowfile.set_attribute(
                 Arc::from("file.size"),
@@ -235,7 +226,12 @@ mod tests {
             match name {
                 "Input Directory" => PropertyValue::String(self.input_dir.clone()),
                 "Follow Symlinks" => PropertyValue::String(
-                    if self.follow_symlinks { "true" } else { "false" }.to_string(),
+                    if self.follow_symlinks {
+                        "true"
+                    } else {
+                        "false"
+                    }
+                    .to_string(),
                 ),
                 "Keep Source File" => PropertyValue::String(
                     if self.keep_source { "true" } else { "false" }.to_string(),
@@ -368,7 +364,10 @@ mod tests {
         // Only the real file should be ingested (symlink skipped due to is_file() check on DirEntry).
         assert_eq!(session.flowfiles.len(), 1);
         assert_eq!(
-            session.flowfiles[0].0.get_attribute("filename").map(|v| v.as_ref()),
+            session.flowfiles[0]
+                .0
+                .get_attribute("filename")
+                .map(|v| v.as_ref()),
             Some("real.txt")
         );
 
