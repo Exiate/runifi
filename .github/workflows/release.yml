@@ -70,7 +70,7 @@ jobs:
           mkdir -p staging/runifi
           cp target/release/runifi staging/runifi/
           cp target/release/runifi-cli staging/runifi/
-          cp config/flow.toml staging/runifi/flow.example.toml
+          cp config/examples/demo-pipeline.toml staging/runifi/flow.example.toml
           cp dist/runifi.service staging/runifi/
           cp dist/runifi.env staging/runifi/
           cp LICENSE staging/runifi/

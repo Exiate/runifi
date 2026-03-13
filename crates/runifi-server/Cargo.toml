@@ -32,12 +32,11 @@ priority = "optional"
 assets = [
     ["../../target/release/runifi", "usr/bin/", "755"],
     ["../../target/release/runifi-cli", "usr/bin/", "755"],
-    ["../../config/flow.toml", "etc/runifi/flow.toml", "644"],
+    ["../../config/examples/demo-pipeline.toml", "etc/runifi/flow.example.toml", "644"],
     ["../../dist/runifi.env", "etc/runifi/runifi.env", "644"],
     ["../../dist/runifi.service", "usr/lib/systemd/system/runifi.service", "644"],
 ]
 conf-files = [
-    "/etc/runifi/flow.toml",
     "/etc/runifi/runifi.env",
 ]
 maintainer-scripts = "../../dist/debian/"
@@ -47,7 +46,7 @@ systemd-units = { enable = false, start = false }
 assets = [
     { source = "../../target/release/runifi", dest = "/usr/bin/runifi", mode = "0755" },
     { source = "../../target/release/runifi-cli", dest = "/usr/bin/runifi-cli", mode = "0755" },
-    { source = "../../config/flow.toml", dest = "/etc/runifi/flow.toml", mode = "0644", config = "noreplace" },
+    { source = "../../config/examples/demo-pipeline.toml", dest = "/etc/runifi/flow.example.toml", mode = "0644" },
     { source = "../../dist/runifi.env", dest = "/etc/runifi/runifi.env", mode = "0644", config = "noreplace" },
     { source = "../../dist/runifi.service", dest = "/usr/lib/systemd/system/runifi.service", mode = "0644" },
 ]

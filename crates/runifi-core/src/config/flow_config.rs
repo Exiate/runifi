@@ -4,8 +4,9 @@ use std::path::PathBuf;
 use serde::Deserialize;
 
 /// Top-level flow configuration, loaded from TOML.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct FlowConfig {
+    #[serde(default)]
     pub flow: FlowDefinition,
     #[serde(default)]
     pub api: ApiConfig,
@@ -51,11 +52,26 @@ fn default_api_port() -> u16 {
 
 #[derive(Debug, Deserialize)]
 pub struct FlowDefinition {
+    #[serde(default = "default_flow_name")]
     pub name: String,
     #[serde(default)]
     pub processors: Vec<ProcessorConfig>,
     #[serde(default)]
     pub connections: Vec<ConnectionConfig>,
+}
+
+impl Default for FlowDefinition {
+    fn default() -> Self {
+        Self {
+            name: default_flow_name(),
+            processors: Vec::new(),
+            connections: Vec::new(),
+        }
+    }
+}
+
+fn default_flow_name() -> String {
+    "default-flow".to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -232,4 +248,39 @@ fn default_fsync_mode() -> String {
 
 fn default_checkpoint_interval() -> u64 {
     120
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_flow_config_has_empty_flow() {
+        let config = FlowConfig::default();
+        assert_eq!(config.flow.name, "default-flow");
+        assert!(config.flow.processors.is_empty());
+        assert!(config.flow.connections.is_empty());
+        assert!(config.api.enabled);
+        assert_eq!(config.api.port, 8080);
+    }
+
+    #[test]
+    fn empty_toml_deserializes_to_empty_flow() {
+        let config: FlowConfig = toml::from_str("").unwrap();
+        assert_eq!(config.flow.name, "default-flow");
+        assert!(config.flow.processors.is_empty());
+        assert!(config.flow.connections.is_empty());
+    }
+
+    #[test]
+    fn minimal_toml_with_flow_name_only() {
+        let toml_str = r#"
+            [flow]
+            name = "my-flow"
+        "#;
+        let config: FlowConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.flow.name, "my-flow");
+        assert!(config.flow.processors.is_empty());
+        assert!(config.flow.connections.is_empty());
+    }
 }

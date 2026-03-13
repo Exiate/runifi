@@ -27,9 +27,13 @@ lint:
 # Run all CI checks locally
 ci: fmt-check lint test
 
-# Run the server with example config
+# Run the server (blank canvas by default)
 run:
-    cargo run -p runifi -- config/flow.toml
+    cargo run -p runifi
+
+# Run the server with example pipeline
+run-demo:
+    cargo run -p runifi -- config/examples/demo-pipeline.toml
 
 # Run the CLI
 cli *ARGS:

@@ -40,24 +40,38 @@ async fn main() -> Result<()> {
         "Plugin registry initialized"
     );
 
-    // Load seed flow configuration (TOML).
-    let config_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "config/flow.toml".to_string());
+    // Load seed flow configuration (TOML), defaulting to an empty flow.
+    let config_path = std::env::args().nth(1);
 
-    let config_str = match std::fs::read_to_string(&config_path) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(path = %config_path, error = %e, "No config file found, running idle");
-            wait_for_shutdown().await;
-            return Ok(());
+    let config: FlowConfig = match &config_path {
+        Some(path) => {
+            let config_str = std::fs::read_to_string(path).context("Failed to read config file")?;
+            let cfg: FlowConfig =
+                toml::from_str(&config_str).context("Failed to parse flow configuration")?;
+            tracing::info!(flow = %cfg.flow.name, path = %path, "Loaded seed flow configuration");
+            cfg
+        }
+        None => {
+            // Try the default path; if it doesn't exist, start with an empty flow.
+            let default_path = "config/flow.toml";
+            match std::fs::read_to_string(default_path) {
+                Ok(config_str) => {
+                    let cfg: FlowConfig = toml::from_str(&config_str)
+                        .context("Failed to parse flow configuration")?;
+                    tracing::info!(
+                        flow = %cfg.flow.name,
+                        path = %default_path,
+                        "Loaded seed flow configuration"
+                    );
+                    cfg
+                }
+                Err(_) => {
+                    tracing::info!("No config file found, starting with blank canvas");
+                    FlowConfig::default()
+                }
+            }
         }
     };
-
-    let config: FlowConfig =
-        toml::from_str(&config_str).context("Failed to parse flow configuration")?;
-
-    tracing::info!(flow = %config.flow.name, "Loaded seed flow configuration");
 
     // Check for persisted runtime flow state.
     let conf_dir = config.engine.conf_dir.clone();
@@ -74,7 +88,7 @@ async fn main() -> Result<()> {
         Ok(None) => {
             tracing::info!(
                 conf_dir = %conf_dir.display(),
-                "No persisted flow state found, using seed config"
+                "No persisted flow state found"
             );
             None
         }

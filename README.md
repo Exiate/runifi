@@ -66,7 +66,7 @@ The server binary is at `target/release/runifi` and the CLI at `target/release/r
 
 ## Configuration
 
-Flows are defined in TOML. See [`config/flow.toml`](config/flow.toml) for a complete example.
+Flows are defined in TOML. See [`config/examples/demo-pipeline.toml`](config/examples/demo-pipeline.toml) for a complete example.
 
 ```toml
 [flow]
@@ -87,10 +87,16 @@ relationship = "success"
 destination = "log-attributes"
 ```
 
-### Run with a config
+### Run (blank canvas)
 
 ```bash
-cargo run -p runifi -- config/flow.toml
+cargo run -p runifi
+```
+
+### Run with the demo pipeline
+
+```bash
+cargo run -p runifi -- config/examples/demo-pipeline.toml
 ```
 
 ## Web Dashboard
