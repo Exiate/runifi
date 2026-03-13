@@ -12,10 +12,10 @@ use super::handle::{ConnectionInfo, ProcessorInfo, PropertyDescriptorInfo, Relat
 use super::metrics::ProcessorMetrics;
 use super::mutation::MutationError;
 use super::processor_node::{ProcessorNode, SchedulingStrategy};
+use crate::audit::{AuditAction, AuditEvent, AuditLogger, AuditTarget};
 use crate::connection::back_pressure::BackPressureConfig;
 use crate::connection::flow_connection::FlowConnection;
 use crate::connection::query::FlowConnectionQuery;
-use crate::audit::{AuditAction, AuditEvent, AuditLogger, AuditTarget};
 use crate::id::IdGenerator;
 use crate::registry::plugin_registry::PluginRegistry;
 use crate::repository::content_repo::ContentRepository;

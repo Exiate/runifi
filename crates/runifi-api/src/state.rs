@@ -1,6 +1,7 @@
-use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 
+use runifi_core::config::flow_config::SecurityConfig;
 use runifi_core::engine::handle::EngineHandle;
 
 /// Shared API state, cheap to clone via Arc.
@@ -14,6 +15,8 @@ pub struct ApiState {
     pub max_sse_connections: usize,
     /// Whether to include detailed internal names in error messages.
     pub detailed_errors: bool,
+    /// Security configuration (API keys, TLS settings).
+    pub security: SecurityConfig,
 }
 
 impl ApiState {
@@ -24,6 +27,7 @@ impl ApiState {
             sse_connections: Arc::new(AtomicUsize::new(0)),
             max_sse_connections: 50,
             detailed_errors: false,
+            security: SecurityConfig::default(),
         }
     }
 
@@ -32,12 +36,14 @@ impl ApiState {
         handle: EngineHandle,
         max_sse_connections: usize,
         detailed_errors: bool,
+        security: SecurityConfig,
     ) -> Self {
         Self {
             handle: Arc::new(handle),
             sse_connections: Arc::new(AtomicUsize::new(0)),
             max_sse_connections,
             detailed_errors,
+            security,
         }
     }
 }

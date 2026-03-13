@@ -182,11 +182,17 @@ async fn list_queue(
         })
         .collect();
 
-    state.handle.audit_logger.log(&AuditEvent::success_with_details(
-        AuditAction::QueueInspected,
-        AuditTarget::queue(&id),
-        format!("total_count={}, offset={}, limit={}", total_count, offset, limit),
-    ));
+    state
+        .handle
+        .audit_logger
+        .log(&AuditEvent::success_with_details(
+            AuditAction::QueueInspected,
+            AuditTarget::queue(&id),
+            format!(
+                "total_count={}, offset={}, limit={}",
+                total_count, offset, limit
+            ),
+        ));
 
     Ok(Json(QueueListingResponse {
         connection_id: id,
@@ -297,11 +303,14 @@ async fn download_content(
         safe_filename
     };
 
-    state.handle.audit_logger.log(&AuditEvent::success_with_details(
-        AuditAction::ContentDownloaded,
-        AuditTarget::queue(&id),
-        format!("flowfile_id={}, size={}", flowfile_id, content.len()),
-    ));
+    state
+        .handle
+        .audit_logger
+        .log(&AuditEvent::success_with_details(
+            AuditAction::ContentDownloaded,
+            AuditTarget::queue(&id),
+            format!("flowfile_id={}, size={}", flowfile_id, content.len()),
+        ));
 
     Ok((
         StatusCode::OK,
@@ -331,11 +340,14 @@ async fn empty_queue(
 
     let removed = conn_info.connection.clear_queue();
 
-    state.handle.audit_logger.log(&AuditEvent::success_with_details(
-        AuditAction::QueueEmptied,
-        AuditTarget::queue(&id),
-        format!("removed_count={}", removed),
-    ));
+    state
+        .handle
+        .audit_logger
+        .log(&AuditEvent::success_with_details(
+            AuditAction::QueueEmptied,
+            AuditTarget::queue(&id),
+            format!("removed_count={}", removed),
+        ));
 
     Ok(Json(serde_json::json!({
         "connection_id": id,

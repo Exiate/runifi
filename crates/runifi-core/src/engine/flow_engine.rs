@@ -22,9 +22,7 @@ use super::processor_node::{
     ProcessorNode, SchedulingStrategy, SharedInputConnections, SharedInputNotifiers,
     SharedOutputConnections,
 };
-use crate::audit::{
-    AuditAction, AuditEvent, AuditLogger, AuditTarget, NullAuditLogger,
-};
+use crate::audit::{AuditAction, AuditEvent, AuditLogger, AuditTarget, NullAuditLogger};
 use crate::connection::back_pressure::BackPressureConfig;
 use crate::connection::flow_connection::FlowConnection;
 use crate::connection::query::FlowConnectionQuery;

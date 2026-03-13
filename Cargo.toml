@@ -64,11 +64,15 @@ toml = "0.8"
 
 # Web API
 axum = "0.8"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
 tower-http = { version = "0.6", features = ["cors", "limit"] }
 tower = { version = "0.5", features = ["util"] }
 governor = "0.8"
 tokio-stream = { version = "0.1", features = ["time"] }
 include_dir = "0.7"
+subtle = "2"
+rand = "0.8"
+urlencoding = "2"
 
 # Internal crates
 runifi-plugin-api = { path = "crates/runifi-plugin-api" }
