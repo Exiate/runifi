@@ -6,28 +6,28 @@ use include_dir::{Dir, include_dir};
 
 use crate::state::ApiState;
 
-static DASHBOARD_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/dashboard");
+static DASHBOARD_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/dashboard-dist");
 
 pub fn routes() -> Router<ApiState> {
     Router::new()
         .route("/", get(index))
-        .route("/style.css", get(style_css))
-        .route("/app.js", get(app_js))
+        .route("/assets/app.js", get(app_js))
+        .route("/assets/app.css", get(app_css))
 }
 
 async fn index() -> Html<&'static str> {
     let file = DASHBOARD_DIR
         .get_file("index.html")
-        .expect("index.html must exist in dashboard/");
+        .expect("index.html must exist in dashboard-dist/");
     Html(file.contents_utf8().unwrap_or(""))
 }
 
-async fn style_css() -> Response {
-    serve_static("style.css", "text/css")
+async fn app_js() -> Response {
+    serve_static("assets/app.js", "application/javascript")
 }
 
-async fn app_js() -> Response {
-    serve_static("app.js", "application/javascript")
+async fn app_css() -> Response {
+    serve_static("assets/app.css", "text/css")
 }
 
 fn serve_static(path: &str, content_type: &str) -> Response {
