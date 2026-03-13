@@ -449,6 +449,15 @@ impl EngineHandle {
         self.notify_persist();
     }
 
+    /// Restore a canvas position without triggering persistence.
+    ///
+    /// Used during startup to load persisted positions back into memory
+    /// without causing an unnecessary disk write of the state that was
+    /// just loaded.
+    pub fn restore_position(&self, name: &str, x: f64, y: f64) {
+        self.positions.insert(name.to_string(), Position { x, y });
+    }
+
     /// Read the canvas position for a processor.
     pub fn get_position(&self, name: &str) -> Option<Position> {
         self.positions.get(name).map(|p| *p)

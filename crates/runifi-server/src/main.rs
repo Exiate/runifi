@@ -279,12 +279,13 @@ async fn main() -> Result<()> {
     engine.start().await.context("Failed to start engine")?;
     tracing::info!("Flow engine is running");
 
-    // Restore positions from persisted state.
+    // Restore positions from persisted state. Uses restore_position() to
+    // avoid triggering an unnecessary persist of the state just loaded.
     if let Some(ref state) = runtime_flow
         && let Some(handle) = engine.handle()
     {
         for (name, pos) in &state.positions {
-            handle.set_position(name, pos.x, pos.y);
+            handle.restore_position(name, pos.x, pos.y);
         }
     }
 
