@@ -102,7 +102,9 @@ fn validate_processor_name(name: &str) -> Result<(), ApiError> {
 }
 
 /// Validate properties against the processor type's property descriptors.
-/// Rejects unknown property keys, missing required properties, and invalid allowed values.
+/// Rejects unknown property keys and invalid allowed values.
+/// Required-property checks are deferred to start time (matching NiFi behavior:
+/// create → configure → start).
 fn validate_properties(
     properties: &std::collections::HashMap<String, String>,
     descriptors: &[runifi_plugin_api::PropertyDescriptor],
@@ -117,16 +119,6 @@ fn validate_properties(
                 "Unknown property '{}'. Valid properties: {:?}",
                 key,
                 known_names.iter().collect::<Vec<_>>()
-            )));
-        }
-    }
-
-    // Validate required properties are present (or have defaults).
-    for desc in descriptors {
-        if desc.required && desc.default_value.is_none() && !properties.contains_key(desc.name) {
-            return Err(ApiError::BadRequest(format!(
-                "Required property '{}' is missing",
-                desc.name
             )));
         }
     }
