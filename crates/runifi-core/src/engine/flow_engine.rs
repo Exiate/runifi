@@ -317,7 +317,7 @@ impl FlowEngine {
             processor_infos.push(ProcessorInfo {
                 name: node_builder.name.clone(),
                 type_name: node_builder.type_name.clone(),
-                scheduling: node_builder.scheduling.clone(),
+                scheduling_display: scheduling_display(&node_builder.scheduling),
                 metrics,
                 property_descriptors: prop_descriptors,
                 relationships,
@@ -455,6 +455,21 @@ impl FlowEngine {
         if let Some(handle) = &mut self.handle {
             handle.plugin_types = Arc::new(plugin_types);
         }
+    }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Format a `SchedulingStrategy` as a human-readable display string.
+///
+/// Keeps the concrete enum internal to the engine — callers receive a `String`
+/// so they do not need to import or match on `SchedulingStrategy`.
+fn scheduling_display(strategy: &SchedulingStrategy) -> String {
+    match strategy {
+        SchedulingStrategy::TimerDriven { interval_ms } => {
+            format!("timer-driven ({}ms)", interval_ms)
+        }
+        SchedulingStrategy::EventDriven => "event-driven".to_string(),
     }
 }
 
@@ -628,7 +643,7 @@ fn handle_add_processor(
     live_procs.write().push(ProcessorInfo {
         name: name.to_string(),
         type_name: type_name.to_string(),
-        scheduling,
+        scheduling_display: scheduling_display(&scheduling),
         metrics,
         property_descriptors: prop_descriptors,
         relationships,
