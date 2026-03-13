@@ -1,6 +1,7 @@
 // React Flow node and edge data types
 // Note: @xyflow/react requires data types to satisfy Record<string, unknown>
 
+import type { Position } from '@xyflow/react';
 import type { MetricsResponse, BulletinResponse } from './api';
 
 export interface ProcessorNodeData extends Record<string, unknown> {
@@ -37,4 +38,7 @@ export interface ConnectionEdgeData extends Record<string, unknown> {
   pending: boolean;
   // Optional callback injected from FlowCanvas to open the queue inspector
   onQueueClick?: (connectionId: string, label: string) => void;
+  // Smart routing: dynamic handle positions based on node geometry
+  smartSourcePosition?: Position;
+  smartTargetPosition?: Position;
 }

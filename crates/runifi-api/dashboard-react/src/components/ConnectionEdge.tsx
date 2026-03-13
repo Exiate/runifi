@@ -27,13 +27,17 @@ function ConnectionEdgeInner({
   data,
   // onQueueClick is passed via edge data or through a custom mechanism
 }: ConnectionEdgeInnerProps) {
+  // Use dynamic positions from edge data if available, else fall back to React Flow defaults
+  const effectiveSourcePos = data?.smartSourcePosition ?? sourcePosition;
+  const effectiveTargetPos = data?.smartTargetPosition ?? targetPosition;
+
   const [edgePath, labelX, labelY] = getBezierPath({
     sourceX,
     sourceY,
-    sourcePosition,
+    sourcePosition: effectiveSourcePos,
     targetX,
     targetY,
-    targetPosition,
+    targetPosition: effectiveTargetPos,
   });
 
   const queuedCount = data?.queuedCount ?? 0;
