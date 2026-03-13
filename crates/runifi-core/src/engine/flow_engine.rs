@@ -17,7 +17,10 @@ use super::handle::{
 };
 use super::metrics::ProcessorMetrics;
 use super::mutation::{MutationCommand, MutationError};
-use super::processor_node::{ProcessorNode, SchedulingStrategy};
+use super::processor_node::{
+    ProcessorNode, SchedulingStrategy, SharedInputConnections, SharedInputNotifiers,
+    SharedOutputConnections,
+};
 use crate::connection::back_pressure::BackPressureConfig;
 use crate::connection::flow_connection::FlowConnection;
 use crate::error::{Result, RuniFiError};
@@ -151,58 +154,52 @@ impl FlowEngine {
             flow_connections.push((conn.source_node, conn.relationship, conn.dest_node, fc));
         }
 
-        // Create metrics and shared props per processor.
-        let mut processor_infos: Vec<ProcessorInfo> = Vec::new();
+        // First pass: collect static processor metadata (property descriptors and
+        // relationships) and allocate per-processor state. Must happen before the
+        // processor is consumed by ProcessorNode::new() below.
         let mut metrics_by_node: HashMap<NodeId, Arc<ProcessorMetrics>> = HashMap::new();
         let mut shared_props_by_node: HashMap<NodeId, Arc<RwLock<HashMap<String, String>>>> =
             HashMap::new();
+        let mut static_meta_by_node: HashMap<
+            NodeId,
+            (Vec<PropertyDescriptorInfo>, Vec<RelationshipInfo>),
+        > = HashMap::new();
 
         for node_builder in &self.nodes {
             let metrics = Arc::new(ProcessorMetrics::new());
             metrics_by_node.insert(node_builder.id, metrics.clone());
-
-            let (prop_descriptors, relationships) =
-                if let Some(ref proc) = node_builder.processor {
-                    let pds = proc
-                        .property_descriptors()
-                        .into_iter()
-                        .map(|pd| PropertyDescriptorInfo {
-                            name: pd.name.to_string(),
-                            description: pd.description.to_string(),
-                            required: pd.required,
-                            default_value: pd.default_value.map(|v| v.to_string()),
-                            sensitive: pd.sensitive,
-                            allowed_values: pd
-                                .allowed_values
-                                .map(|av| av.iter().map(|v| v.to_string()).collect()),
-                        })
-                        .collect();
-                    let rels = proc
-                        .relationships()
-                        .into_iter()
-                        .map(|r| RelationshipInfo {
-                            name: r.name.to_string(),
-                            description: r.description.to_string(),
-                            auto_terminated: r.auto_terminated,
-                        })
-                        .collect();
-                    (pds, rels)
-                } else {
-                    (Vec::new(), Vec::new())
-                };
-
             let shared_props = Arc::new(RwLock::new(node_builder.properties.clone()));
-            shared_props_by_node.insert(node_builder.id, shared_props.clone());
+            shared_props_by_node.insert(node_builder.id, shared_props);
 
-            processor_infos.push(ProcessorInfo {
-                name: node_builder.name.clone(),
-                type_name: node_builder.type_name.clone(),
-                scheduling: node_builder.scheduling.clone(),
-                metrics,
-                property_descriptors: prop_descriptors,
-                relationships,
-                properties: shared_props,
-            });
+            let (prop_descriptors, rels) = if let Some(ref proc) = node_builder.processor {
+                let pds = proc
+                    .property_descriptors()
+                    .into_iter()
+                    .map(|pd| PropertyDescriptorInfo {
+                        name: pd.name.to_string(),
+                        description: pd.description.to_string(),
+                        required: pd.required,
+                        default_value: pd.default_value.map(|v| v.to_string()),
+                        sensitive: pd.sensitive,
+                        allowed_values: pd
+                            .allowed_values
+                            .map(|av| av.iter().map(|v| v.to_string()).collect()),
+                    })
+                    .collect();
+                let rs = proc
+                    .relationships()
+                    .into_iter()
+                    .map(|r| RelationshipInfo {
+                        name: r.name.to_string(),
+                        description: r.description.to_string(),
+                        auto_terminated: r.auto_terminated,
+                    })
+                    .collect();
+                (pds, rs)
+            } else {
+                (Vec::new(), Vec::new())
+            };
+            static_meta_by_node.insert(node_builder.id, (prop_descriptors, rels));
         }
 
         // Build ConnectionInfo for the handle.
@@ -220,13 +217,18 @@ impl FlowEngine {
             })
             .collect();
 
-        // Wrap in shared mutable arcs visible from the handle.
-        let live_procs = Arc::new(RwLock::new(processor_infos));
-        let live_conns = Arc::new(RwLock::new(connection_infos));
-
-        // Build ProcessorNodes.
+        // Build ProcessorNodes and collect shared handles for live_procs patching.
         let mut processor_nodes: Vec<ProcessorNode> = Vec::new();
         let mut proc_tokens: HashMap<String, CancellationToken> = HashMap::new();
+        // Map processor name -> (input_connections, output_connections, input_notifiers)
+        let mut node_conn_handles: HashMap<
+            String,
+            (
+                SharedInputConnections,
+                SharedOutputConnections,
+                SharedInputNotifiers,
+            ),
+        > = HashMap::new();
 
         for node_builder in &mut self.nodes {
             let processor = node_builder
@@ -261,9 +263,7 @@ impl FlowEngine {
             for (src, rel, dst, fc) in &flow_connections {
                 if *src == node_builder.id {
                     let relationships = pn.relationships();
-                    if let Some(relationship) =
-                        relationships.into_iter().find(|r| r.name == *rel)
-                    {
+                    if let Some(relationship) = relationships.into_iter().find(|r| r.name == *rel) {
                         pn.add_output(relationship, fc.clone());
                     }
                 }
@@ -272,9 +272,53 @@ impl FlowEngine {
                 }
             }
 
+            // Grab the shared handles BEFORE moving pn into spawn.
+            let input_h = pn.input_connections_handle();
+            let output_h = pn.output_connections_handle();
+            let notifiers_h = pn.input_notifiers_handle();
+            node_conn_handles.insert(node_builder.name.clone(), (input_h, output_h, notifiers_h));
+
             proc_tokens.insert(node_builder.name.clone(), child_token);
             processor_nodes.push(pn);
         }
+
+        // Build ProcessorInfo entries combining static metadata (from the first
+        // pass) with the shared connection handles (from the second pass).
+        let mut processor_infos: Vec<ProcessorInfo> = Vec::new();
+        for node_builder in &self.nodes {
+            let metrics = metrics_by_node
+                .get(&node_builder.id)
+                .expect("metrics must exist")
+                .clone();
+            let shared_props = shared_props_by_node
+                .get(&node_builder.id)
+                .expect("shared_props must exist")
+                .clone();
+            let (prop_descriptors, relationships) = static_meta_by_node
+                .remove(&node_builder.id)
+                .expect("static meta must exist for every node");
+            let (input_h, output_h, notifiers_h) = node_conn_handles
+                .get(&node_builder.name)
+                .expect("conn handles must exist for every node")
+                .clone();
+
+            processor_infos.push(ProcessorInfo {
+                name: node_builder.name.clone(),
+                type_name: node_builder.type_name.clone(),
+                scheduling: node_builder.scheduling.clone(),
+                metrics,
+                property_descriptors: prop_descriptors,
+                relationships,
+                properties: shared_props,
+                input_connections: input_h,
+                output_connections: output_h,
+                input_notifiers: notifiers_h,
+            });
+        }
+
+        // Wrap in shared mutable arcs visible from the handle.
+        let live_procs = Arc::new(RwLock::new(processor_infos));
+        let live_conns = Arc::new(RwLock::new(connection_infos));
 
         // Create the mutation command channel.
         let (mutation_tx, mutation_rx) = mpsc::channel::<MutationCommand>(64);
@@ -490,6 +534,13 @@ fn handle_add_processor(
     parent_cancel: &CancellationToken,
     proc_tokens: &Arc<parking_lot::Mutex<HashMap<String, CancellationToken>>>,
 ) -> std::result::Result<(), MutationError> {
+    // Fix 5: validate scheduling_strategy strictly.
+    if scheduling_strategy != "timer" && scheduling_strategy != "event" {
+        return Err(MutationError::InvalidSchedulingStrategy(
+            scheduling_strategy.to_string(),
+        ));
+    }
+
     let reg = registry
         .as_ref()
         .ok_or_else(|| MutationError::Internal("No plugin registry available".into()))?;
@@ -554,6 +605,11 @@ fn handle_add_processor(
         bulletin_board.clone(),
     );
 
+    // Capture shared handles before moving pn into spawn.
+    let input_h = pn.input_connections_handle();
+    let output_h = pn.output_connections_handle();
+    let notifiers_h = pn.input_notifiers_handle();
+
     proc_tokens.lock().insert(name.to_string(), child_token);
     tokio::spawn(pn.run());
 
@@ -565,38 +621,30 @@ fn handle_add_processor(
         property_descriptors: prop_descriptors,
         relationships,
         properties: shared_props,
+        input_connections: input_h,
+        output_connections: output_h,
+        input_notifiers: notifiers_h,
     });
 
     tracing::info!(name, type_name, "Hot-added processor");
     Ok(())
 }
 
+/// Remove a processor at runtime.
+///
+/// Fix 3 (TOCTOU): Acquire the write lock for the entire operation so that
+/// concurrent lifecycle ops (start/stop) that check the same `live_procs` list
+/// cannot race with removal. This means a concurrent `start_processor` reading
+/// the processors list will either observe the processor as still present (before
+/// the write lock is acquired here) or not at all (after retain completes).
 async fn handle_remove_processor(
     name: &str,
     live_procs: &Arc<RwLock<Vec<ProcessorInfo>>>,
     live_conns: &Arc<RwLock<Vec<ConnectionInfo>>>,
     proc_tokens: &Arc<parking_lot::Mutex<HashMap<String, CancellationToken>>>,
 ) -> std::result::Result<(), MutationError> {
-    {
-        let procs = live_procs.read();
-        let info = procs
-            .iter()
-            .find(|p| p.name == name)
-            .ok_or_else(|| MutationError::ProcessorNotFound(name.to_string()))?;
-
-        let enabled = info
-            .metrics
-            .enabled
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let active = info
-            .metrics
-            .active
-            .load(std::sync::atomic::Ordering::Relaxed);
-        if enabled || active {
-            return Err(MutationError::ProcessorNotStopped);
-        }
-    }
-
+    // Check for active connections before acquiring the write lock.
+    // This avoids holding the write lock while iterating connections.
     {
         let conns = live_conns.read();
         let conn_ids: Vec<String> = conns
@@ -609,16 +657,49 @@ async fn handle_remove_processor(
         }
     }
 
+    // Acquire the write lock for the remainder of the operation. This serialises
+    // removal with any concurrent lifecycle operation (start/stop/pause/resume)
+    // that holds a read lock while setting atomics.
+    let mut procs = live_procs.write();
+
+    let info = procs
+        .iter()
+        .find(|p| p.name == name)
+        .ok_or_else(|| MutationError::ProcessorNotFound(name.to_string()))?;
+
+    let enabled = info
+        .metrics
+        .enabled
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let active = info
+        .metrics
+        .active
+        .load(std::sync::atomic::Ordering::Relaxed);
+    if enabled || active {
+        return Err(MutationError::ProcessorNotStopped);
+    }
+
     if let Some(token) = proc_tokens.lock().remove(name) {
         token.cancel();
     }
 
-    live_procs.write().retain(|p| p.name != name);
+    procs.retain(|p| p.name != name);
 
     tracing::info!(name, "Hot-removed processor");
     Ok(())
 }
 
+/// Add a connection at runtime and wire it into the processor data paths.
+///
+/// Fix 1 (phantom connections): in addition to updating `live_conns`, push the
+/// new `FlowConnection` into:
+///   - the source processor's `output_connections` (SharedOutputConnections), and
+///   - the destination processor's `input_connections` (SharedInputConnections)
+///     and `input_notifiers` (SharedInputNotifiers).
+///
+/// These shared `Arc<RwLock<Vec<...>>>` are held inside the running
+/// `ProcessorNode` task, so writes here are immediately visible to the task's
+/// next invocation without restarting it.
 fn handle_add_connection(
     conn_id: String,
     source_name: &str,
@@ -628,7 +709,9 @@ fn handle_add_connection(
     live_procs: &Arc<RwLock<Vec<ProcessorInfo>>>,
     live_conns: &Arc<RwLock<Vec<ConnectionInfo>>>,
 ) -> std::result::Result<String, MutationError> {
-    {
+    // Validate processors/relationship and collect the shared handles we'll
+    // mutate. Clone the Arcs so we can drop the read lock before writing.
+    let (src_output_h, src_rel, dst_input_h, dst_notifiers_h) = {
         let procs = live_procs.read();
 
         let src = procs
@@ -636,18 +719,44 @@ fn handle_add_connection(
             .find(|p| p.name == source_name)
             .ok_or_else(|| MutationError::ProcessorNotFound(source_name.to_string()))?;
 
-        if !src.relationships.iter().any(|r| r.name == relationship) {
-            return Err(MutationError::UnknownRelationship(
-                relationship.to_string(),
-                source_name.to_string(),
-            ));
-        }
+        // Find the matching RelationshipInfo to reconstruct a Relationship value.
+        let src_rel_info = src
+            .relationships
+            .iter()
+            .find(|r| r.name == relationship)
+            .ok_or_else(|| {
+                MutationError::UnknownRelationship(
+                    relationship.to_string(),
+                    source_name.to_string(),
+                )
+            })?;
 
-        if procs.iter().all(|p| p.name != dest_name) {
-            return Err(MutationError::ProcessorNotFound(dest_name.to_string()));
-        }
-    }
+        let dst = procs
+            .iter()
+            .find(|p| p.name == dest_name)
+            .ok_or_else(|| MutationError::ProcessorNotFound(dest_name.to_string()))?;
 
+        // Relationship uses &'static str; we must leak the strings for runtime-
+        // allocated names. These strings live for the lifetime of the process,
+        // which is acceptable because connection/processor names are bounded by
+        // the configured max (128 chars) and the total number of hot-added
+        // connections is expected to be small.
+        use runifi_plugin_api::relationship::Relationship;
+        let rel = Relationship {
+            name: Box::leak(src_rel_info.name.clone().into_boxed_str()),
+            description: Box::leak(src_rel_info.description.clone().into_boxed_str()),
+            auto_terminated: src_rel_info.auto_terminated,
+        };
+
+        (
+            Arc::clone(&src.output_connections),
+            rel,
+            Arc::clone(&dst.input_connections),
+            Arc::clone(&dst.input_notifiers),
+        )
+    };
+
+    // Check for duplicate connection.
     {
         let conns = live_conns.read();
         if conns.iter().any(|c| {
@@ -665,6 +774,17 @@ fn handle_add_connection(
 
     let fc = Arc::new(FlowConnection::new(conn_id.clone(), config));
 
+    // Wire into destination processor's input list and notifier list.
+    // The running ProcessorNode task holds the same Arc<RwLock<...>>, so writes
+    // here are visible on its next `input_connections.read()` / `input_notifiers.read()`.
+    let notifier = fc.notifier();
+    dst_input_h.write().push(Arc::clone(&fc));
+    dst_notifiers_h.write().push(notifier);
+
+    // Wire into source processor's output list.
+    src_output_h.write().push((src_rel, Arc::clone(&fc)));
+
+    // Record in live_conns for API visibility.
     live_conns.write().push(ConnectionInfo {
         id: conn_id.clone(),
         source_name: source_name.to_string(),

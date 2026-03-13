@@ -66,15 +66,14 @@ impl From<MutationError> for ApiError {
                 "Unknown processor type: {}. Check /api/v1/plugins for available types.",
                 msg
             )),
-            MutationError::DuplicateName(name) => ApiError::Conflict(format!(
-                "A processor named '{}' already exists",
-                name
-            )),
+            MutationError::DuplicateName(name) => {
+                ApiError::Conflict(format!("A processor named '{}' already exists", name))
+            }
             MutationError::ProcessorNotFound(name) => ApiError::ProcessorNotFound(name),
             MutationError::ConnectionNotFound(id) => ApiError::ConnectionNotFound(id),
-            MutationError::ProcessorNotStopped => ApiError::Conflict(
-                "Processor must be stopped before it can be removed".to_string(),
-            ),
+            MutationError::ProcessorNotStopped => {
+                ApiError::Conflict("Processor must be stopped before it can be removed".to_string())
+            }
             MutationError::ProcessorHasConnections(ids) => ApiError::Conflict(format!(
                 "Processor has active connections: {}. Remove them first.",
                 ids
@@ -92,6 +91,10 @@ impl From<MutationError> for ApiError {
                 count
             )),
             MutationError::EngineNotRunning => ApiError::EngineNotRunning,
+            MutationError::InvalidSchedulingStrategy(s) => ApiError::BadRequest(format!(
+                "Invalid scheduling strategy '{}'; must be 'timer' or 'event'",
+                s
+            )),
             MutationError::Internal(msg) => ApiError::ConfigError(msg),
         }
     }

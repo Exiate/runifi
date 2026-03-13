@@ -76,6 +76,9 @@ pub enum MutationError {
     #[error("engine not running")]
     EngineNotRunning,
 
+    #[error("invalid scheduling strategy '{0}'; must be 'timer' or 'event'")]
+    InvalidSchedulingStrategy(String),
+
     #[error("{0}")]
     Internal(String),
 }

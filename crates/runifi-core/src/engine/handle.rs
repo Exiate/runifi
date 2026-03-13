@@ -10,7 +10,9 @@ use tokio::sync::{mpsc, oneshot};
 use super::bulletin::BulletinBoard;
 use super::metrics::ProcessorMetrics;
 use super::mutation::{MutationCommand, MutationError};
-use super::processor_node::SchedulingStrategy;
+use super::processor_node::{
+    SchedulingStrategy, SharedInputConnections, SharedInputNotifiers, SharedOutputConnections,
+};
 use crate::connection::back_pressure::BackPressureConfig;
 use crate::connection::flow_connection::FlowConnection;
 use crate::repository::content_repo::ContentRepository;
@@ -70,6 +72,14 @@ pub struct ProcessorInfo {
     pub relationships: Vec<RelationshipInfo>,
     /// Current property values, shared with the processor node for runtime updates.
     pub properties: Arc<RwLock<HashMap<String, String>>>,
+    /// Shared input connection list — held so the mutation handler can wire
+    /// hot-added connections into the running processor task.
+    pub input_connections: SharedInputConnections,
+    /// Shared output connection list — same purpose as `input_connections`.
+    pub output_connections: SharedOutputConnections,
+    /// Shared input notifier list — held so the mutation handler can register
+    /// event-driven wakeup notifiers for hot-added input connections.
+    pub input_notifiers: SharedInputNotifiers,
 }
 
 /// Information about a connection, visible to the API.
@@ -234,9 +244,7 @@ impl EngineHandle {
         let info = processors
             .iter()
             .find(|p| p.name == name)
-            .ok_or_else(|| {
-                ConfigUpdateError::NotFound(format!("Processor not found: {}", name))
-            })?;
+            .ok_or_else(|| ConfigUpdateError::NotFound(format!("Processor not found: {}", name)))?;
 
         // Acquire the write lock BEFORE checking state to prevent TOCTOU race
         // with concurrent start requests.
@@ -311,7 +319,9 @@ impl EngineHandle {
             })
             .await
             .map_err(|_| MutationError::EngineNotRunning)?;
-        reply_rx.await.map_err(|_| MutationError::EngineNotRunning)?
+        reply_rx
+            .await
+            .map_err(|_| MutationError::EngineNotRunning)?
     }
 
     /// Remove a processor at runtime (hot-remove).
@@ -326,7 +336,9 @@ impl EngineHandle {
             })
             .await
             .map_err(|_| MutationError::EngineNotRunning)?;
-        reply_rx.await.map_err(|_| MutationError::EngineNotRunning)?
+        reply_rx
+            .await
+            .map_err(|_| MutationError::EngineNotRunning)?
     }
 
     /// Add a new connection at runtime (hot-add).
@@ -350,7 +362,9 @@ impl EngineHandle {
             })
             .await
             .map_err(|_| MutationError::EngineNotRunning)?;
-        reply_rx.await.map_err(|_| MutationError::EngineNotRunning)?
+        reply_rx
+            .await
+            .map_err(|_| MutationError::EngineNotRunning)?
     }
 
     /// Remove a connection at runtime (hot-remove).
@@ -367,7 +381,9 @@ impl EngineHandle {
             })
             .await
             .map_err(|_| MutationError::EngineNotRunning)?;
-        reply_rx.await.map_err(|_| MutationError::EngineNotRunning)?
+        reply_rx
+            .await
+            .map_err(|_| MutationError::EngineNotRunning)?
     }
 
     // ── Position metadata ────────────────────────────────────────────────────

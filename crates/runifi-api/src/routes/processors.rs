@@ -8,16 +8,21 @@ use runifi_core::engine::processor_node::SchedulingStrategy;
 
 use crate::dto::{
     CreateProcessorRequest, ProcessorConfigResponse, ProcessorConfigUpdateRequest,
-    ProcessorDetailResponse, ProcessorResponse, RelationshipResponse,
-    UpdatePositionRequest,
+    ProcessorDetailResponse, ProcessorResponse, RelationshipResponse, UpdatePositionRequest,
 };
 use crate::error::ApiError;
 use crate::state::ApiState;
 
 pub fn routes() -> Router<ApiState> {
     Router::new()
-        .route("/api/v1/processors", get(list_processors).post(create_processor))
-        .route("/api/v1/processors/{name}", get(get_processor).delete(delete_processor))
+        .route(
+            "/api/v1/processors",
+            get(list_processors).post(create_processor),
+        )
+        .route(
+            "/api/v1/processors/{name}",
+            get(get_processor).delete(delete_processor),
+        )
         .route(
             "/api/v1/processors/{name}/config",
             get(get_processor_config).put(update_processor_config),
@@ -56,11 +61,37 @@ async fn get_processor(
     Ok(Json(ProcessorResponse::from_info(&info)))
 }
 
+/// Validate a processor name: non-empty, max 128 chars, only `[a-zA-Z0-9_-]`.
+fn validate_processor_name(name: &str) -> Result<(), ApiError> {
+    if name.is_empty() {
+        return Err(ApiError::BadRequest(
+            "Processor name must not be empty".to_string(),
+        ));
+    }
+    if name.len() > 128 {
+        return Err(ApiError::BadRequest(
+            "Processor name must not exceed 128 characters".to_string(),
+        ));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(ApiError::BadRequest(
+            "Processor name may only contain letters, digits, underscores, and hyphens".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Create a new processor instance at runtime.
 async fn create_processor(
     State(state): State<ApiState>,
     Json(body): Json<CreateProcessorRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    // Fix 4: validate the processor name before sending to the engine.
+    validate_processor_name(&body.name)?;
+
     state
         .handle
         .add_processor(

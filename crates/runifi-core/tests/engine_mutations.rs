@@ -11,8 +11,7 @@ use runifi_core::engine::mutation::MutationError;
 use runifi_core::registry::plugin_registry::PluginRegistry;
 use runifi_core::repository::content_memory::InMemoryContentRepository;
 use runifi_plugin_api::{
-    ProcessorDescriptor, Relationship,
-    context::ProcessContext, session::ProcessSession,
+    ProcessorDescriptor, Relationship, context::ProcessContext, session::ProcessSession,
 };
 
 // ── Minimal test processors ───────────────────────────────────────────────────
@@ -94,16 +93,31 @@ async fn hot_add_duplicate_name_returns_error() {
     let handle = engine.handle().expect("handle must exist").clone();
 
     handle
-        .add_processor("p".to_string(), "NoOp".to_string(), HashMap::new(), "timer".to_string(), 1000)
+        .add_processor(
+            "p".to_string(),
+            "NoOp".to_string(),
+            HashMap::new(),
+            "timer".to_string(),
+            1000,
+        )
         .await
         .expect("first add should succeed");
 
     let result = handle
-        .add_processor("p".to_string(), "NoOp".to_string(), HashMap::new(), "timer".to_string(), 1000)
+        .add_processor(
+            "p".to_string(),
+            "NoOp".to_string(),
+            HashMap::new(),
+            "timer".to_string(),
+            1000,
+        )
         .await;
 
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), MutationError::DuplicateName(_)));
+    assert!(matches!(
+        result.unwrap_err(),
+        MutationError::DuplicateName(_)
+    ));
 }
 
 #[tokio::test]
@@ -112,7 +126,13 @@ async fn hot_add_unknown_type_returns_error() {
     let handle = engine.handle().expect("handle must exist").clone();
 
     let result = handle
-        .add_processor("p".to_string(), "Nonexistent".to_string(), HashMap::new(), "timer".to_string(), 1000)
+        .add_processor(
+            "p".to_string(),
+            "Nonexistent".to_string(),
+            HashMap::new(),
+            "timer".to_string(),
+            1000,
+        )
         .await;
 
     assert!(result.is_err());
@@ -125,7 +145,13 @@ async fn hot_remove_stopped_processor_succeeds() {
     let handle = engine.handle().expect("handle must exist").clone();
 
     handle
-        .add_processor("p".to_string(), "NoOp".to_string(), HashMap::new(), "timer".to_string(), 1000)
+        .add_processor(
+            "p".to_string(),
+            "NoOp".to_string(),
+            HashMap::new(),
+            "timer".to_string(),
+            1000,
+        )
         .await
         .expect("add failed");
 
@@ -145,7 +171,13 @@ async fn hot_remove_running_processor_returns_error() {
     let handle = engine.handle().expect("handle must exist").clone();
 
     handle
-        .add_processor("p".to_string(), "NoOp".to_string(), HashMap::new(), "timer".to_string(), 1000)
+        .add_processor(
+            "p".to_string(),
+            "NoOp".to_string(),
+            HashMap::new(),
+            "timer".to_string(),
+            1000,
+        )
         .await
         .expect("add failed");
 
@@ -153,7 +185,10 @@ async fn hot_remove_running_processor_returns_error() {
 
     let result = handle.remove_processor("p".to_string()).await;
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), MutationError::ProcessorNotStopped));
+    assert!(matches!(
+        result.unwrap_err(),
+        MutationError::ProcessorNotStopped
+    ));
 }
 
 #[tokio::test]
@@ -162,11 +197,25 @@ async fn hot_add_connection_appears_in_handle() {
     let handle = engine.handle().expect("handle must exist").clone();
 
     handle
-        .add_processor("src".to_string(), "NoOp".to_string(), HashMap::new(), "timer".to_string(), 1000)
-        .await.expect("add src");
+        .add_processor(
+            "src".to_string(),
+            "NoOp".to_string(),
+            HashMap::new(),
+            "timer".to_string(),
+            1000,
+        )
+        .await
+        .expect("add src");
     handle
-        .add_processor("dst".to_string(), "NoOp".to_string(), HashMap::new(), "event".to_string(), 0)
-        .await.expect("add dst");
+        .add_processor(
+            "dst".to_string(),
+            "NoOp".to_string(),
+            HashMap::new(),
+            "event".to_string(),
+            0,
+        )
+        .await
+        .expect("add dst");
 
     let conn_id = handle
         .add_connection(
@@ -194,11 +243,25 @@ async fn hot_add_connection_invalid_relationship_returns_error() {
     let handle = engine.handle().expect("handle must exist").clone();
 
     handle
-        .add_processor("src".to_string(), "NoOp".to_string(), HashMap::new(), "timer".to_string(), 1000)
-        .await.expect("add src");
+        .add_processor(
+            "src".to_string(),
+            "NoOp".to_string(),
+            HashMap::new(),
+            "timer".to_string(),
+            1000,
+        )
+        .await
+        .expect("add src");
     handle
-        .add_processor("dst".to_string(), "NoOp".to_string(), HashMap::new(), "event".to_string(), 0)
-        .await.expect("add dst");
+        .add_processor(
+            "dst".to_string(),
+            "NoOp".to_string(),
+            HashMap::new(),
+            "event".to_string(),
+            0,
+        )
+        .await
+        .expect("add dst");
 
     let result = handle
         .add_connection(
@@ -210,7 +273,10 @@ async fn hot_add_connection_invalid_relationship_returns_error() {
         .await;
 
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), MutationError::UnknownRelationship(_, _)));
+    assert!(matches!(
+        result.unwrap_err(),
+        MutationError::UnknownRelationship(_, _)
+    ));
 }
 
 #[tokio::test]
@@ -219,8 +285,15 @@ async fn hot_add_connection_missing_destination_returns_error() {
     let handle = engine.handle().expect("handle must exist").clone();
 
     handle
-        .add_processor("src".to_string(), "NoOp".to_string(), HashMap::new(), "timer".to_string(), 1000)
-        .await.expect("add src");
+        .add_processor(
+            "src".to_string(),
+            "NoOp".to_string(),
+            HashMap::new(),
+            "timer".to_string(),
+            1000,
+        )
+        .await
+        .expect("add src");
 
     let result = handle
         .add_connection(
@@ -232,7 +305,10 @@ async fn hot_add_connection_missing_destination_returns_error() {
         .await;
 
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), MutationError::ProcessorNotFound(_)));
+    assert!(matches!(
+        result.unwrap_err(),
+        MutationError::ProcessorNotFound(_)
+    ));
 }
 
 #[tokio::test]
@@ -240,15 +316,51 @@ async fn duplicate_connection_returns_error() {
     let engine = start_empty_engine().await;
     let handle = engine.handle().expect("handle must exist").clone();
 
-    handle.add_processor("src".to_string(), "NoOp".to_string(), HashMap::new(), "timer".to_string(), 1000).await.expect("add src");
-    handle.add_processor("dst".to_string(), "NoOp".to_string(), HashMap::new(), "event".to_string(), 0).await.expect("add dst");
+    handle
+        .add_processor(
+            "src".to_string(),
+            "NoOp".to_string(),
+            HashMap::new(),
+            "timer".to_string(),
+            1000,
+        )
+        .await
+        .expect("add src");
+    handle
+        .add_processor(
+            "dst".to_string(),
+            "NoOp".to_string(),
+            HashMap::new(),
+            "event".to_string(),
+            0,
+        )
+        .await
+        .expect("add dst");
 
     let bp = BackPressureConfig::default();
-    handle.add_connection("src".to_string(), "success".to_string(), "dst".to_string(), bp).await.expect("first add");
+    handle
+        .add_connection(
+            "src".to_string(),
+            "success".to_string(),
+            "dst".to_string(),
+            bp,
+        )
+        .await
+        .expect("first add");
 
-    let result = handle.add_connection("src".to_string(), "success".to_string(), "dst".to_string(), bp).await;
+    let result = handle
+        .add_connection(
+            "src".to_string(),
+            "success".to_string(),
+            "dst".to_string(),
+            bp,
+        )
+        .await;
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), MutationError::DuplicateConnection(_, _, _)));
+    assert!(matches!(
+        result.unwrap_err(),
+        MutationError::DuplicateConnection(_, _, _)
+    ));
 }
 
 #[tokio::test]
@@ -256,16 +368,43 @@ async fn hot_remove_connection_succeeds() {
     let engine = start_empty_engine().await;
     let handle = engine.handle().expect("handle must exist").clone();
 
-    handle.add_processor("src".to_string(), "NoOp".to_string(), HashMap::new(), "timer".to_string(), 1000).await.expect("add src");
-    handle.add_processor("dst".to_string(), "NoOp".to_string(), HashMap::new(), "event".to_string(), 0).await.expect("add dst");
+    handle
+        .add_processor(
+            "src".to_string(),
+            "NoOp".to_string(),
+            HashMap::new(),
+            "timer".to_string(),
+            1000,
+        )
+        .await
+        .expect("add src");
+    handle
+        .add_processor(
+            "dst".to_string(),
+            "NoOp".to_string(),
+            HashMap::new(),
+            "event".to_string(),
+            0,
+        )
+        .await
+        .expect("add dst");
 
     let conn_id = handle
-        .add_connection("src".to_string(), "success".to_string(), "dst".to_string(), BackPressureConfig::default())
-        .await.expect("add connection");
+        .add_connection(
+            "src".to_string(),
+            "success".to_string(),
+            "dst".to_string(),
+            BackPressureConfig::default(),
+        )
+        .await
+        .expect("add connection");
 
     assert_eq!(handle.connections.read().len(), 1);
 
-    handle.remove_connection(conn_id, false).await.expect("remove failed");
+    handle
+        .remove_connection(conn_id, false)
+        .await
+        .expect("remove failed");
     assert_eq!(handle.connections.read().len(), 0);
 }
 
@@ -274,13 +413,42 @@ async fn hot_remove_processor_blocked_by_connection() {
     let engine = start_empty_engine().await;
     let handle = engine.handle().expect("handle must exist").clone();
 
-    handle.add_processor("src".to_string(), "NoOp".to_string(), HashMap::new(), "timer".to_string(), 1000).await.expect("add src");
-    handle.add_processor("dst".to_string(), "NoOp".to_string(), HashMap::new(), "event".to_string(), 0).await.expect("add dst");
-    handle.add_connection("src".to_string(), "success".to_string(), "dst".to_string(), BackPressureConfig::default()).await.expect("add conn");
+    handle
+        .add_processor(
+            "src".to_string(),
+            "NoOp".to_string(),
+            HashMap::new(),
+            "timer".to_string(),
+            1000,
+        )
+        .await
+        .expect("add src");
+    handle
+        .add_processor(
+            "dst".to_string(),
+            "NoOp".to_string(),
+            HashMap::new(),
+            "event".to_string(),
+            0,
+        )
+        .await
+        .expect("add dst");
+    handle
+        .add_connection(
+            "src".to_string(),
+            "success".to_string(),
+            "dst".to_string(),
+            BackPressureConfig::default(),
+        )
+        .await
+        .expect("add conn");
 
     let result = handle.remove_processor("src".to_string()).await;
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), MutationError::ProcessorHasConnections(_)));
+    assert!(matches!(
+        result.unwrap_err(),
+        MutationError::ProcessorHasConnections(_)
+    ));
 }
 
 #[tokio::test]
@@ -328,7 +496,10 @@ async fn remove_nonexistent_processor_returns_error() {
 
     let result = handle.remove_processor("nonexistent".to_string()).await;
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), MutationError::ProcessorNotFound(_)));
+    assert!(matches!(
+        result.unwrap_err(),
+        MutationError::ProcessorNotFound(_)
+    ));
 }
 
 #[tokio::test]
@@ -336,7 +507,12 @@ async fn remove_nonexistent_connection_returns_error() {
     let engine = start_empty_engine().await;
     let handle = engine.handle().expect("handle must exist").clone();
 
-    let result = handle.remove_connection("nonexistent-conn".to_string(), false).await;
+    let result = handle
+        .remove_connection("nonexistent-conn".to_string(), false)
+        .await;
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), MutationError::ConnectionNotFound(_)));
+    assert!(matches!(
+        result.unwrap_err(),
+        MutationError::ConnectionNotFound(_)
+    ));
 }
