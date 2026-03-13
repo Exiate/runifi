@@ -23,6 +23,8 @@ import {
 } from '@xyflow/react';
 
 import { ProcessorNode } from './ProcessorNode';
+import { FunnelNode } from './FunnelNode';
+import { LabelNode } from './LabelNode';
 import { ConnectionEdge } from './ConnectionEdge';
 import { AddProcessorModal } from './AddProcessorModal';
 import { ConnectionModal } from './ConnectionModal';
@@ -34,14 +36,21 @@ import { ColorPickerDialog } from './ColorPickerDialog';
 import { computeLayout } from '../utils/layout';
 import { stateColor } from '../utils/format';
 import type { FlowResponse, SseMetricsEvent, PluginDescriptor } from '../types/api';
-import type { ProcessorNodeData, ConnectionEdgeData } from '../types/flow';
+import type { ProcessorNodeData, ConnectionEdgeData, LabelNodeData } from '../types/flow';
 import type { ToastKind } from '../hooks/useToast';
 
 // Concrete node and edge types
 type ProcNode = Node<ProcessorNodeData, 'processorNode'>;
+type FunnelFlowNode = Node<ProcessorNodeData, 'funnelNode'>;
+type LabelFlowNode = Node<LabelNodeData, 'labelNode'>;
+type AnyNode = ProcNode | FunnelFlowNode | LabelFlowNode;
 type ConnEdge = Edge<ConnectionEdgeData, 'connectionEdge'>;
 
-const nodeTypes = { processorNode: ProcessorNode } as const;
+const nodeTypes = {
+  processorNode: ProcessorNode,
+  funnelNode: FunnelNode,
+  labelNode: LabelNode,
+} as const;
 const edgeTypes = { connectionEdge: ConnectionEdge } as const;
 
 const POSITION_DEBOUNCE_MS = 800;
@@ -132,13 +141,14 @@ function buildEdges(
 }
 
 function pluginForNode(
-  nodes: ProcNode[],
+  nodes: AnyNode[],
   nodeId: string,
   plugins: PluginDescriptor[],
 ): PluginDescriptor | null {
   const node = nodes.find((n) => n.id === nodeId);
-  if (!node) return null;
-  return plugins.find((p) => p.type_name === node.data.typeName) ?? null;
+  if (!node || node.type === 'labelNode') return null;
+  const procData = node.data as ProcessorNodeData;
+  return plugins.find((p) => p.type_name === procData.typeName) ?? null;
 }
 
 function FlowCanvasInner({
@@ -162,17 +172,43 @@ function FlowCanvasInner({
   const initialNodes = useMemo(
     () => {
       const colors = savedColorsRef.current;
-      return computeLayout(topology.processors, topology.connections).map((n) => ({
-        ...n,
+      const procNodes: AnyNode[] = computeLayout(topology.processors, topology.connections).map((n) => {
+        // Use funnelNode type for Funnel processors
+        const isFunnel = n.data.typeName === 'Funnel';
+        return {
+          ...n,
+          type: isFunnel ? ('funnelNode' as const) : ('processorNode' as const),
+          data: {
+            ...n.data,
+            relationships: plugins.find((p) => p.type_name === n.data.typeName)?.relationships ?? [
+              'success',
+            ],
+            pending: false,
+            customColor: colors[n.id] ?? '',
+          },
+        };
+      });
+
+      // Add label nodes from topology
+      const labelNodes: AnyNode[] = (topology.labels ?? []).map((lbl): LabelFlowNode => ({
+        id: `label-${lbl.id}`,
+        type: 'labelNode' as const,
+        position: { x: lbl.x, y: lbl.y },
         data: {
-          ...n.data,
-          relationships: plugins.find((p) => p.type_name === n.data.typeName)?.relationships ?? [
-            'success',
-          ],
+          labelId: lbl.id,
+          text: lbl.text,
+          width: lbl.width,
+          height: lbl.height,
+          backgroundColor: lbl.background_color,
+          fontSize: lbl.font_size,
           pending: false,
-          customColor: colors[n.id] ?? '',
         },
+        draggable: true,
+        selectable: true,
+        connectable: false,
       }));
+
+      return [...procNodes, ...labelNodes];
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [topology],
@@ -183,7 +219,7 @@ function FlowCanvasInner({
     [topology],
   );
 
-  const [nodes, setNodes, onNodesChange] = useNodesState<ProcNode>(initialNodes);
+  const [nodes, setNodes, onNodesChange] = useNodesState<AnyNode>(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState<ConnEdge>(initialEdges);
 
   const [pendingDrop, setPendingDrop] = useState<PendingDrop | null>(null);
@@ -205,18 +241,41 @@ function FlowCanvasInner({
     topologyKey.current = topology.name;
     const colors = loadSavedColors();
     savedColorsRef.current = colors;
-    const newNodes = computeLayout(topology.processors, topology.connections).map((n) => ({
-      ...n,
+    const procNodes: AnyNode[] = computeLayout(topology.processors, topology.connections).map((n) => {
+      const isFunnel = n.data.typeName === 'Funnel';
+      return {
+        ...n,
+        type: isFunnel ? ('funnelNode' as const) : ('processorNode' as const),
+        data: {
+          ...n.data,
+          relationships: plugins.find((p) => p.type_name === n.data.typeName)?.relationships ?? [
+            'success',
+          ],
+          pending: false,
+          customColor: colors[n.id] ?? '',
+        },
+      };
+    });
+
+    const labelNodes: AnyNode[] = (topology.labels ?? []).map((lbl): LabelFlowNode => ({
+      id: `label-${lbl.id}`,
+      type: 'labelNode' as const,
+      position: { x: lbl.x, y: lbl.y },
       data: {
-        ...n.data,
-        relationships: plugins.find((p) => p.type_name === n.data.typeName)?.relationships ?? [
-          'success',
-        ],
+        labelId: lbl.id,
+        text: lbl.text,
+        width: lbl.width,
+        height: lbl.height,
+        backgroundColor: lbl.background_color,
+        fontSize: lbl.font_size,
         pending: false,
-        customColor: colors[n.id] ?? '',
       },
+      draggable: true,
+      selectable: true,
+      connectable: false,
     }));
-    setNodes(newNodes);
+
+    setNodes([...procNodes, ...labelNodes]);
     setEdges(buildEdges(topology, liveMetrics, handleQueueClick));
   }, [topology, liveMetrics, setNodes, setEdges, plugins, handleQueueClick]);
 
@@ -228,15 +287,19 @@ function FlowCanvasInner({
 
     setNodes((prev) =>
       prev.map((node) => {
+        // Skip label nodes — they have no processor metrics
+        if (node.type === 'labelNode') return node;
+
+        const procData = node.data as ProcessorNodeData;
         const proc = procMap.get(node.id);
         if (!proc) return node;
 
         const bulletin = bulletinMap.get(node.id) ?? null;
 
         if (
-          node.data.state === proc.state &&
-          node.data.metrics?.total_invocations === proc.metrics.total_invocations &&
-          node.data.bulletin === bulletin
+          procData.state === proc.state &&
+          procData.metrics?.total_invocations === proc.metrics.total_invocations &&
+          procData.bulletin === bulletin
         ) {
           return node;
         }
@@ -244,7 +307,7 @@ function FlowCanvasInner({
         return {
           ...node,
           data: {
-            ...node.data,
+            ...procData,
             state: proc.state,
             metrics: proc.metrics,
             bulletin,
@@ -298,11 +361,22 @@ function FlowCanvasInner({
 
     const timer = setTimeout(() => {
       positionTimers.current.delete(nodeId);
-      fetch(`/api/v1/processors/${encodeURIComponent(nodeId)}/position`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ x, y }),
-      }).catch(() => {});
+
+      // Labels use a different API endpoint
+      if (nodeId.startsWith('label-')) {
+        const labelId = nodeId.slice('label-'.length);
+        fetch(`/api/v1/process-groups/root/labels/${encodeURIComponent(labelId)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ x, y }),
+        }).catch(() => {});
+      } else {
+        fetch(`/api/v1/processors/${encodeURIComponent(nodeId)}/position`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ x, y }),
+        }).catch(() => {});
+      }
     }, POSITION_DEBOUNCE_MS);
 
     positionTimers.current.set(nodeId, timer);
@@ -344,6 +418,91 @@ function FlowCanvasInner({
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
+
+      // Handle component drops (funnel, label) from toolbar
+      const componentType = e.dataTransfer.getData('application/runifi-component');
+      if (componentType) {
+        const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+
+        if (componentType === 'funnel') {
+          // Create a funnel processor via the existing processor API
+          const funnelPlugin = plugins.find((p) => p.type_name === 'Funnel');
+          if (funnelPlugin) {
+            setPendingDrop({ plugin: funnelPlugin, position });
+          } else {
+            onToast('error', 'Funnel processor type not found in plugins registry.');
+          }
+          return;
+        }
+
+        if (componentType === 'label') {
+          // Create a label directly (no name dialog needed)
+          const newLabel: LabelFlowNode = {
+            id: `label-pending-${Date.now()}`,
+            type: 'labelNode' as const,
+            position,
+            data: {
+              labelId: '',
+              text: '',
+              width: 200,
+              height: 60,
+              backgroundColor: 'rgba(255, 255, 200, 0.12)',
+              fontSize: 14,
+              pending: true,
+            },
+            draggable: true,
+            selectable: true,
+            connectable: false,
+          };
+
+          setNodes((prev) => [...prev, newLabel]);
+
+          fetch('/api/v1/process-groups/root/labels', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              text: '',
+              x: position.x,
+              y: position.y,
+              width: 200,
+              height: 60,
+              background_color: 'rgba(255, 255, 200, 0.12)',
+              font_size: 14,
+            }),
+          })
+            .then((res) => {
+              if (!res.ok) throw new Error(`HTTP ${res.status}`);
+              return res.json() as Promise<{ id: string }>;
+            })
+            .then((created) => {
+              setNodes((prev) =>
+                prev.map((n) =>
+                  n.id === newLabel.id
+                    ? {
+                        ...n,
+                        id: `label-${created.id}`,
+                        data: {
+                          ...(n.data as LabelNodeData),
+                          labelId: created.id,
+                          pending: false,
+                        },
+                      }
+                    : n,
+                ),
+              );
+              onToast('success', 'Label added to canvas.');
+            })
+            .catch((err: unknown) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              onToast('error', `Failed to create label: ${msg}`);
+            });
+          return;
+        }
+
+        return;
+      }
+
+      // Handle plugin drops (processors) from the add dialog
       const typeName = e.dataTransfer.getData('application/runifi-plugin');
       if (!typeName) return;
 
@@ -353,7 +512,7 @@ function FlowCanvasInner({
       const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
       setPendingDrop({ plugin, position });
     },
-    [plugins, screenToFlowPosition],
+    [plugins, screenToFlowPosition, setNodes, onToast],
   );
 
   const handleAddProcessor = useCallback(
@@ -362,9 +521,10 @@ function FlowCanvasInner({
       const { plugin, position } = pendingDrop;
       setPendingDrop(null);
 
-      const newNode: ProcNode = {
+      const isFunnel = plugin.type_name === 'Funnel';
+      const newNode: AnyNode = {
         id: name,
-        type: 'processorNode' as const,
+        type: isFunnel ? ('funnelNode' as const) : ('processorNode' as const),
         position,
         data: {
           label: name,
@@ -500,11 +660,20 @@ function FlowCanvasInner({
       if (kind === 'node') {
         const node = nodes.find((n) => n.id === id);
         if (!node) return;
+
+        // Label nodes use 'text' for display, processor nodes use 'label'
+        const displayLabel = node.type === 'labelNode'
+          ? ((node.data as LabelNodeData).text || 'Label')
+          : (node.data as ProcessorNodeData).label;
+        const nodeState = node.type === 'labelNode'
+          ? 'stopped'
+          : (node.data as ProcessorNodeData).state;
+
         setDeleteTarget({
           kind: 'node',
           id,
-          label: node.data.label,
-          nodeState: node.data.state,
+          label: displayLabel,
+          nodeState,
         });
       } else {
         const edge = edges.find((e) => e.id === id);
@@ -546,6 +715,23 @@ function FlowCanvasInner({
 
     if (deleteTarget.kind === 'node') {
       const { id, nodeState } = deleteTarget;
+
+      // Handle label deletion
+      if (id.startsWith('label-')) {
+        const labelId = id.slice('label-'.length);
+        setNodes((prev) => prev.filter((n) => n.id !== id));
+
+        fetch(`/api/v1/process-groups/root/labels/${encodeURIComponent(labelId)}`, { method: 'DELETE' })
+          .then((res) => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            onToast('success', 'Label deleted.');
+          })
+          .catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            onToast('error', `Failed to delete label: ${msg}.`);
+          });
+        return;
+      }
 
       if (nodeState === 'running') {
         onToast('error', `Cannot delete running processor "${id}". Stop it first.`);
@@ -694,16 +880,19 @@ function FlowCanvasInner({
     [nodes, edges, initiateDelete, handleDeleteSelected, handleSelectAll],
   );
 
-  const handleNodeContextMenu: NodeMouseHandler<ProcNode> = useCallback(
+  const handleNodeContextMenu: NodeMouseHandler<AnyNode> = useCallback(
     (event, node) => {
       event.preventDefault();
       const selectedIds = nodes.filter((n) => n.selected).map((n) => n.id);
+      const nodeState = node.type === 'labelNode'
+        ? 'stopped'
+        : (node.data as ProcessorNodeData).state;
       setContextMenu({
         x: event.clientX,
         y: event.clientY,
         nodeId: node.id,
         edgeId: null,
-        nodeState: node.data.state,
+        nodeState,
         selectedNodeIds: selectedIds.length > 1 ? selectedIds : undefined,
       });
     },
@@ -750,8 +939,9 @@ function FlowCanvasInner({
     const nodeId = contextMenu.nodeId;
     const node = nodes.find((n) => n.id === nodeId);
     setContextMenu(null);
-    if (node) {
-      setConfigTarget({ name: node.id, state: node.data.state });
+    if (node && node.type !== 'labelNode') {
+      const procData = node.data as ProcessorNodeData;
+      setConfigTarget({ name: node.id, state: procData.state });
     }
   }, [contextMenu, nodes]);
 
@@ -760,10 +950,11 @@ function FlowCanvasInner({
     const nodeId = contextMenu.nodeId;
     const node = nodes.find((n) => n.id === nodeId);
     setContextMenu(null);
-    if (node) {
+    if (node && node.type !== 'labelNode') {
+      const procData = node.data as ProcessorNodeData;
       setColorPickerTarget({
         nodeId: node.id,
-        currentColor: node.data.customColor ?? '',
+        currentColor: procData.customColor ?? '',
       });
     }
   }, [contextMenu, nodes]);
@@ -804,17 +995,24 @@ function FlowCanvasInner({
     [colorPickerTarget, setNodes],
   );
 
-  const handleNodeDoubleClick: NodeMouseHandler<ProcNode> = useCallback(
+  const handleNodeDoubleClick: NodeMouseHandler<AnyNode> = useCallback(
     (_event, node) => {
-      setConfigTarget({ name: node.id, state: node.data.state });
+      // Labels handle their own double-click (inline editing), skip config modal
+      if (node.type === 'labelNode') return;
+      const procData = node.data as ProcessorNodeData;
+      setConfigTarget({ name: node.id, state: procData.state });
     },
     [],
   );
 
-  const nodeColor = useCallback((node: ProcNode): string => {
-    if (node.data?.pending) return 'var(--warning)';
-    if (node.data?.customColor) return String(node.data.customColor);
-    return stateColor(node.data?.state ?? 'stopped');
+  const nodeColor = useCallback((node: AnyNode): string => {
+    if (node.type === 'labelNode') {
+      return (node.data as LabelNodeData).backgroundColor || 'rgba(255, 255, 200, 0.4)';
+    }
+    const procData = node.data as ProcessorNodeData;
+    if (procData.pending) return 'var(--warning)';
+    if (procData.customColor) return String(procData.customColor);
+    return stateColor(procData.state ?? 'stopped');
   }, []);
 
   const existingNames = useMemo(() => new Set(nodes.map((n) => n.id)), [nodes]);
@@ -862,7 +1060,7 @@ function FlowCanvasInner({
           showInteractive={false}
           style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
         />
-        <MiniMap<ProcNode>
+        <MiniMap<AnyNode>
           nodeColor={nodeColor}
           maskColor="rgba(15,17,23,0.7)"
           style={{
@@ -902,16 +1100,18 @@ function FlowCanvasInner({
         <ConfirmDialog
           title={
             deleteTarget.kind === 'multi'
-              ? 'Delete Selected Processors'
+              ? 'Delete Selected Items'
               : deleteTarget.kind === 'node'
-                ? 'Delete Processor'
+                ? (deleteTarget.id.startsWith('label-') ? 'Delete Label' : 'Delete Processor')
                 : 'Delete Connection'
           }
           message={
             deleteTarget.kind === 'multi'
-              ? `Delete ${deleteTarget.nodeIds?.length ?? 0} selected processors? This will also remove all their connections.`
+              ? `Delete ${deleteTarget.nodeIds?.length ?? 0} selected items? This will also remove all their connections.`
               : deleteTarget.kind === 'node'
-                ? `Delete processor "${deleteTarget.label}"? This will also remove all its connections.`
+                ? (deleteTarget.id.startsWith('label-')
+                    ? `Delete label "${deleteTarget.label}"?`
+                    : `Delete processor "${deleteTarget.label}"? This will also remove all its connections.`)
                 : `Delete connection ${deleteTarget.label}?`
           }
           confirmLabel="Delete"
@@ -921,45 +1121,49 @@ function FlowCanvasInner({
         />
       )}
 
-      {contextMenu && (
-        <ContextMenu
-          menu={contextMenu}
-          onDelete={handleContextDelete}
-          onConfigure={contextMenu.nodeId ? handleContextConfigure : undefined}
-          onStart={
-            contextMenu.nodeId
-              ? () => controlProcessor(contextMenu.nodeId!, 'start')
-              : undefined
-          }
-          onStop={
-            contextMenu.nodeId
-              ? () => controlProcessor(contextMenu.nodeId!, 'stop')
-              : undefined
-          }
-          onPause={
-            contextMenu.nodeId
-              ? () => controlProcessor(contextMenu.nodeId!, 'pause')
-              : undefined
-          }
-          onResume={
-            contextMenu.nodeId
-              ? () => controlProcessor(contextMenu.nodeId!, 'resume')
-              : undefined
-          }
-          onResetCircuit={
-            contextMenu.nodeId
-              ? () => controlProcessor(contextMenu.nodeId!, 'reset-circuit')
-              : undefined
-          }
-          onChangeColor={contextMenu.nodeId ? handleContextChangeColor : undefined}
-          onViewQueue={contextMenu.edgeId ? handleContextViewQueue : undefined}
-          onSelectAll={contextMenu.isCanvas ? handleSelectAll : undefined}
-          onStartSelected={handleStartSelected}
-          onStopSelected={handleStopSelected}
-          onDeleteSelected={handleDeleteSelected}
-          onClose={() => setContextMenu(null)}
-        />
-      )}
+      {contextMenu && (() => {
+        const isLabelCtx = contextMenu.nodeId?.startsWith('label-');
+        const isProcessorCtx = contextMenu.nodeId && !isLabelCtx;
+        return (
+          <ContextMenu
+            menu={contextMenu}
+            onDelete={handleContextDelete}
+            onConfigure={isProcessorCtx ? handleContextConfigure : undefined}
+            onStart={
+              isProcessorCtx
+                ? () => controlProcessor(contextMenu.nodeId!, 'start')
+                : undefined
+            }
+            onStop={
+              isProcessorCtx
+                ? () => controlProcessor(contextMenu.nodeId!, 'stop')
+                : undefined
+            }
+            onPause={
+              isProcessorCtx
+                ? () => controlProcessor(contextMenu.nodeId!, 'pause')
+                : undefined
+            }
+            onResume={
+              isProcessorCtx
+                ? () => controlProcessor(contextMenu.nodeId!, 'resume')
+                : undefined
+            }
+            onResetCircuit={
+              isProcessorCtx
+                ? () => controlProcessor(contextMenu.nodeId!, 'reset-circuit')
+                : undefined
+            }
+            onChangeColor={isProcessorCtx ? handleContextChangeColor : undefined}
+            onViewQueue={contextMenu.edgeId ? handleContextViewQueue : undefined}
+            onSelectAll={contextMenu.isCanvas ? handleSelectAll : undefined}
+            onStartSelected={handleStartSelected}
+            onStopSelected={handleStopSelected}
+            onDeleteSelected={handleDeleteSelected}
+            onClose={() => setContextMenu(null)}
+          />
+        );
+      })()}
 
       {configTarget && (
         <ProcessorConfigModal

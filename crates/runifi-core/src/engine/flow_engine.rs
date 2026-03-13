@@ -408,6 +408,9 @@ impl FlowEngine {
         // Shared position store.
         let positions = Arc::new(DashMap::new());
 
+        // Shared label store.
+        let labels = Arc::new(RwLock::new(Vec::new()));
+
         // Build the EngineHandle.
         let engine_handle = EngineHandle {
             flow_name: self.flow_name.clone(),
@@ -420,6 +423,7 @@ impl FlowEngine {
             positions: positions.clone(),
             audit_logger: self.audit_logger.clone(),
             service_registry: self.service_registry.clone(),
+            labels: labels.clone(),
             mutation_tx,
             persistence: self.persistence.clone(),
         };
@@ -433,6 +437,7 @@ impl FlowEngine {
                 live_conns.clone(),
                 positions,
                 self.service_registry.clone(),
+                labels,
             );
             let persist_token = self.cancel_token.child_token();
             let persist_clone = persistence.clone();

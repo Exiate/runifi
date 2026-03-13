@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use dashmap::DashMap;
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 
 use super::bulletin::BulletinBoard;
@@ -121,6 +123,53 @@ pub struct Position {
     pub y: f64,
 }
 
+/// A canvas label — text annotation with no data flow impact.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LabelInfo {
+    pub id: String,
+    pub text: String,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    /// CSS background colour (hex string, e.g. "#3b82f6").
+    #[serde(default)]
+    pub background_color: String,
+    /// Font size in pixels.
+    #[serde(default = "default_font_size")]
+    pub font_size: f64,
+}
+
+fn default_font_size() -> f64 {
+    14.0
+}
+
+/// Partial update for a canvas label. Only non-None fields are applied.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LabelUpdate {
+    pub text: Option<String>,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    pub width: Option<f64>,
+    pub height: Option<f64>,
+    pub background_color: Option<String>,
+    pub font_size: Option<f64>,
+}
+
+/// Auto-incrementing label ID generator.
+static LABEL_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Generate a unique label ID.
+pub fn next_label_id() -> String {
+    let id = LABEL_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("label-{}", id)
+}
+
+/// Reset the label ID counter to a specific value (used when restoring persisted state).
+pub fn reset_label_id_counter(next_id: u64) {
+    LABEL_ID_COUNTER.store(next_id, Ordering::Relaxed);
+}
+
 /// A Clone-able, Send+Sync handle for API queries and mutations against a running engine.
 ///
 /// Created by `FlowEngine::start()`. The processor and connection lists use
@@ -146,6 +195,8 @@ pub struct EngineHandle {
     pub audit_logger: Arc<dyn AuditLogger>,
     /// Controller service registry.
     pub service_registry: SharedServiceRegistry,
+    /// Canvas labels — text annotations, no data flow impact.
+    pub labels: Arc<RwLock<Vec<LabelInfo>>>,
     /// Sender half of the engine mutation command channel.
     pub(crate) mutation_tx: mpsc::Sender<MutationCommand>,
     /// Flow persistence layer (debounced background writer).
@@ -571,5 +622,75 @@ impl EngineHandle {
     /// Get info about a specific controller service.
     pub fn get_service_info(&self, name: &str) -> Option<ServiceInfo> {
         self.service_registry.read().get_service(name)
+    }
+
+    // ── Label management ────────────────────────────────────────────────
+
+    /// Add a canvas label. Returns an error if a label with the same ID exists.
+    pub fn add_label(&self, label: LabelInfo) -> Result<(), String> {
+        let mut labels = self.labels.write();
+        if labels.iter().any(|l| l.id == label.id) {
+            return Err(format!("Label already exists: {}", label.id));
+        }
+        labels.push(label);
+        drop(labels);
+        self.notify_persist();
+        Ok(())
+    }
+
+    /// Update a canvas label. Applies all non-None fields. Returns false if not found.
+    pub fn update_label(&self, id: &str, update: LabelUpdate) -> bool {
+        let mut labels = self.labels.write();
+        if let Some(label) = labels.iter_mut().find(|l| l.id == id) {
+            if let Some(text) = update.text {
+                label.text = text;
+            }
+            if let Some(x) = update.x {
+                label.x = x;
+            }
+            if let Some(y) = update.y {
+                label.y = y;
+            }
+            if let Some(w) = update.width {
+                label.width = w;
+            }
+            if let Some(h) = update.height {
+                label.height = h;
+            }
+            if let Some(color) = update.background_color {
+                label.background_color = color;
+            }
+            if let Some(size) = update.font_size {
+                label.font_size = size;
+            }
+            drop(labels);
+            self.notify_persist();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Remove a canvas label by ID. Returns false if not found.
+    pub fn remove_label(&self, id: &str) -> bool {
+        let mut labels = self.labels.write();
+        let len_before = labels.len();
+        labels.retain(|l| l.id != id);
+        let removed = labels.len() < len_before;
+        drop(labels);
+        if removed {
+            self.notify_persist();
+        }
+        removed
+    }
+
+    /// Get a label by ID.
+    pub fn get_label(&self, id: &str) -> Option<LabelInfo> {
+        self.labels.read().iter().find(|l| l.id == id).cloned()
+    }
+
+    /// List all labels.
+    pub fn list_labels(&self) -> Vec<LabelInfo> {
+        self.labels.read().clone()
     }
 }

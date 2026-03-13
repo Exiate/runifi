@@ -26,4 +26,6 @@ pub mod validate_json;
 #[cfg(feature = "extraction")]
 pub mod extract_text;
 
+pub mod funnel;
+
 pub mod distributed_map_cache;

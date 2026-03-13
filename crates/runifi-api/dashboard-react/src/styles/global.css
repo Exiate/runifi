@@ -1820,6 +1820,149 @@ body {
   color: var(--text-dim);
 }
 
+/* ── Funnel node ────────────────────────────────────────────── */
+
+.funnel-node {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 80px;
+  cursor: default;
+  position: relative;
+}
+
+.funnel-shape {
+  flex-shrink: 0;
+}
+
+.funnel-path {
+  fill: var(--bg);
+  stroke: var(--border);
+  stroke-width: 2;
+  transition: stroke 0.2s, fill 0.2s;
+}
+
+.funnel-node:hover .funnel-path {
+  stroke: var(--accent);
+}
+
+.funnel-state-running .funnel-path {
+  stroke: var(--success);
+  fill: rgba(52, 211, 153, 0.06);
+}
+
+.funnel-state-stopped .funnel-path {
+  stroke: var(--text-dim);
+}
+
+.funnel-state-paused .funnel-path {
+  stroke: var(--warning);
+  fill: rgba(251, 191, 36, 0.06);
+}
+
+.funnel-state-pending .funnel-path {
+  stroke: var(--warning);
+  opacity: 0.7;
+}
+
+.funnel-state-circuit-open .funnel-path {
+  stroke: var(--danger);
+  fill: rgba(248, 113, 113, 0.08);
+}
+
+.funnel-label {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 80px;
+  text-align: center;
+}
+
+.funnel-handle-target {
+  top: 0 !important;
+}
+
+/* NiFi-style center connection handle for funnel nodes */
+.funnel-node .react-flow__handle.center-connect-handle {
+  width: 24px !important;
+  height: 24px !important;
+  bottom: 50% !important;
+  left: 50% !important;
+  transform: translate(-50%, 50%) !important;
+  background: transparent !important;
+  border: none !important;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 10;
+  transition: opacity 0.15s;
+  border-radius: 50% !important;
+}
+
+.funnel-node:hover .react-flow__handle.center-connect-handle {
+  opacity: 1;
+  pointer-events: all;
+  background: rgba(79, 143, 247, 0.15) !important;
+  border: 2px solid var(--accent) !important;
+}
+
+.funnel-node:hover .react-flow__handle.center-connect-handle:hover {
+  background: rgba(79, 143, 247, 0.3) !important;
+  box-shadow: 0 0 8px rgba(79, 143, 247, 0.4);
+  cursor: crosshair;
+}
+
+/* ── Label node ─────────────────────────────────────────────── */
+
+.label-node {
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  padding: 8px 12px;
+  font-family: var(--font);
+  cursor: default;
+  min-width: 100px;
+  min-height: 40px;
+  transition: border-color 0.2s;
+  word-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+.label-node:hover {
+  border-color: var(--accent);
+  border-style: solid;
+}
+
+.label-node-pending {
+  opacity: 0.7;
+}
+
+.label-node-text {
+  color: var(--text);
+  line-height: 1.4;
+  user-select: none;
+}
+
+.label-node-text:empty::before,
+.label-node-text:only-child:not(:empty)::before {
+  content: none;
+}
+
+.label-node-editor {
+  width: 100%;
+  height: 100%;
+  min-height: 40px;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-family: var(--font);
+  line-height: 1.4;
+  resize: none;
+  outline: none;
+  padding: 0;
+}
+
 /* ── Responsive ─────────────────────────────────────────────── */
 
 @media (max-width: 768px) {

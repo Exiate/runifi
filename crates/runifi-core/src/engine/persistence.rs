@@ -10,7 +10,7 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
-use super::handle::{ConnectionInfo, Position, ProcessorInfo};
+use super::handle::{ConnectionInfo, LabelInfo, Position, ProcessorInfo};
 
 /// File names for persisted flow state.
 const FLOW_STATE_FILE: &str = "flow.json";
@@ -40,6 +40,8 @@ pub struct PersistedFlowState {
     pub positions: HashMap<String, PersistedPosition>,
     #[serde(default)]
     pub services: Vec<PersistedService>,
+    #[serde(default)]
+    pub labels: Vec<PersistedLabel>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,6 +91,34 @@ pub struct PersistedService {
     pub properties: HashMap<String, String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedLabel {
+    pub id: String,
+    pub text: String,
+    #[serde(default)]
+    pub x: f64,
+    #[serde(default)]
+    pub y: f64,
+    #[serde(default = "default_label_width")]
+    pub width: f64,
+    #[serde(default = "default_label_height")]
+    pub height: f64,
+    #[serde(default)]
+    pub background_color: String,
+    #[serde(default = "default_font_size")]
+    pub font_size: f64,
+}
+
+fn default_label_width() -> f64 {
+    150.0
+}
+fn default_label_height() -> f64 {
+    40.0
+}
+fn default_font_size() -> f64 {
+    14.0
+}
+
 // ── Snapshot source — breaks the Arc cycle ────────────────────────────────────
 
 /// The subset of engine state needed for persistence snapshotting.
@@ -102,6 +132,7 @@ pub(crate) struct SnapshotSource {
     pub connections: Arc<RwLock<Vec<ConnectionInfo>>>,
     pub positions: Arc<DashMap<String, Position>>,
     pub service_registry: crate::registry::service_registry::SharedServiceRegistry,
+    pub labels: Arc<RwLock<Vec<LabelInfo>>>,
 }
 
 // ── Snapshot from live engine state ───────────────────────────────────────────
@@ -162,6 +193,22 @@ impl PersistedFlowState {
             })
             .collect();
 
+        let labels: Vec<PersistedLabel> = source
+            .labels
+            .read()
+            .iter()
+            .map(|l| PersistedLabel {
+                id: l.id.clone(),
+                text: l.text.clone(),
+                x: l.x,
+                y: l.y,
+                width: l.width,
+                height: l.height,
+                background_color: l.background_color.clone(),
+                font_size: l.font_size,
+            })
+            .collect();
+
         Self {
             version: CURRENT_VERSION,
             flow_name: source.flow_name.clone(),
@@ -169,6 +216,7 @@ impl PersistedFlowState {
             connections,
             positions,
             services,
+            labels,
         }
     }
 }
@@ -320,6 +368,7 @@ impl FlowPersistence {
         connections: Arc<RwLock<Vec<ConnectionInfo>>>,
         positions: Arc<DashMap<String, Position>>,
         service_registry: crate::registry::service_registry::SharedServiceRegistry,
+        labels: Arc<RwLock<Vec<LabelInfo>>>,
     ) {
         *self.inner.source.write() = Some(SnapshotSource {
             flow_name,
@@ -327,6 +376,7 @@ impl FlowPersistence {
             connections,
             positions,
             service_registry,
+            labels,
         });
     }
 
@@ -423,6 +473,7 @@ mod tests {
             connections: vec![],
             positions: HashMap::new(),
             services: vec![],
+            labels: vec![],
         }
     }
 
@@ -468,6 +519,16 @@ mod tests {
                 name: "my-cache".to_string(),
                 type_name: "DistributedMapCacheServer".to_string(),
                 properties: HashMap::from([("Port".to_string(), "4557".to_string())]),
+            }],
+            labels: vec![PersistedLabel {
+                id: "label-1".to_string(),
+                text: "Test Label".to_string(),
+                x: 50.0,
+                y: 100.0,
+                width: 200.0,
+                height: 50.0,
+                background_color: "#3b82f6".to_string(),
+                font_size: 14.0,
             }],
         };
 
@@ -518,6 +579,7 @@ mod tests {
             connections: vec![],
             positions: HashMap::new(),
             services: vec![],
+            labels: vec![],
         };
         atomic_write(&conf_dir, &state2).unwrap();
 
@@ -616,6 +678,7 @@ mod tests {
             connections: vec![],
             positions: HashMap::new(),
             services: vec![],
+            labels: vec![],
         };
 
         atomic_write(&conf_dir, &state).unwrap();
@@ -656,12 +719,14 @@ mod tests {
         let connections = Arc::new(RwLock::new(Vec::new()));
         let positions = Arc::new(DashMap::new());
         let service_registry = crate::registry::service_registry::SharedServiceRegistry::new();
+        let labels = Arc::new(RwLock::new(Vec::new()));
         persistence.set_source(
             "debounce-test".to_string(),
             processors,
             connections,
             positions,
             service_registry,
+            labels,
         );
 
         let cancel = tokio_util::sync::CancellationToken::new();

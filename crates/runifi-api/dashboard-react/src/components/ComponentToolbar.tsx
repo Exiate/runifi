@@ -117,10 +117,19 @@ function ComponentToolbarInner({ plugins, loading, onDragStart, onAddProcessor }
         e.preventDefault();
         return;
       }
+      // Funnel opens the same add-processor dialog filtered to Funnel type
+      if (componentType === 'funnel') {
+        const funnelPlugin = plugins.find((p) => p.type_name === 'Funnel');
+        if (funnelPlugin) {
+          onAddProcessor?.(funnelPlugin);
+        }
+        e.preventDefault();
+        return;
+      }
       e.dataTransfer.effectAllowed = 'copy';
       e.dataTransfer.setData('application/runifi-component', componentType);
     },
-    [],
+    [plugins, onAddProcessor],
   );
 
   return (
@@ -130,10 +139,27 @@ function ComponentToolbarInner({ plugins, loading, onDragStart, onAddProcessor }
           <button
             key={ct.id}
             className="toolbar-item"
-            draggable={ct.id !== 'processor'}
+            draggable={ct.id !== 'processor' && ct.id !== 'funnel'}
             onDragStart={(e) => handleToolbarDrag(e, ct.id)}
-            onClick={ct.id === 'processor' ? () => setShowAddDialog(!showAddDialog) : undefined}
-            title={ct.id === 'processor' ? 'Click to add a processor' : `Drag to add ${ct.label}`}
+            onClick={
+              ct.id === 'processor'
+                ? () => setShowAddDialog(!showAddDialog)
+                : ct.id === 'funnel'
+                  ? () => {
+                      const fp = plugins.find((p) => p.type_name === 'Funnel');
+                      if (fp) onAddProcessor?.(fp);
+                    }
+                  : undefined
+            }
+            title={
+              ct.id === 'processor'
+                ? 'Click to add a processor'
+                : ct.id === 'funnel'
+                  ? 'Click to add a funnel'
+                  : ct.id === 'label'
+                    ? 'Drag to add a label'
+                    : `Drag to add ${ct.label}`
+            }
             aria-label={ct.label}
           >
             <span className="toolbar-item-icon" aria-hidden="true">
