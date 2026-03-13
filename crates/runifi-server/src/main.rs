@@ -25,10 +25,14 @@ use runifi_core::repository::content_encrypted::EncryptedContentRepository;
 use runifi_core::repository::content_file::{FileContentRepoConfig, FileContentRepository};
 use runifi_core::repository::content_memory::InMemoryContentRepository;
 use runifi_core::repository::content_repo::ContentRepository;
+use runifi_core::repository::encrypted_wal::{EncryptedWalConfig, EncryptedWalFlowFileRepository};
+use runifi_core::repository::env_key_provider::EnvKeyProvider;
+use runifi_core::repository::file_key_provider::FileKeyProvider;
 use runifi_core::repository::flowfile_repo::{FlowFileRepository, InMemoryFlowFileRepository};
 use runifi_core::repository::flowfile_wal::{
     FsyncMode, WalFlowFileRepoConfig, WalFlowFileRepository,
 };
+use runifi_core::repository::key_provider::KeyProvider;
 use runifi_core::repository::static_key_provider::StaticKeyProvider;
 
 // Ensure processor registrations are linked in.
@@ -145,6 +149,7 @@ async fn main() -> Result<()> {
     apply_cli_overrides(&mut config, &cli);
 
     // Resolve the encryption key from config (needed for ENC() decryption).
+    // First check api.encryption (legacy), then engine.encryption (new).
     let encryption_key: Option<Vec<u8>> = config
         .api
         .encryption
@@ -165,6 +170,9 @@ async fn main() -> Result<()> {
              key = \"${{RUNIFI_ENCRYPTION_KEY}}\""
         );
     }
+
+    // Build the engine-level key provider for repository encryption (if configured).
+    let repo_key_provider: Option<Arc<dyn KeyProvider>> = build_key_provider(&config)?;
 
     // Check for persisted runtime flow state.
     let conf_dir = config.engine.conf_dir.clone();
@@ -217,13 +225,13 @@ async fn main() -> Result<()> {
                 runifi_core::repository::cleanup::spawn_cleanup_task(file_repo.clone());
                 tracing::info!("Using file-based content repository");
                 // Wrap with encryption if configured.
-                wrap_with_encryption(file_repo, &config)?
+                wrap_with_encryption(file_repo, &config, repo_key_provider.clone())?
             }
             _ => {
                 let base_repo: Arc<dyn ContentRepository> =
                     Arc::new(InMemoryContentRepository::new());
                 tracing::info!("Using in-memory content repository");
-                wrap_with_encryption(base_repo, &config)?
+                wrap_with_encryption(base_repo, &config, repo_key_provider.clone())?
             }
         };
 
@@ -231,26 +239,44 @@ async fn main() -> Result<()> {
     let flowfile_repo: Arc<dyn FlowFileRepository> =
         match config.engine.flowfile_repository.repo_type.as_str() {
             "wal" => {
-                let wal_config = match &config.engine.flowfile_repository.wal {
-                    Some(wc) => {
-                        let fsync = match wc.fsync_mode.as_str() {
-                            "never" => FsyncMode::Never,
-                            _ => FsyncMode::Always,
-                        };
-                        WalFlowFileRepoConfig {
-                            dir: wc.dir.clone(),
-                            fsync_mode: fsync,
-                            checkpoint_interval_secs: wc.checkpoint_interval_secs,
-                        }
-                    }
-                    None => WalFlowFileRepoConfig::default(),
+                let wal_toml = config.engine.flowfile_repository.wal.as_ref();
+                let fsync = match wal_toml.map(|wc| wc.fsync_mode.as_str()) {
+                    Some("never") => FsyncMode::Never,
+                    _ => FsyncMode::Always,
                 };
-                let repo = Arc::new(
-                    WalFlowFileRepository::new(wal_config)
-                        .context("Failed to create WAL FlowFile repository")?,
-                );
-                tracing::info!("Using WAL-based FlowFile repository");
-                repo
+                let dir = wal_toml
+                    .map(|wc| wc.dir.clone())
+                    .unwrap_or_else(|| PathBuf::from("data/flowfile-repo"));
+                let checkpoint_secs = wal_toml
+                    .map(|wc| wc.checkpoint_interval_secs)
+                    .unwrap_or(120);
+
+                // Use encrypted WAL if engine.encryption is configured.
+                if let Some(ref kp) = repo_key_provider {
+                    let enc_config = EncryptedWalConfig {
+                        dir,
+                        fsync_mode: fsync,
+                        checkpoint_interval_secs: checkpoint_secs,
+                    };
+                    let repo = Arc::new(
+                        EncryptedWalFlowFileRepository::new(enc_config, kp.clone())
+                            .context("Failed to create encrypted WAL FlowFile repository")?,
+                    );
+                    tracing::info!("Using encrypted WAL-based FlowFile repository");
+                    repo
+                } else {
+                    let wal_config = WalFlowFileRepoConfig {
+                        dir,
+                        fsync_mode: fsync,
+                        checkpoint_interval_secs: checkpoint_secs,
+                    };
+                    let repo = Arc::new(
+                        WalFlowFileRepository::new(wal_config)
+                            .context("Failed to create WAL FlowFile repository")?,
+                    );
+                    tracing::info!("Using WAL-based FlowFile repository");
+                    repo
+                }
             }
             _ => {
                 tracing::info!("Using in-memory FlowFile repository (no crash recovery)");
@@ -496,18 +522,98 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Build a key provider from the engine-level encryption config.
+fn build_key_provider(config: &FlowConfig) -> Result<Option<Arc<dyn KeyProvider>>> {
+    let enc = match &config.engine.encryption {
+        Some(enc) if enc.enabled => enc,
+        _ => return Ok(None),
+    };
+
+    if enc.algorithm != "AES-256-GCM" {
+        return Err(anyhow::anyhow!(
+            "Unsupported encryption algorithm: '{}'. Only 'AES-256-GCM' is supported.",
+            enc.algorithm
+        ));
+    }
+
+    let kp = &enc.key_provider;
+    let provider: Arc<dyn KeyProvider> = match kp.provider_type.as_str() {
+        "file" => {
+            let path = kp.path.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("engine.encryption.key_provider.path is required for file provider")
+            })?;
+            let provider = FileKeyProvider::from_file(std::path::Path::new(path))
+                .map_err(|e| anyhow::anyhow!("Failed to load key file: {}", e))?;
+            tracing::info!(path = %path, "Loaded encryption keys from file");
+            Arc::new(provider)
+        }
+        "env" => {
+            let active_id = kp.active_key_id.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "engine.encryption.key_provider.active_key_id is required for env provider"
+                )
+            })?;
+            let key_ids = kp.key_ids.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "engine.encryption.key_provider.key_ids is required for env provider"
+                )
+            })?;
+            let provider = EnvKeyProvider::new(active_id.clone(), key_ids, &kp.key_env_prefix)
+                .map_err(|e| anyhow::anyhow!("Failed to load encryption keys from env: {}", e))?;
+            tracing::info!(
+                active_key_id = %active_id,
+                key_count = key_ids.len(),
+                "Loaded encryption keys from environment variables"
+            );
+            Arc::new(provider)
+        }
+        "static" => {
+            let key_hex = kp.key.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "engine.encryption.key_provider.key is required for static provider"
+                )
+            })?;
+            let key_id = kp.key_id.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "engine.encryption.key_provider.key_id is required for static provider"
+                )
+            })?;
+            let provider = StaticKeyProvider::from_hex(key_id.clone(), key_hex)
+                .map_err(|e| anyhow::anyhow!("Invalid static encryption key: {}", e))?;
+            tracing::info!(key_id = %key_id, "Using static encryption key");
+            Arc::new(provider)
+        }
+        other => {
+            return Err(anyhow::anyhow!(
+                "Unknown key provider type: '{}'. Supported types: file, env, static",
+                other
+            ));
+        }
+    };
+
+    Ok(Some(provider))
+}
+
 /// Optionally wrap a content repository with encryption based on config.
 fn wrap_with_encryption(
     base_repo: Arc<dyn ContentRepository>,
     config: &FlowConfig,
+    repo_key_provider: Option<Arc<dyn KeyProvider>>,
 ) -> Result<Arc<dyn ContentRepository>> {
+    // First, try engine-level encryption (new config path).
+    if let Some(kp) = repo_key_provider {
+        tracing::info!("Content encryption at rest enabled (engine.encryption)");
+        return Ok(Arc::new(EncryptedContentRepository::new(base_repo, kp)));
+    }
+
+    // Fall back to legacy api.encryption config.
     match &config.api.encryption {
         Some(enc) if enc.enabled => {
             let key_provider = Arc::new(
                 StaticKeyProvider::from_hex(enc.key_id.clone(), &enc.key)
                     .context("Invalid encryption configuration")?,
             );
-            tracing::info!(key_id = %enc.key_id, "Content encryption at rest enabled");
+            tracing::info!(key_id = %enc.key_id, "Content encryption at rest enabled (api.encryption)");
             Ok(Arc::new(EncryptedContentRepository::new(
                 base_repo,
                 key_provider,
