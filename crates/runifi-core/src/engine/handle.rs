@@ -197,11 +197,28 @@ impl EngineHandle {
     }
 
     /// Start a processor by name (set enabled=true).
-    /// Returns `true` if the processor was found.
-    pub fn start_processor(&self, name: &str) -> bool {
+    ///
+    /// Validates that all required properties (that lack defaults) are present
+    /// before enabling the processor. Returns an error if validation fails.
+    pub fn start_processor(&self, name: &str) -> Result<(), ConfigUpdateError> {
         for info in self.processors.read().iter() {
             if info.name == name {
-                let _props = info.properties.read();
+                let props = info.properties.read();
+
+                // Validate required properties before starting.
+                for desc in &info.property_descriptors {
+                    if desc.required
+                        && desc.default_value.is_none()
+                        && !props.contains_key(&desc.name)
+                    {
+                        return Err(ConfigUpdateError::ValidationError(format!(
+                            "Cannot start processor '{}': required property '{}' is missing",
+                            name, desc.name
+                        )));
+                    }
+                }
+                drop(props);
+
                 info.metrics
                     .enabled
                     .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -212,10 +229,13 @@ impl EngineHandle {
                     AuditAction::ProcessorStarted,
                     AuditTarget::processor(name),
                 ));
-                return true;
+                return Ok(());
             }
         }
-        false
+        Err(ConfigUpdateError::NotFound(format!(
+            "Processor not found: {}",
+            name
+        )))
     }
 
     /// Pause a processor by name (set paused=true).
