@@ -29,6 +29,9 @@ function handleTopPercent(index: number, total: number): string {
   return `${step * (index + 1)}%`;
 }
 
+/** All four sides for multi-directional handles */
+const ALL_POSITIONS = [Position.Top, Position.Right, Position.Bottom, Position.Left] as const;
+
 function ProcessorNodeInner({ data }: NodeProps<ProcessorNodeType>) {
   const { label, typeName, state, metrics, bulletin, relationships, pending, customColor } = data;
   const borderColor: string = pending
@@ -47,12 +50,16 @@ function ProcessorNodeInner({ data }: NodeProps<ProcessorNodeType>) {
       role="article"
       aria-label={`Processor ${label}${pending ? ' (pending)' : ''}`}
     >
-      <Handle
-        type="target"
-        position={Position.Left}
-        id="target"
-        style={{ top: '50%' }}
-      />
+      {/* Target handles on all 4 sides */}
+      {ALL_POSITIONS.map((pos) => (
+        <Handle
+          key={`target--${pos}`}
+          type="target"
+          position={pos}
+          id={`target--${pos}`}
+          className="edge-anchor-handle"
+        />
+      ))}
 
       {/* NiFi-style center connection handle — visible on hover */}
       <Handle
@@ -125,17 +132,22 @@ function ProcessorNodeInner({ data }: NodeProps<ProcessorNodeType>) {
         </div>
       )}
 
-      {/* Hidden per-relationship handles for edge anchoring */}
-      {rels.map((rel, idx) => (
-        <Handle
-          key={rel}
-          type="source"
-          position={Position.Right}
-          id={rel}
-          className="edge-anchor-handle"
-          style={{ top: handleTopPercent(idx, rels.length) }}
-        />
-      ))}
+      {/* Per-relationship source handles on all 4 sides */}
+      {rels.map((rel, idx) =>
+        ALL_POSITIONS.map((pos) => (
+          <Handle
+            key={`${rel}--${pos}`}
+            type="source"
+            position={pos}
+            id={`${rel}--${pos}`}
+            className="edge-anchor-handle"
+            style={pos === Position.Right || pos === Position.Left
+              ? { top: handleTopPercent(idx, rels.length) }
+              : undefined
+            }
+          />
+        ))
+      )}
     </div>
   );
 }

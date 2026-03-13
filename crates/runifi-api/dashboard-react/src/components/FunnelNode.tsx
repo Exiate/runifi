@@ -10,6 +10,9 @@ import type { ProcessorNodeData } from '../types/flow';
  */
 export type FunnelNodeType = Node<ProcessorNodeData, 'funnelNode'>;
 
+/** All four sides for multi-directional handles */
+const ALL_POSITIONS = [Position.Top, Position.Right, Position.Bottom, Position.Left] as const;
+
 function FunnelNodeInner({ data }: NodeProps<FunnelNodeType>) {
   const { label, state, pending } = data;
 
@@ -21,12 +24,16 @@ function FunnelNodeInner({ data }: NodeProps<FunnelNodeType>) {
       role="article"
       aria-label={`Funnel ${label}${pending ? ' (pending)' : ''}`}
     >
-      <Handle
-        type="target"
-        position={Position.Top}
-        id="target"
-        className="funnel-handle-target"
-      />
+      {/* Target handles on all 4 sides */}
+      {ALL_POSITIONS.map((pos) => (
+        <Handle
+          key={`target--${pos}`}
+          type="target"
+          position={pos}
+          id={`target--${pos}`}
+          className="funnel-handle-target edge-anchor-handle"
+        />
+      ))}
 
       {/* NiFi-style center connection handle */}
       <Handle
@@ -53,14 +60,16 @@ function FunnelNodeInner({ data }: NodeProps<FunnelNodeType>) {
 
       <span className="funnel-label" title={label}>{label}</span>
 
-      {/* Hidden per-relationship handle for edge anchoring */}
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        id="success"
-        className="edge-anchor-handle"
-        style={{ bottom: 0 }}
-      />
+      {/* Per-relationship source handles on all 4 sides */}
+      {ALL_POSITIONS.map((pos) => (
+        <Handle
+          key={`success--${pos}`}
+          type="source"
+          position={pos}
+          id={`success--${pos}`}
+          className="edge-anchor-handle"
+        />
+      ))}
     </div>
   );
 }

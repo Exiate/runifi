@@ -35,6 +35,7 @@ import { QueueInspectorModal } from './QueueInspectorModal';
 import { ColorPickerDialog } from './ColorPickerDialog';
 import { computeLayout } from '../utils/layout';
 import { stateColor } from '../utils/format';
+import { getSmartHandlePositions, sourceHandleId, targetHandleId } from '../utils/edgeRouting';
 import type { FlowResponse, SseMetricsEvent, PluginDescriptor } from '../types/api';
 import type { ProcessorNodeData, ConnectionEdgeData, LabelNodeData } from '../types/flow';
 import type { ToastKind } from '../hooks/useToast';
@@ -107,7 +108,10 @@ function buildEdges(
   topology: FlowResponse,
   metrics: SseMetricsEvent | null,
   onQueueClick: (connectionId: string, label: string) => void,
+  nodes: AnyNode[],
 ): ConnEdge[] {
+  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+
   return topology.connections.map((conn, idx) => {
     const live =
       metrics?.connections.find(
@@ -119,12 +123,28 @@ function buildEdges(
 
     const backPressured = live?.back_pressured ?? false;
 
+    const srcNode = nodeMap.get(conn.source);
+    const tgtNode = nodeMap.get(conn.destination);
+
+    let sHandle = `${conn.relationship}--right`;
+    let tHandle = 'target--left';
+    let smartSourcePos: import('@xyflow/react').Position | undefined;
+    let smartTargetPos: import('@xyflow/react').Position | undefined;
+
+    if (srcNode && tgtNode) {
+      const positions = getSmartHandlePositions(srcNode, tgtNode);
+      sHandle = sourceHandleId(conn.relationship, positions.sourcePosition);
+      tHandle = targetHandleId(positions.targetPosition);
+      smartSourcePos = positions.sourcePosition;
+      smartTargetPos = positions.targetPosition;
+    }
+
     return {
       id: `${conn.source}--${conn.relationship}--${conn.destination}--${idx}`,
       source: conn.source,
       target: conn.destination,
-      sourceHandle: conn.relationship,
-      targetHandle: 'target',
+      sourceHandle: sHandle,
+      targetHandle: tHandle,
       type: 'connectionEdge' as const,
       data: {
         relationship: conn.relationship,
@@ -134,6 +154,8 @@ function buildEdges(
         connectionId: live?.id ?? '',
         pending: false,
         onQueueClick,
+        smartSourcePosition: smartSourcePos,
+        smartTargetPosition: smartTargetPos,
       },
       style: { stroke: backPressured ? 'var(--danger)' : 'var(--border)' },
     };
@@ -214,13 +236,17 @@ function FlowCanvasInner({
     [topology],
   );
   const initialEdges = useMemo(
-    () => buildEdges(topology, null, handleQueueClick),
+    () => buildEdges(topology, null, handleQueueClick, initialNodes),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [topology],
   );
 
   const [nodes, setNodes, onNodesChange] = useNodesState<AnyNode>(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState<ConnEdge>(initialEdges);
+
+  // Keep a ref to the latest nodes for edge routing calculations
+  const nodesRef = useRef(nodes);
+  useEffect(() => { nodesRef.current = nodes; }, [nodes]);
 
   const [pendingDrop, setPendingDrop] = useState<PendingDrop | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
@@ -275,8 +301,9 @@ function FlowCanvasInner({
       connectable: false,
     }));
 
-    setNodes([...procNodes, ...labelNodes]);
-    setEdges(buildEdges(topology, liveMetrics, handleQueueClick));
+    const allNodes = [...procNodes, ...labelNodes];
+    setNodes(allNodes);
+    setEdges(buildEdges(topology, liveMetrics, handleQueueClick, allNodes));
   }, [topology, liveMetrics, setNodes, setEdges, plugins, handleQueueClick]);
 
   useEffect(() => {
@@ -344,6 +371,8 @@ function FlowCanvasInner({
             connectionId: live.id,
             pending: false,
             onQueueClick: handleQueueClick,
+            smartSourcePosition: edge.data?.smartSourcePosition,
+            smartTargetPosition: edge.data?.smartTargetPosition,
           },
           style: {
             stroke: live.back_pressured ? 'var(--danger)' : 'var(--border)',
@@ -382,16 +411,86 @@ function FlowCanvasInner({
     positionTimers.current.set(nodeId, timer);
   }, []);
 
+  /** Recalculate smart edge routing for all edges touching the given node ids */
+  const recalcEdgeRouting = useCallback(
+    (movedNodeIds: Set<string>) => {
+      const currentNodes = nodesRef.current;
+      const nodeMap = new Map(currentNodes.map((n) => [n.id, n]));
+
+      setEdges((prevEdges) => {
+        const needsUpdate = prevEdges.some(
+          (e) => movedNodeIds.has(e.source) || movedNodeIds.has(e.target),
+        );
+        if (!needsUpdate) return prevEdges;
+
+        return prevEdges.map((edge) => {
+          if (!movedNodeIds.has(edge.source) && !movedNodeIds.has(edge.target)) {
+            return edge;
+          }
+
+          const srcNode = nodeMap.get(edge.source);
+          const tgtNode = nodeMap.get(edge.target);
+          if (!srcNode || !tgtNode) return edge;
+
+          const positions = getSmartHandlePositions(srcNode, tgtNode);
+          const rel = edge.data?.relationship ?? 'success';
+          const newSourceHandle = sourceHandleId(rel, positions.sourcePosition);
+          const newTargetHandle = targetHandleId(positions.targetPosition);
+
+          if (
+            edge.sourceHandle === newSourceHandle &&
+            edge.targetHandle === newTargetHandle
+          ) {
+            return edge;
+          }
+
+          return {
+            ...edge,
+            sourceHandle: newSourceHandle,
+            targetHandle: newTargetHandle,
+            data: {
+              ...edge.data!,
+              smartSourcePosition: positions.sourcePosition,
+              smartTargetPosition: positions.targetPosition,
+            },
+          };
+        });
+      });
+    },
+    [setEdges],
+  );
+
   const handleNodesChange: typeof onNodesChange = useCallback(
     (changes) => {
+      const positionFinalized = new Set<string>();
       for (const change of changes) {
         if (change.type === 'position' && change.position && !change.dragging) {
           persistPosition(change.id, change.position.x, change.position.y);
+          positionFinalized.add(change.id);
         }
       }
       onNodesChange(changes);
+
+      // Recalculate edge routing for any nodes that stopped dragging
+      if (positionFinalized.size > 0) {
+        recalcEdgeRouting(positionFinalized);
+      }
     },
-    [onNodesChange, persistPosition],
+    [onNodesChange, persistPosition, recalcEdgeRouting],
+  );
+
+  /** Recalculate during drag for real-time feedback */
+  const handleNodeDrag: NodeMouseHandler<AnyNode> = useCallback(
+    (_event, node) => {
+      // During drag, React Flow has already updated the node position
+      // before this callback fires. Update the ref so recalcEdgeRouting
+      // reads the latest positions.
+      nodesRef.current = nodesRef.current.map((n) =>
+        n.id === node.id ? { ...n, position: node.position } : n,
+      );
+      recalcEdgeRouting(new Set([node.id]));
+    },
+    [recalcEdgeRouting],
   );
 
   useEffect(() => {
@@ -603,13 +702,30 @@ function FlowCanvasInner({
       const { sourceId, targetId } = pendingConnectionContext;
       setPendingConnectionContext(null);
 
+      // Compute smart handle positions
+      const srcNode = nodes.find((n) => n.id === sourceId);
+      const tgtNode = nodes.find((n) => n.id === targetId);
+
+      let sHandle = `${relationship}--right`;
+      let tHandle = 'target--left';
+      let smartSrcPos: import('@xyflow/react').Position | undefined;
+      let smartTgtPos: import('@xyflow/react').Position | undefined;
+
+      if (srcNode && tgtNode) {
+        const positions = getSmartHandlePositions(srcNode, tgtNode);
+        sHandle = sourceHandleId(relationship, positions.sourcePosition);
+        tHandle = targetHandleId(positions.targetPosition);
+        smartSrcPos = positions.sourcePosition;
+        smartTgtPos = positions.targetPosition;
+      }
+
       const edgeId = `${sourceId}--${relationship}--${targetId}--${Date.now()}`;
       const newEdge: ConnEdge = {
         id: edgeId,
         source: sourceId,
         target: targetId,
-        sourceHandle: relationship,
-        targetHandle: 'target',
+        sourceHandle: sHandle,
+        targetHandle: tHandle,
         type: 'connectionEdge' as const,
         data: {
           relationship,
@@ -619,6 +735,8 @@ function FlowCanvasInner({
           connectionId: '',
           pending: true,
           onQueueClick: handleQueueClick,
+          smartSourcePosition: smartSrcPos,
+          smartTargetPosition: smartTgtPos,
         },
         style: { stroke: 'var(--border)' },
       };
@@ -652,7 +770,7 @@ function FlowCanvasInner({
           );
         });
     },
-    [pendingConnectionContext, setEdges, onToast, handleQueueClick],
+    [pendingConnectionContext, setEdges, onToast, handleQueueClick, nodes],
   );
 
   const initiateDelete = useCallback(
@@ -1032,6 +1150,7 @@ function FlowCanvasInner({
         onNodesChange={handleNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={handleConnect}
+        onNodeDrag={handleNodeDrag}
         onNodeContextMenu={handleNodeContextMenu}
         onEdgeContextMenu={handleEdgeContextMenu}
         onPaneContextMenu={handleCanvasContextMenu}
