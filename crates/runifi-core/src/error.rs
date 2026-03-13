@@ -60,6 +60,15 @@ pub enum RuniFiError {
 
     #[error("segment error: {path}: {reason}")]
     SegmentError { path: String, reason: String },
+
+    #[error("WAL error: {path}: {reason}")]
+    WalError { path: String, reason: String },
+
+    #[error("WAL corrupted at offset {offset}: {reason}")]
+    WalCorrupted { offset: u64, reason: String },
+
+    #[error("checkpoint error: {path}: {reason}")]
+    CheckpointError { path: String, reason: String },
 }
 
 pub type Result<T> = std::result::Result<T, RuniFiError>;

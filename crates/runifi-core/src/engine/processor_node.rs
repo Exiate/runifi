@@ -6,10 +6,10 @@ use parking_lot::RwLock;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-use runifi_plugin_api::Processor;
 use runifi_plugin_api::property::PropertyValue;
 use runifi_plugin_api::relationship::Relationship;
 use runifi_plugin_api::session::ProcessSession;
+use runifi_plugin_api::{FlowFile, Processor};
 
 use super::bulletin::{BulletinBoard, BulletinSeverity};
 use super::metrics::ProcessorMetrics;
@@ -17,6 +17,7 @@ use super::supervisor::{InvocationResult, ProcessorSupervisor};
 use crate::connection::flow_connection::FlowConnection;
 use crate::id::IdGenerator;
 use crate::repository::content_repo::ContentRepository;
+use crate::repository::flowfile_repo::{FlowFileOp, FlowFileRepository};
 use crate::session::process_session::CoreProcessSession;
 
 /// Scheduling strategy for a processor node.
@@ -94,6 +95,7 @@ pub struct ProcessorNode {
     input_notifiers: SharedInputNotifiers,
     metrics: Arc<ProcessorMetrics>,
     bulletin_board: Arc<BulletinBoard>,
+    flowfile_repo: Arc<dyn FlowFileRepository>,
 }
 
 impl ProcessorNode {
@@ -109,6 +111,7 @@ impl ProcessorNode {
         cancel_token: CancellationToken,
         metrics: Arc<ProcessorMetrics>,
         bulletin_board: Arc<BulletinBoard>,
+        flowfile_repo: Arc<dyn FlowFileRepository>,
     ) -> Self {
         Self {
             name,
@@ -124,6 +127,7 @@ impl ProcessorNode {
             input_notifiers: Arc::new(RwLock::new(Vec::new())),
             metrics,
             bulletin_board,
+            flowfile_repo,
         }
     }
 
@@ -341,13 +345,35 @@ impl ProcessorNode {
                 match &result {
                     InvocationResult::Success => {
                         if session.is_committed() {
-                            let (ff_out, bytes_out) = self.route_transfers(&mut session);
+                            let (ff_out, bytes_out, routed) = self.route_transfers(&mut session);
                             self.metrics
                                 .flowfiles_out
                                 .fetch_add(ff_out, Ordering::Relaxed);
                             self.metrics
                                 .bytes_out
                                 .fetch_add(bytes_out, Ordering::Relaxed);
+
+                            // Build WAL batch: Upsert for routed, Delete for removed.
+                            let remove_ids = session.take_committed_remove_ids();
+                            if !routed.is_empty() || !remove_ids.is_empty() {
+                                let mut ops: Vec<FlowFileOp<'_>> = Vec::new();
+                                for (ff, conn_id) in &routed {
+                                    ops.push(FlowFileOp::Upsert {
+                                        flowfile: ff,
+                                        queue_id: conn_id,
+                                    });
+                                }
+                                for id in &remove_ids {
+                                    ops.push(FlowFileOp::Delete { id: *id });
+                                }
+                                if let Err(e) = self.flowfile_repo.commit_batch(&ops) {
+                                    tracing::error!(
+                                        processor = %self.name,
+                                        error = %e,
+                                        "WAL commit_batch failed"
+                                    );
+                                }
+                            }
                         }
                     }
                     InvocationResult::Failed(e) => {
@@ -436,10 +462,17 @@ impl ProcessorNode {
             .any(|(_, conn)| conn.is_back_pressured())
     }
 
-    /// Route transfers and return (flowfiles_out, bytes_out).
-    fn route_transfers(&self, session: &mut CoreProcessSession) -> (u64, u64) {
+    /// Route transfers and return (flowfiles_out, bytes_out, routed_flowfiles).
+    ///
+    /// The third element contains `(FlowFile, connection_id)` for each
+    /// successfully routed FlowFile, used by the WAL.
+    fn route_transfers(
+        &self,
+        session: &mut CoreProcessSession,
+    ) -> (u64, u64, Vec<(FlowFile, String)>) {
         let mut ff_out: u64 = 0;
         let mut bytes_out: u64 = 0;
+        let mut routed_list: Vec<(FlowFile, String)> = Vec::new();
         // Snapshot output connections for routing; brief lock, then released.
         let output_connections: Vec<(Relationship, Arc<FlowConnection>)> =
             self.output_connections.read().clone();
@@ -448,6 +481,7 @@ impl ProcessorNode {
             let mut routed = false;
             for (rel, conn) in &output_connections {
                 if rel.name == rel_name {
+                    let conn_id = conn.id.clone();
                     if let Err(_ff) = conn.try_send(flowfile.clone()) {
                         tracing::warn!(
                             processor = %self.name,
@@ -465,6 +499,7 @@ impl ProcessorNode {
                     } else {
                         ff_out += 1;
                         bytes_out += size;
+                        routed_list.push((flowfile, conn_id));
                     }
                     routed = true;
                     break;
@@ -484,6 +519,6 @@ impl ProcessorNode {
                 }
             }
         }
-        (ff_out, bytes_out)
+        (ff_out, bytes_out, routed_list)
     }
 }

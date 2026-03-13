@@ -10,6 +10,7 @@ use runifi_core::engine::flow_engine::FlowEngine;
 use runifi_core::engine::mutation::MutationError;
 use runifi_core::registry::plugin_registry::PluginRegistry;
 use runifi_core::repository::content_memory::InMemoryContentRepository;
+use runifi_core::repository::flowfile_repo::InMemoryFlowFileRepository;
 use runifi_plugin_api::{
     ProcessorDescriptor, Relationship, context::ProcessContext, session::ProcessSession,
 };
@@ -46,8 +47,9 @@ inventory::submit!(ProcessorDescriptor {
 
 async fn start_empty_engine() -> FlowEngine {
     let content_repo = Arc::new(InMemoryContentRepository::new());
+    let flowfile_repo = Arc::new(InMemoryFlowFileRepository);
     let registry = Arc::new(PluginRegistry::discover());
-    let mut engine = FlowEngine::new("test-flow", content_repo);
+    let mut engine = FlowEngine::new("test-flow", content_repo, flowfile_repo);
     engine.set_registry(registry);
     engine.start().await.expect("engine start failed");
     engine
