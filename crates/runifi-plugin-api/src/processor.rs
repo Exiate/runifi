@@ -46,6 +46,8 @@ pub struct ProcessorDescriptor {
     pub type_name: &'static str,
     pub description: &'static str,
     pub factory: fn() -> Box<dyn Processor>,
+    /// Category tags for UI grouping (e.g., &["Routing", "Attribute Manipulation"]).
+    pub tags: &'static [&'static str],
 }
 
 inventory::collect!(ProcessorDescriptor);

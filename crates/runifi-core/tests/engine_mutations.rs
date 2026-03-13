@@ -43,6 +43,7 @@ inventory::submit!(ProcessorDescriptor {
     type_name: "NoOp",
     description: "Does nothing — used in tests.",
     factory: || Box::new(NoOpProcessor),
+    tags: &[],
 });
 
 /// A processor with a required property (no default) for validation tests.

@@ -102,6 +102,8 @@ pub struct ConnectionInfo {
 pub struct PluginTypeInfo {
     pub type_name: String,
     pub kind: PluginKind,
+    /// Category tags for UI grouping (from plugin descriptor).
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy)]

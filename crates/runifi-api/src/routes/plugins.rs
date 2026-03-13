@@ -17,7 +17,7 @@ async fn list_plugins(State(state): State<ApiState>) -> Json<Vec<PluginResponse>
         .handle
         .plugin_types
         .iter()
-        .map(|p| PluginResponse::from_kind(&p.type_name, p.kind))
+        .map(|p| PluginResponse::from_kind(&p.type_name, p.kind, p.tags.clone()))
         .collect();
     Json(plugins)
 }

@@ -115,6 +115,7 @@ inventory::submit! {
         type_name: "UpdateAttribute",
         description: "Sets or modifies FlowFile attributes based on configured properties",
         factory: || Box::new(UpdateAttribute::new()),
+        tags: &["Attribute Manipulation"],
     }
 }
 

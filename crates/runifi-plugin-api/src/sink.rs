@@ -32,6 +32,8 @@ pub struct SinkDescriptor {
     pub type_name: &'static str,
     pub description: &'static str,
     pub factory: fn() -> Box<dyn Sink>,
+    /// Category tags for UI grouping (e.g., &["File System"]).
+    pub tags: &'static [&'static str],
 }
 
 inventory::collect!(SinkDescriptor);

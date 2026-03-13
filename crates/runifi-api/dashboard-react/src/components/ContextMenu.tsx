@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef } from 'react';
+import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 export interface ContextMenuState {
   x: number;
@@ -19,7 +19,6 @@ interface ContextMenuProps {
   onPause?: () => void;
   onResume?: () => void;
   onResetCircuit?: () => void;
-  onViewStatus?: () => void;
   onChangeColor?: () => void;
   onViewQueue?: () => void;
   onSelectAll?: () => void;
@@ -38,7 +37,6 @@ function ContextMenuInner({
   onPause,
   onResume,
   onResetCircuit,
-  onViewStatus,
   onChangeColor,
   onViewQueue,
   onSelectAll,
@@ -48,6 +46,25 @@ function ContextMenuInner({
   onClose,
 }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
+  const [adjustedPos, setAdjustedPos] = useState<{ x: number; y: number }>({ x: menu.x, y: menu.y });
+
+  // Clamp menu position to viewport after render
+  useLayoutEffect(() => {
+    const el = menuRef.current;
+    if (!el) {
+      setAdjustedPos({ x: menu.x, y: menu.y });
+      return;
+    }
+    const rect = el.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const padding = 8;
+    let x = menu.x;
+    let y = menu.y;
+    if (x + rect.width > vw - padding) x = Math.max(padding, vw - rect.width - padding);
+    if (y + rect.height > vh - padding) y = Math.max(padding, vh - rect.height - padding);
+    setAdjustedPos({ x, y });
+  }, [menu.x, menu.y]);
 
   useEffect(() => {
     const handler = (e: MouseEvent | KeyboardEvent) => {
@@ -83,7 +100,7 @@ function ContextMenuInner({
       <div
         ref={menuRef}
         className="context-menu"
-        style={{ left: menu.x, top: menu.y }}
+        style={{ left: adjustedPos.x, top: adjustedPos.y }}
         role="menu"
         aria-label="Canvas context menu"
       >
@@ -107,7 +124,7 @@ function ContextMenuInner({
       <div
         ref={menuRef}
         className="context-menu"
-        style={{ left: menu.x, top: menu.y }}
+        style={{ left: adjustedPos.x, top: adjustedPos.y }}
         role="menu"
         aria-label="Multi-select context menu"
       >
@@ -151,7 +168,7 @@ function ContextMenuInner({
       <div
         ref={menuRef}
         className="context-menu"
-        style={{ left: menu.x, top: menu.y }}
+        style={{ left: adjustedPos.x, top: adjustedPos.y }}
         role="menu"
         aria-label="Connection context menu"
       >
@@ -181,7 +198,7 @@ function ContextMenuInner({
     <div
       ref={menuRef}
       className="context-menu"
-      style={{ left: menu.x, top: menu.y }}
+      style={{ left: adjustedPos.x, top: adjustedPos.y }}
       role="menu"
       aria-label="Processor context menu"
     >
@@ -192,16 +209,6 @@ function ContextMenuInner({
           role="menuitem"
         >
           Configure
-        </button>
-      )}
-
-      {isNode && onViewStatus && (
-        <button
-          className="context-menu-item"
-          onClick={() => { onViewStatus(); onClose(); }}
-          role="menuitem"
-        >
-          View Status
         </button>
       )}
 

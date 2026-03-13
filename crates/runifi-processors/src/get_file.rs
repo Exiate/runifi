@@ -214,6 +214,7 @@ inventory::submit! {
         type_name: "GetFile",
         description: "Watches a directory and ingests files as FlowFiles",
         factory: || Box::new(GetFile::new()),
+        tags: &["File System", "Ingestion"],
     }
 }
 

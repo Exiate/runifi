@@ -112,6 +112,7 @@ export function usePlugins(): UsePluginsResult {
               kind: item.kind ?? 'processor',
               relationships: item.relationships ?? fallback?.relationships ?? ['success'],
               properties: item.properties ?? fallback?.properties ?? [],
+              tags: item.tags ?? [],
             };
           });
           setPlugins(merged);

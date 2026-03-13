@@ -29,8 +29,15 @@ function ProcessorConfigModalInner({
   onToast,
   onClose,
 }: ProcessorConfigModalProps) {
+  const commentsKey = `runifi-processor-comments:${processorName}`;
   const [activeTab, setActiveTab] = useState<ActiveTab>('settings');
-  const [comments, setComments] = useState('');
+  const [comments, setComments] = useState(() => {
+    try {
+      return localStorage.getItem(commentsKey) ?? '';
+    } catch {
+      return '';
+    }
+  });
   const [config, setConfig] = useState<ProcessorConfigResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [formValues, setFormValues] = useState<Record<string, string>>({});
@@ -65,6 +72,17 @@ function ProcessorConfigModalInner({
       cancelled = true;
     };
   }, [processorName]);
+
+  // Persist comments to localStorage on change
+  useEffect(() => {
+    try {
+      if (comments) {
+        localStorage.setItem(commentsKey, comments);
+      } else {
+        localStorage.removeItem(commentsKey);
+      }
+    } catch { /* quota exceeded */ }
+  }, [comments, commentsKey]);
 
   // Close on Escape
   useEffect(() => {
@@ -356,7 +374,7 @@ function ProcessorConfigModalInner({
                     Processor Comments
                   </label>
                   <span className="config-description">
-                    Add notes or documentation for this processor. Comments are stored locally.
+                    Add notes or documentation for this processor. Comments are persisted in your browser.
                   </span>
                   <textarea
                     id="proc-comments"
@@ -388,7 +406,7 @@ function ProcessorConfigModalInner({
               <button
                 type="submit"
                 className="btn btn-primary"
-                disabled={!isStopped || saving || activeTab !== 'properties'}
+                disabled={!isStopped || saving}
                 title={!isStopped ? 'Stop the processor to save configuration' : undefined}
               >
                 {saving ? 'Applying...' : 'Apply'}
