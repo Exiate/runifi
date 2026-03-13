@@ -46,7 +46,7 @@ pub fn is_exempt_path(path: &str) -> bool {
 /// Generate a cryptographically random CSRF token (hex-encoded).
 pub fn generate_csrf_token() -> String {
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill(&mut bytes);
+    rand::rng().fill(&mut bytes);
     hex_encode(&bytes)
 }
 

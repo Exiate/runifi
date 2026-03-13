@@ -70,7 +70,7 @@ impl Processor for GenerateFlowFile {
                 "random" => {
                     use rand::Rng;
                     let mut buf = vec![0u8; file_size];
-                    rand::thread_rng().fill(&mut buf[..]);
+                    rand::rng().fill(&mut buf[..]);
                     Bytes::from(buf)
                 }
                 "text" => {
