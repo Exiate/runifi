@@ -30,6 +30,11 @@ pub mod extract_text;
 #[cfg(feature = "extraction")]
 pub mod parse_syslog;
 
+#[cfg(feature = "transport")]
+pub mod pull_flowfile;
+#[cfg(feature = "transport")]
+pub mod push_flowfile;
+
 pub mod funnel;
 
 pub mod distributed_map_cache;
