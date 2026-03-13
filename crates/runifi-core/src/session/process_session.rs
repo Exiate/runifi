@@ -39,6 +39,11 @@ pub struct CoreProcessSession {
     /// IDs of FlowFiles removed during `commit()`, for WAL DELETE ops.
     committed_remove_ids: Vec<u64>,
 
+    /// Round-robin index for fair input connection scheduling.
+    /// Tracks which input connection to check first on the next `get()` or `get_batch()` call,
+    /// preventing starvation of later connections when earlier ones are busy.
+    next_input_index: usize,
+
     // Provenance tracking
     provenance_repo: SharedProvenanceRepository,
     /// Processor name context for provenance events.
@@ -67,6 +72,7 @@ impl CoreProcessSession {
             committed: false,
             yield_duration_ms,
             committed_remove_ids: Vec::new(),
+            next_input_index: 0,
             provenance_repo: Arc::new(crate::repository::provenance_repo::NullProvenanceRepository),
             processor_name: String::new(),
             processor_type: String::new(),
@@ -148,7 +154,14 @@ impl CoreProcessSession {
 
 impl ProcessSession for CoreProcessSession {
     fn get(&mut self) -> Option<FlowFile> {
-        for conn in &self.input_connections {
+        let n = self.input_connections.len();
+        if n == 0 {
+            return None;
+        }
+        // Round-robin: start from next_input_index, wrap around all connections.
+        for i in 0..n {
+            let idx = (self.next_input_index + i) % n;
+            let conn = &self.input_connections[idx];
             if let Some(ff) = conn.try_recv() {
                 // Record RECEIVE provenance event.
                 let mut event = self.make_provenance_event(&ff, ProvenanceEventType::Receive);
@@ -156,6 +169,8 @@ impl ProcessSession for CoreProcessSession {
                 self.pending_provenance.push(event);
 
                 self.acquired_flowfiles.push(ff.clone());
+                // Advance to the next connection for the next call.
+                self.next_input_index = (idx + 1) % n;
                 return Some(ff);
             }
         }
@@ -163,25 +178,69 @@ impl ProcessSession for CoreProcessSession {
     }
 
     fn get_batch(&mut self, max: usize) -> Vec<FlowFile> {
-        let mut batch = Vec::with_capacity(max);
-        let mut remaining = max;
+        let n = self.input_connections.len();
+        if n == 0 || max == 0 {
+            return Vec::new();
+        }
 
-        for conn in &self.input_connections {
-            if remaining == 0 {
-                break;
+        let mut batch = Vec::with_capacity(max);
+
+        // Fair distribution: divide max evenly across inputs, starting from
+        // next_input_index for round-robin fairness.
+        let per_input = max / n;
+        let mut extra = max % n;
+
+        // Phase 1: Take up to (per_input + 1) from each connection in round-robin order.
+        // Connections starting from next_input_index get the extra slots first.
+        for i in 0..n {
+            let idx = (self.next_input_index + i) % n;
+            let conn = &self.input_connections[idx];
+            let quota = if extra > 0 {
+                extra -= 1;
+                per_input + 1
+            } else {
+                per_input
+            };
+            if quota == 0 {
+                continue;
             }
-            let received = conn.try_recv_batch(remaining);
-            remaining -= received.len();
+            let received = conn.try_recv_batch(quota);
             for ff in &received {
-                // Record RECEIVE provenance event for each FlowFile.
                 let mut event = self.make_provenance_event(ff, ProvenanceEventType::Receive);
                 event.details = format!("Received from connection '{}'", conn.id);
                 self.pending_provenance.push(event);
-
                 self.acquired_flowfiles.push(ff.clone());
             }
             batch.extend(received);
         }
+
+        // Phase 2: If we still have capacity (some connections had fewer than their quota),
+        // fill remaining slots from any connection that has data, in round-robin order.
+        if batch.len() < max {
+            let remaining = max - batch.len();
+            for i in 0..n {
+                if batch.len() >= max {
+                    break;
+                }
+                let idx = (self.next_input_index + i) % n;
+                let conn = &self.input_connections[idx];
+                let to_take = remaining.min(max - batch.len());
+                let received = conn.try_recv_batch(to_take);
+                for ff in &received {
+                    let mut event = self.make_provenance_event(ff, ProvenanceEventType::Receive);
+                    event.details = format!("Received from connection '{}'", conn.id);
+                    self.pending_provenance.push(event);
+                    self.acquired_flowfiles.push(ff.clone());
+                }
+                batch.extend(received);
+            }
+        }
+
+        // Advance round-robin index for next call.
+        if !batch.is_empty() {
+            self.next_input_index = (self.next_input_index + 1) % n;
+        }
+
         batch
     }
 
@@ -718,5 +777,249 @@ mod tests {
         }
 
         assert_eq!(prov_repo.event_count(), 0);
+    }
+
+    // ── Fair distribution tests ─────────────────────────────────────
+
+    #[test]
+    fn get_rotates_across_inputs() {
+        let conn1 = Arc::new(FlowConnection::new("conn1", BackPressureConfig::default()));
+        let conn2 = Arc::new(FlowConnection::new("conn2", BackPressureConfig::default()));
+
+        // Load both connections with FlowFiles.
+        for i in 0..5 {
+            conn1.try_send(make_flowfile(100 + i)).unwrap();
+            conn2.try_send(make_flowfile(200 + i)).unwrap();
+        }
+
+        let mut session = make_session(vec![conn1, conn2]);
+
+        // First get() should come from conn1 (index 0).
+        let ff1 = session.get().unwrap();
+        assert_eq!(ff1.id, 100);
+
+        // Second get() should come from conn2 (index 1) due to round-robin.
+        let ff2 = session.get().unwrap();
+        assert_eq!(ff2.id, 200);
+
+        // Third get() wraps back to conn1.
+        let ff3 = session.get().unwrap();
+        assert_eq!(ff3.id, 101);
+
+        // Fourth get() from conn2 again.
+        let ff4 = session.get().unwrap();
+        assert_eq!(ff4.id, 201);
+    }
+
+    #[test]
+    fn get_skips_empty_connections() {
+        let conn1 = Arc::new(FlowConnection::new("conn1", BackPressureConfig::default()));
+        let conn2 = Arc::new(FlowConnection::new("conn2", BackPressureConfig::default()));
+
+        // Only conn2 has data.
+        conn2.try_send(make_flowfile(200)).unwrap();
+
+        let mut session = make_session(vec![conn1, conn2]);
+
+        // Should find data in conn2 even though conn1 is checked first.
+        let ff = session.get().unwrap();
+        assert_eq!(ff.id, 200);
+    }
+
+    #[test]
+    fn get_batch_distributes_fairly_across_inputs() {
+        let conn1 = Arc::new(FlowConnection::new("conn1", BackPressureConfig::default()));
+        let conn2 = Arc::new(FlowConnection::new("conn2", BackPressureConfig::default()));
+        let conn3 = Arc::new(FlowConnection::new("conn3", BackPressureConfig::default()));
+
+        // Load each connection with 10 FlowFiles.
+        for i in 0..10 {
+            conn1.try_send(make_flowfile(100 + i)).unwrap();
+            conn2.try_send(make_flowfile(200 + i)).unwrap();
+            conn3.try_send(make_flowfile(300 + i)).unwrap();
+        }
+
+        let mut session = make_session(vec![conn1.clone(), conn2.clone(), conn3.clone()]);
+
+        // Request 6 items: should get 2 from each connection (6/3 = 2 each).
+        let batch = session.get_batch(6);
+        assert_eq!(batch.len(), 6);
+
+        // Count items from each connection.
+        let from_conn1 = batch
+            .iter()
+            .filter(|ff| ff.id >= 100 && ff.id < 200)
+            .count();
+        let from_conn2 = batch
+            .iter()
+            .filter(|ff| ff.id >= 200 && ff.id < 300)
+            .count();
+        let from_conn3 = batch
+            .iter()
+            .filter(|ff| ff.id >= 300 && ff.id < 400)
+            .count();
+
+        assert_eq!(from_conn1, 2);
+        assert_eq!(from_conn2, 2);
+        assert_eq!(from_conn3, 2);
+    }
+
+    #[test]
+    fn get_batch_handles_uneven_division() {
+        let conn1 = Arc::new(FlowConnection::new("conn1", BackPressureConfig::default()));
+        let conn2 = Arc::new(FlowConnection::new("conn2", BackPressureConfig::default()));
+
+        for i in 0..10 {
+            conn1.try_send(make_flowfile(100 + i)).unwrap();
+            conn2.try_send(make_flowfile(200 + i)).unwrap();
+        }
+
+        let mut session = make_session(vec![conn1.clone(), conn2.clone()]);
+
+        // Request 5 items from 2 connections: 5/2 = 2 each + 1 extra.
+        let batch = session.get_batch(5);
+        assert_eq!(batch.len(), 5);
+
+        let from_conn1 = batch
+            .iter()
+            .filter(|ff| ff.id >= 100 && ff.id < 200)
+            .count();
+        let from_conn2 = batch
+            .iter()
+            .filter(|ff| ff.id >= 200 && ff.id < 300)
+            .count();
+
+        // One connection gets 3, the other gets 2.
+        assert!(from_conn1 >= 2 && from_conn1 <= 3);
+        assert!(from_conn2 >= 2 && from_conn2 <= 3);
+        assert_eq!(from_conn1 + from_conn2, 5);
+    }
+
+    #[test]
+    fn get_batch_fills_remainder_from_available() {
+        let conn1 = Arc::new(FlowConnection::new("conn1", BackPressureConfig::default()));
+        let conn2 = Arc::new(FlowConnection::new("conn2", BackPressureConfig::default()));
+
+        // conn1 has only 1 item, conn2 has plenty.
+        conn1.try_send(make_flowfile(100)).unwrap();
+        for i in 0..10 {
+            conn2.try_send(make_flowfile(200 + i)).unwrap();
+        }
+
+        let mut session = make_session(vec![conn1.clone(), conn2.clone()]);
+
+        // Request 6: conn1 quota is 3 but only has 1. Remainder should come from conn2.
+        let batch = session.get_batch(6);
+        assert_eq!(batch.len(), 6);
+
+        let from_conn1 = batch
+            .iter()
+            .filter(|ff| ff.id >= 100 && ff.id < 200)
+            .count();
+        let from_conn2 = batch
+            .iter()
+            .filter(|ff| ff.id >= 200 && ff.id < 300)
+            .count();
+
+        assert_eq!(from_conn1, 1);
+        assert_eq!(from_conn2, 5);
+    }
+
+    #[test]
+    fn get_batch_starvation_prevented() {
+        // This is the original bug scenario: conn1 has >= max items,
+        // conn2 should still get its fair share.
+        let conn1 = Arc::new(FlowConnection::new("conn1", BackPressureConfig::default()));
+        let conn2 = Arc::new(FlowConnection::new("conn2", BackPressureConfig::default()));
+
+        for i in 0..100 {
+            conn1.try_send(make_flowfile(100 + i)).unwrap();
+        }
+        for i in 0..100 {
+            conn2.try_send(make_flowfile(200 + i)).unwrap();
+        }
+
+        let mut session = make_session(vec![conn1.clone(), conn2.clone()]);
+
+        let batch = session.get_batch(10);
+        assert_eq!(batch.len(), 10);
+
+        let from_conn1 = batch
+            .iter()
+            .filter(|ff| ff.id >= 100 && ff.id < 200)
+            .count();
+        let from_conn2 = batch
+            .iter()
+            .filter(|ff| ff.id >= 200 && ff.id < 300)
+            .count();
+
+        // Both connections should contribute — conn2 must NOT be starved.
+        assert_eq!(from_conn1, 5);
+        assert_eq!(from_conn2, 5);
+    }
+
+    #[test]
+    fn get_batch_single_connection_unchanged() {
+        let conn = Arc::new(FlowConnection::new("conn1", BackPressureConfig::default()));
+        for i in 0..10 {
+            conn.try_send(make_flowfile(i)).unwrap();
+        }
+
+        let mut session = make_session(vec![conn.clone()]);
+        let batch = session.get_batch(5);
+        assert_eq!(batch.len(), 5);
+        // With a single connection, all items come from it.
+        for (i, ff) in batch.iter().enumerate() {
+            assert_eq!(ff.id, i as u64);
+        }
+    }
+
+    #[test]
+    fn get_batch_empty_connections() {
+        let conn1 = Arc::new(FlowConnection::new("conn1", BackPressureConfig::default()));
+        let conn2 = Arc::new(FlowConnection::new("conn2", BackPressureConfig::default()));
+
+        let mut session = make_session(vec![conn1, conn2]);
+        let batch = session.get_batch(5);
+        assert!(batch.is_empty());
+    }
+
+    #[test]
+    fn get_batch_three_inputs_round_robin_advances() {
+        let conn1 = Arc::new(FlowConnection::new("conn1", BackPressureConfig::default()));
+        let conn2 = Arc::new(FlowConnection::new("conn2", BackPressureConfig::default()));
+        let conn3 = Arc::new(FlowConnection::new("conn3", BackPressureConfig::default()));
+
+        for i in 0..20 {
+            conn1.try_send(make_flowfile(100 + i)).unwrap();
+            conn2.try_send(make_flowfile(200 + i)).unwrap();
+            conn3.try_send(make_flowfile(300 + i)).unwrap();
+        }
+
+        let mut session = make_session(vec![conn1.clone(), conn2.clone(), conn3.clone()]);
+
+        // First batch: starts at index 0.
+        let batch1 = session.get_batch(3);
+        assert_eq!(batch1.len(), 3);
+
+        // Second batch: round-robin should have advanced.
+        let batch2 = session.get_batch(3);
+        assert_eq!(batch2.len(), 3);
+
+        // Over two calls requesting 3 each (6 total), each connection
+        // should have been drawn from.
+        let total_from_conn1 = conn1.count();
+        let total_from_conn2 = conn2.count();
+        let total_from_conn3 = conn3.count();
+
+        // Each started with 20, so items taken = 20 - remaining.
+        let taken1 = 20 - total_from_conn1;
+        let taken2 = 20 - total_from_conn2;
+        let taken3 = 20 - total_from_conn3;
+        assert_eq!(taken1 + taken2 + taken3, 6);
+        // Each connection should have contributed at least 1.
+        assert!(taken1 >= 1);
+        assert!(taken2 >= 1);
+        assert!(taken3 >= 1);
     }
 }
