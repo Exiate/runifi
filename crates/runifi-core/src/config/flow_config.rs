@@ -3,6 +3,9 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
+use crate::cluster::config::ClusterConfig;
+use crate::cluster::load_balance::LoadBalanceConfig;
+
 /// Top-level flow configuration, loaded from TOML.
 #[derive(Debug, Default, Deserialize)]
 pub struct FlowConfig {
@@ -16,6 +19,8 @@ pub struct FlowConfig {
     pub audit: AuditConfig,
     #[serde(default)]
     pub auth: AuthConfig,
+    #[serde(default)]
+    pub cluster: ClusterConfig,
 }
 
 /// Configuration for the web API server.
@@ -312,6 +317,9 @@ pub struct ConnectionConfig {
     /// Back-pressure config (optional).
     #[serde(default)]
     pub back_pressure: Option<BackPressureConfigToml>,
+    /// Load balancing config for cluster distribution (optional).
+    #[serde(default)]
+    pub load_balancing: Option<LoadBalanceConfig>,
 }
 
 #[derive(Debug, Deserialize)]
