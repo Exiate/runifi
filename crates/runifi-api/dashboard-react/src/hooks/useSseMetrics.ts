@@ -1,9 +1,7 @@
 // SSE connection to /api/v1/events — delivers live metrics every 1 second
 
 import { useState, useEffect, useRef } from 'react';
-import type { SseMetricsEvent } from '../types/api';
-
-type SseStatus = 'connecting' | 'connected' | 'disconnected';
+import type { SseMetricsEvent, SseStatus } from '../types/api';
 
 interface UseSseMetricsResult {
   latest: SseMetricsEvent | null;

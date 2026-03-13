@@ -438,6 +438,49 @@ body {
   background: var(--accent) !important;
 }
 
+/* ── Connection edge label ──────────────────────────────────── */
+
+.conn-edge-label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  pointer-events: all;
+}
+
+.conn-edge-rel-badge {
+  background: rgba(26, 29, 39, 0.9);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.conn-edge-label.back-pressured .conn-edge-rel-badge {
+  background: rgba(248, 113, 113, 0.15);
+  border-color: var(--danger);
+}
+
+.conn-edge-queue-badge {
+  background: rgba(26, 29, 39, 0.9);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 10px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.conn-edge-queue-badge.back-pressured {
+  background: rgba(248, 113, 113, 0.15);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
 /* ── Responsive ─────────────────────────────────────────────── */
 
 @media (max-width: 768px) {

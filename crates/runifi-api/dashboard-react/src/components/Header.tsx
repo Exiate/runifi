@@ -1,7 +1,6 @@
 import { memo } from 'react';
 import { formatUptime } from '../utils/format';
-
-type SseStatus = 'connecting' | 'connected' | 'disconnected';
+import type { SseStatus } from '../types/api';
 
 interface HeaderProps {
   flowName: string;

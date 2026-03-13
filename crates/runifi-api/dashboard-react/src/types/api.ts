@@ -2,6 +2,8 @@
 
 export type ProcessorState = 'running' | 'paused' | 'stopped' | 'circuit-open';
 
+export type SseStatus = 'connecting' | 'connected' | 'disconnected';
+
 export interface MetricsResponse {
   total_invocations: number;
   total_failures: number;
