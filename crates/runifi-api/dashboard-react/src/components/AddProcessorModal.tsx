@@ -83,8 +83,8 @@ function AddProcessorModalInner({
           Add Processor
         </h3>
         <p className="modal-subtitle">
-          <span className="modal-type-tag">{plugin.display_name}</span>
-          <span className="modal-type-desc">{plugin.description}</span>
+          <span className="modal-type-tag">{plugin.display_name ?? plugin.type_name}</span>
+          {plugin.description && <span className="modal-type-desc">{plugin.description}</span>}
         </p>
 
         <form onSubmit={handleSubmit} noValidate>

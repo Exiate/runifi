@@ -44,16 +44,16 @@ function PaletteItem({
         e.dataTransfer.setData('application/runifi-plugin', plugin.type_name);
         onDragStart(plugin);
       }}
-      title={plugin.description}
+      title={plugin.description ?? plugin.type_name}
       role="listitem"
-      aria-label={`Drag to add ${plugin.display_name}`}
+      aria-label={`Drag to add ${plugin.display_name ?? plugin.type_name}`}
     >
       <span className="palette-item-icon" aria-hidden="true">
         {kindIcon(plugin.kind)}
       </span>
       <div className="palette-item-text">
-        <span className="palette-item-name">{plugin.display_name}</span>
-        <span className="palette-item-desc">{plugin.description}</span>
+        <span className="palette-item-name">{plugin.display_name ?? plugin.type_name}</span>
+        {plugin.description && <span className="palette-item-desc">{plugin.description}</span>}
       </div>
     </div>
   );
@@ -72,9 +72,9 @@ function ProcessorPaletteInner({
     const q = search.toLowerCase();
     const filtered = plugins.filter(
       (p) =>
-        p.display_name.toLowerCase().includes(q) ||
+        (p.display_name ?? p.type_name).toLowerCase().includes(q) ||
         p.type_name.toLowerCase().includes(q) ||
-        p.description.toLowerCase().includes(q),
+        (p.description ?? '').toLowerCase().includes(q),
     );
 
     const groups = new Map<PluginKind, PluginDescriptor[]>();

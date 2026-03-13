@@ -89,11 +89,11 @@ export type PluginKind = 'processor' | 'source' | 'sink';
 
 export interface PluginDescriptor {
   type_name: string;
-  display_name: string;
-  description: string;
+  display_name?: string;
+  description?: string;
   kind: PluginKind;
-  relationships: string[];
-  properties: PropertyDescriptor[];
+  relationships?: string[];
+  properties?: PropertyDescriptor[];
 }
 
 export interface PropertyDescriptor {
