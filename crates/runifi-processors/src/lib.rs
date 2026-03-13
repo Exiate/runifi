@@ -18,4 +18,7 @@ pub mod split_content;
 #[cfg(feature = "transformation")]
 pub mod split_json;
 
+#[cfg(feature = "json")]
+pub mod flatten_json;
+
 pub mod distributed_map_cache;
