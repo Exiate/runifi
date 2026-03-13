@@ -17,6 +17,7 @@ use super::handle::{
 };
 use super::metrics::ProcessorMetrics;
 use super::mutation::{MutationCommand, MutationError};
+use super::persistence::FlowPersistence;
 use super::processor_node::{
     ProcessorNode, SchedulingStrategy, SharedInputConnections, SharedInputNotifiers,
     SharedOutputConnections,
@@ -48,6 +49,7 @@ pub struct FlowEngine {
     bulletin_board: Arc<BulletinBoard>,
     registry: Option<Arc<PluginRegistry>>,
     flowfile_repo: Arc<dyn FlowFileRepository>,
+    persistence: Option<FlowPersistence>,
 
     nodes: Vec<NodeBuilder>,
     connections: Vec<ConnBuilder>,
@@ -90,6 +92,7 @@ impl FlowEngine {
             bulletin_board: Arc::new(BulletinBoard::default()),
             registry: None,
             flowfile_repo,
+            persistence: None,
             nodes: Vec::new(),
             connections: Vec::new(),
             next_node_id: 0,
@@ -103,6 +106,11 @@ impl FlowEngine {
     /// Provide a plugin registry for hot-add type validation.
     pub fn set_registry(&mut self, registry: Arc<PluginRegistry>) {
         self.registry = Some(registry);
+    }
+
+    /// Set the flow persistence layer for runtime state saving.
+    pub fn set_persistence(&mut self, persistence: FlowPersistence) {
+        self.persistence = Some(persistence);
     }
 
     /// Add a processor to the engine. Returns a node ID for wiring connections.
@@ -383,7 +391,20 @@ impl FlowEngine {
             content_repo: self.content_repo.clone(),
             positions: Arc::new(DashMap::new()),
             mutation_tx,
+            persistence: self.persistence.clone(),
         };
+
+        // Wire persistence: give it the handle and spawn the background writer.
+        if let Some(ref persistence) = self.persistence {
+            persistence.set_handle(engine_handle.clone());
+            let persist_token = self.cancel_token.child_token();
+            let persist_clone = persistence.clone();
+            let persist_handle = tokio::spawn(async move {
+                persist_clone.run(persist_token).await;
+            });
+            self.task_handles.push(persist_handle);
+        }
+
         self.handle = Some(engine_handle);
 
         // Spawn processor tasks.

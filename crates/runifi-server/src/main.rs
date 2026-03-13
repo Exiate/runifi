@@ -7,6 +7,7 @@ use runifi_core::config::flow_config::FlowConfig;
 use runifi_core::connection::back_pressure::BackPressureConfig;
 use runifi_core::engine::flow_engine::FlowEngine;
 use runifi_core::engine::handle::{PluginKind, PluginTypeInfo};
+use runifi_core::engine::persistence::{self, FlowPersistence, PersistedFlowState};
 use runifi_core::engine::processor_node::SchedulingStrategy;
 use runifi_core::registry::plugin_registry::PluginRegistry;
 use runifi_core::repository::content_file::{FileContentRepoConfig, FileContentRepository};
@@ -39,7 +40,7 @@ async fn main() -> Result<()> {
         "Plugin registry initialized"
     );
 
-    // Load flow configuration.
+    // Load seed flow configuration (TOML).
     let config_path = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "config/flow.toml".to_string());
@@ -56,7 +57,36 @@ async fn main() -> Result<()> {
     let config: FlowConfig =
         toml::from_str(&config_str).context("Failed to parse flow configuration")?;
 
-    tracing::info!(flow = %config.flow.name, "Loaded flow configuration");
+    tracing::info!(flow = %config.flow.name, "Loaded seed flow configuration");
+
+    // Check for persisted runtime flow state.
+    let conf_dir = config.engine.conf_dir.clone();
+    let runtime_flow = match persistence::load_runtime_flow(&conf_dir) {
+        Ok(Some(state)) => {
+            tracing::info!(
+                conf_dir = %conf_dir.display(),
+                processors = state.processors.len(),
+                connections = state.connections.len(),
+                "Loaded persisted runtime flow state"
+            );
+            Some(state)
+        }
+        Ok(None) => {
+            tracing::info!(
+                conf_dir = %conf_dir.display(),
+                "No persisted flow state found, using seed config"
+            );
+            None
+        }
+        Err(e) => {
+            tracing::warn!(
+                conf_dir = %conf_dir.display(),
+                error = %e,
+                "Failed to load persisted flow state, falling back to seed config"
+            );
+            None
+        }
+    };
 
     // Create content repository based on config.
     let content_repo: Arc<dyn ContentRepository> =
@@ -118,79 +148,49 @@ async fn main() -> Result<()> {
             }
         };
 
+    // Determine flow name — runtime state takes precedence.
+    let flow_name = runtime_flow
+        .as_ref()
+        .map(|s| s.flow_name.clone())
+        .unwrap_or_else(|| config.flow.name.clone());
+
     // Build the flow engine.
     let content_repo_ref = content_repo.clone();
     let registry = Arc::new(registry);
-    let mut engine = FlowEngine::new(&config.flow.name, content_repo, flowfile_repo);
-    // Provide the registry so the engine can hot-add processors at runtime.
+    let mut engine = FlowEngine::new(&flow_name, content_repo, flowfile_repo);
     engine.set_registry(registry.clone());
 
-    // Add processors from config.
-    let mut node_ids = std::collections::HashMap::new();
+    // Set up flow persistence.
+    let persistence_layer = FlowPersistence::new(conf_dir);
+    engine.set_persistence(persistence_layer);
 
-    for proc_config in &config.flow.processors {
-        let processor = registry
-            .create_processor(&proc_config.type_name)
-            .ok_or_else(|| anyhow::anyhow!("Unknown processor type: {}", proc_config.type_name))?;
-
-        let scheduling = match proc_config.scheduling.strategy.as_str() {
-            "event" => SchedulingStrategy::EventDriven,
-            _ => SchedulingStrategy::TimerDriven {
-                interval_ms: proc_config.scheduling.interval_ms,
-            },
-        };
-
-        let node_id = engine.add_processor(
-            &proc_config.name,
-            &proc_config.type_name,
-            processor,
-            scheduling,
-            proc_config.properties.clone(),
-        );
-        node_ids.insert(proc_config.name.clone(), node_id);
-
-        tracing::info!(
-            name = %proc_config.name,
-            type_name = %proc_config.type_name,
-            "Added processor"
-        );
-    }
-
-    // Wire connections.
-    for conn_config in &config.flow.connections {
-        let source_id = *node_ids
-            .get(&conn_config.source)
-            .ok_or_else(|| anyhow::anyhow!("Unknown source processor: {}", conn_config.source))?;
-        let dest_id = *node_ids.get(&conn_config.destination).ok_or_else(|| {
-            anyhow::anyhow!("Unknown destination processor: {}", conn_config.destination)
-        })?;
-
-        let bp_config = match &conn_config.back_pressure {
-            Some(bp) => BackPressureConfig::new(
-                bp.max_count
-                    .unwrap_or(BackPressureConfig::DEFAULT_MAX_COUNT),
-                bp.max_bytes
-                    .unwrap_or(BackPressureConfig::DEFAULT_MAX_BYTES),
-            ),
-            None => BackPressureConfig::default(),
-        };
-
-        // We need a &'static str for the relationship name.
-        // Leak is acceptable here since these live for the program's lifetime.
-        let rel_name: &'static str = Box::leak(conn_config.relationship.clone().into_boxed_str());
-        engine.connect(source_id, rel_name, dest_id, bp_config);
-
-        tracing::info!(
-            source = %conn_config.source,
-            relationship = %conn_config.relationship,
-            destination = %conn_config.destination,
-            "Added connection"
-        );
+    // Populate the engine from either runtime state or seed config.
+    if let Some(ref state) = runtime_flow {
+        load_from_persisted_state(&mut engine, state, &registry)?;
+    } else {
+        load_from_seed_config(&mut engine, &config, &registry)?;
     }
 
     // Start the engine.
     engine.start().await.context("Failed to start engine")?;
     tracing::info!("Flow engine is running");
+
+    // Restore positions from persisted state.
+    if let Some(ref state) = runtime_flow
+        && let Some(handle) = engine.handle()
+    {
+        for (name, pos) in &state.positions {
+            handle.set_position(name, pos.x, pos.y);
+        }
+    }
+
+    // On first startup (no runtime flow), trigger an initial persist so the
+    // seed config is saved as the runtime state.
+    if runtime_flow.is_none()
+        && let Some(handle) = engine.handle()
+    {
+        handle.notify_persist();
+    }
 
     // Set plugin types on the engine handle.
     let mut plugin_types: Vec<PluginTypeInfo> = Vec::new();
@@ -245,6 +245,153 @@ async fn main() -> Result<()> {
     engine.stop().await;
     content_repo_ref.shutdown();
     tracing::info!("RuniFi stopped");
+
+    Ok(())
+}
+
+/// Load processors and connections from a persisted runtime flow state.
+fn load_from_persisted_state(
+    engine: &mut FlowEngine,
+    state: &PersistedFlowState,
+    registry: &PluginRegistry,
+) -> Result<()> {
+    let mut node_ids = std::collections::HashMap::new();
+
+    for proc_state in &state.processors {
+        let processor = registry
+            .create_processor(&proc_state.type_name)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Unknown processor type in persisted state: {}",
+                    proc_state.type_name
+                )
+            })?;
+
+        let scheduling = match proc_state.scheduling.strategy.as_str() {
+            "event" => SchedulingStrategy::EventDriven,
+            _ => SchedulingStrategy::TimerDriven {
+                interval_ms: proc_state.scheduling.interval_ms,
+            },
+        };
+
+        let node_id = engine.add_processor(
+            &proc_state.name,
+            &proc_state.type_name,
+            processor,
+            scheduling,
+            proc_state.properties.clone(),
+        );
+        node_ids.insert(proc_state.name.clone(), node_id);
+
+        tracing::info!(
+            name = %proc_state.name,
+            type_name = %proc_state.type_name,
+            "Added processor (from persisted state)"
+        );
+    }
+
+    for conn_state in &state.connections {
+        let source_id = *node_ids.get(&conn_state.source).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Unknown source processor in persisted state: {}",
+                conn_state.source
+            )
+        })?;
+        let dest_id = *node_ids.get(&conn_state.destination).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Unknown destination processor in persisted state: {}",
+                conn_state.destination
+            )
+        })?;
+
+        let bp_config = match &conn_state.back_pressure {
+            Some(bp) => BackPressureConfig::new(
+                bp.max_count
+                    .unwrap_or(BackPressureConfig::DEFAULT_MAX_COUNT),
+                bp.max_bytes
+                    .unwrap_or(BackPressureConfig::DEFAULT_MAX_BYTES),
+            ),
+            None => BackPressureConfig::default(),
+        };
+
+        let rel_name: &'static str = Box::leak(conn_state.relationship.clone().into_boxed_str());
+        engine.connect(source_id, rel_name, dest_id, bp_config);
+
+        tracing::info!(
+            source = %conn_state.source,
+            relationship = %conn_state.relationship,
+            destination = %conn_state.destination,
+            "Added connection (from persisted state)"
+        );
+    }
+
+    Ok(())
+}
+
+/// Load processors and connections from the seed TOML config.
+fn load_from_seed_config(
+    engine: &mut FlowEngine,
+    config: &FlowConfig,
+    registry: &PluginRegistry,
+) -> Result<()> {
+    let mut node_ids = std::collections::HashMap::new();
+
+    for proc_config in &config.flow.processors {
+        let processor = registry
+            .create_processor(&proc_config.type_name)
+            .ok_or_else(|| anyhow::anyhow!("Unknown processor type: {}", proc_config.type_name))?;
+
+        let scheduling = match proc_config.scheduling.strategy.as_str() {
+            "event" => SchedulingStrategy::EventDriven,
+            _ => SchedulingStrategy::TimerDriven {
+                interval_ms: proc_config.scheduling.interval_ms,
+            },
+        };
+
+        let node_id = engine.add_processor(
+            &proc_config.name,
+            &proc_config.type_name,
+            processor,
+            scheduling,
+            proc_config.properties.clone(),
+        );
+        node_ids.insert(proc_config.name.clone(), node_id);
+
+        tracing::info!(
+            name = %proc_config.name,
+            type_name = %proc_config.type_name,
+            "Added processor"
+        );
+    }
+
+    for conn_config in &config.flow.connections {
+        let source_id = *node_ids
+            .get(&conn_config.source)
+            .ok_or_else(|| anyhow::anyhow!("Unknown source processor: {}", conn_config.source))?;
+        let dest_id = *node_ids.get(&conn_config.destination).ok_or_else(|| {
+            anyhow::anyhow!("Unknown destination processor: {}", conn_config.destination)
+        })?;
+
+        let bp_config = match &conn_config.back_pressure {
+            Some(bp) => BackPressureConfig::new(
+                bp.max_count
+                    .unwrap_or(BackPressureConfig::DEFAULT_MAX_COUNT),
+                bp.max_bytes
+                    .unwrap_or(BackPressureConfig::DEFAULT_MAX_BYTES),
+            ),
+            None => BackPressureConfig::default(),
+        };
+
+        let rel_name: &'static str = Box::leak(conn_config.relationship.clone().into_boxed_str());
+        engine.connect(source_id, rel_name, dest_id, bp_config);
+
+        tracing::info!(
+            source = %conn_config.source,
+            relationship = %conn_config.relationship,
+            destination = %conn_config.destination,
+            "Added connection"
+        );
+    }
 
     Ok(())
 }

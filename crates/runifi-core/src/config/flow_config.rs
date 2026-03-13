@@ -122,10 +122,18 @@ pub struct BackPressureConfigToml {
 /// Engine-level configuration.
 #[derive(Debug, Default, Deserialize)]
 pub struct EngineConfig {
+    /// Directory for runtime flow state persistence.
+    /// Default: `./data/conf/`
+    #[serde(default = "default_conf_dir")]
+    pub conf_dir: PathBuf,
     #[serde(default)]
     pub content_repository: ContentRepositoryConfig,
     #[serde(default)]
     pub flowfile_repository: FlowFileRepositoryConfig,
+}
+
+fn default_conf_dir() -> PathBuf {
+    PathBuf::from("./data/conf")
 }
 
 /// Content repository type selection.
