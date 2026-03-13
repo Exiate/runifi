@@ -9,7 +9,6 @@ use tokio_util::sync::CancellationToken;
 use runifi_plugin_api::Processor;
 use runifi_plugin_api::property::PropertyValue;
 use runifi_plugin_api::relationship::Relationship;
-use runifi_plugin_api::session::ProcessSession;
 
 use super::bulletin::{BulletinBoard, BulletinSeverity};
 use super::metrics::ProcessorMetrics;
@@ -17,7 +16,8 @@ use super::supervisor::{InvocationResult, ProcessorSupervisor};
 use crate::connection::flow_connection::FlowConnection;
 use crate::id::IdGenerator;
 use crate::repository::content_repo::ContentRepository;
-use crate::session::process_session::CoreProcessSession;
+use crate::session::factory::{DefaultSessionFactory, SessionFactory};
+use crate::session::process_session::EngineSession;
 
 /// Scheduling strategy for a processor node.
 #[derive(Debug, Clone)]
@@ -94,6 +94,8 @@ pub struct ProcessorNode {
     input_notifiers: SharedInputNotifiers,
     metrics: Arc<ProcessorMetrics>,
     bulletin_board: Arc<BulletinBoard>,
+    /// Factory for creating per-invocation sessions. Defaults to `DefaultSessionFactory`.
+    session_factory: Arc<dyn SessionFactory>,
 }
 
 impl ProcessorNode {
@@ -124,6 +126,7 @@ impl ProcessorNode {
             input_notifiers: Arc::new(RwLock::new(Vec::new())),
             metrics,
             bulletin_board,
+            session_factory: Arc::new(DefaultSessionFactory),
         }
     }
 
@@ -302,8 +305,9 @@ impl ProcessorNode {
                 let input_conns_snapshot: Vec<Arc<FlowConnection>> =
                     self.input_connections.read().clone();
 
-                // Build session and invoke processor in a blocking thread.
-                let mut session = CoreProcessSession::new(
+                // Build session via factory — allows security components to inject
+                // custom session implementations (encrypted repos, audit middleware).
+                let mut session = self.session_factory.create_session(
                     self.content_repo.clone(),
                     self.id_gen.clone(),
                     input_conns_snapshot,
@@ -315,7 +319,10 @@ impl ProcessorNode {
                     // We need to pass mutable references into spawn_blocking.
                     // Since the processor is !Send across await points in some cases,
                     // we do the invocation inline here (it's synchronous anyway).
-                    self.supervisor.invoke(&ctx, &mut session)
+                    // Use as_process_session_mut() to coerce Box<dyn EngineSession> to
+                    // &mut dyn ProcessSession for the supervisor, which only needs the
+                    // ProcessSession interface for on_trigger calls.
+                    self.supervisor.invoke(&ctx, session.as_process_session_mut())
                 };
 
                 // Sync supervisor metrics to shared atomics.
@@ -341,7 +348,7 @@ impl ProcessorNode {
                 match &result {
                     InvocationResult::Success => {
                         if session.is_committed() {
-                            let (ff_out, bytes_out) = self.route_transfers(&mut session);
+                            let (ff_out, bytes_out) = self.route_transfers(session.as_mut());
                             self.metrics
                                 .flowfiles_out
                                 .fetch_add(ff_out, Ordering::Relaxed);
@@ -437,7 +444,7 @@ impl ProcessorNode {
     }
 
     /// Route transfers and return (flowfiles_out, bytes_out).
-    fn route_transfers(&self, session: &mut CoreProcessSession) -> (u64, u64) {
+    fn route_transfers(&self, session: &mut dyn EngineSession) -> (u64, u64) {
         let mut ff_out: u64 = 0;
         let mut bytes_out: u64 = 0;
         // Snapshot output connections for routing; brief lock, then released.
