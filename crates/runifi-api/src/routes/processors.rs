@@ -384,13 +384,10 @@ async fn start_processor(
     State(state): State<ApiState>,
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    if state.handle.start_processor(&name) {
-        Ok(Json(
-            serde_json::json!({ "status": "started", "processor": name }),
-        ))
-    } else {
-        Err(ApiError::ProcessorNotFound(name))
-    }
+    state.handle.start_processor(&name)?;
+    Ok(Json(
+        serde_json::json!({ "status": "started", "processor": name }),
+    ))
 }
 
 async fn pause_processor(

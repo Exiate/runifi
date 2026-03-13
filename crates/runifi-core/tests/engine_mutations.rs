@@ -7,12 +7,14 @@ use std::sync::Arc;
 
 use runifi_core::connection::back_pressure::BackPressureConfig;
 use runifi_core::engine::flow_engine::FlowEngine;
+use runifi_core::engine::handle::ConfigUpdateError;
 use runifi_core::engine::mutation::MutationError;
 use runifi_core::registry::plugin_registry::PluginRegistry;
 use runifi_core::repository::content_memory::InMemoryContentRepository;
 use runifi_core::repository::flowfile_repo::InMemoryFlowFileRepository;
 use runifi_plugin_api::{
-    ProcessorDescriptor, Relationship, context::ProcessContext, session::ProcessSession,
+    ProcessorDescriptor, PropertyDescriptor, Relationship, context::ProcessContext,
+    session::ProcessSession,
 };
 
 // ── Minimal test processors ───────────────────────────────────────────────────
@@ -41,6 +43,43 @@ inventory::submit!(ProcessorDescriptor {
     type_name: "NoOp",
     description: "Does nothing — used in tests.",
     factory: || Box::new(NoOpProcessor),
+});
+
+/// A processor with a required property (no default) for validation tests.
+struct RequiredPropProcessor;
+
+impl runifi_plugin_api::Processor for RequiredPropProcessor {
+    fn on_trigger(
+        &mut self,
+        _ctx: &dyn ProcessContext,
+        _session: &mut dyn ProcessSession,
+    ) -> runifi_plugin_api::result::ProcessResult {
+        Ok(())
+    }
+
+    fn relationships(&self) -> Vec<Relationship> {
+        vec![Relationship {
+            name: "success",
+            description: "Success",
+            auto_terminated: false,
+        }]
+    }
+
+    fn property_descriptors(&self) -> Vec<PropertyDescriptor> {
+        vec![
+            PropertyDescriptor::new("Directory", "Target directory").required(),
+            PropertyDescriptor::new("Optional Prop", "An optional property"),
+            PropertyDescriptor::new("With Default", "Has a default value")
+                .required()
+                .default_value("/tmp"),
+        ]
+    }
+}
+
+inventory::submit!(ProcessorDescriptor {
+    type_name: "RequiredPropTest",
+    description: "Processor with required properties — used in validation tests.",
+    factory: || Box::new(RequiredPropProcessor),
 });
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
@@ -183,7 +222,7 @@ async fn hot_remove_running_processor_returns_error() {
         .await
         .expect("add failed");
 
-    handle.start_processor("p");
+    handle.start_processor("p").expect("start_processor failed");
 
     let result = handle.remove_processor("p".to_string()).await;
     assert!(result.is_err());
@@ -517,4 +556,113 @@ async fn remove_nonexistent_connection_returns_error() {
         result.unwrap_err(),
         MutationError::ConnectionNotFound(_)
     ));
+}
+
+// ── start_processor validation tests ─────────────────────────────────────────
+
+#[tokio::test]
+async fn start_processor_missing_required_property_returns_error() {
+    let engine = start_empty_engine().await;
+    let handle = engine.handle().expect("handle must exist").clone();
+
+    // Add a processor with required properties but don't supply the required one.
+    handle
+        .add_processor(
+            "needs-props".to_string(),
+            "RequiredPropTest".to_string(),
+            HashMap::new(), // No properties supplied
+            "timer".to_string(),
+            1000,
+        )
+        .await
+        .expect("add_processor failed");
+
+    // Starting should fail because "Directory" is required and has no default.
+    let result = handle.start_processor("needs-props");
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        ConfigUpdateError::ValidationError(_)
+    ));
+
+    // Processor should remain stopped.
+    let procs = handle.processors.read();
+    let proc = procs.iter().find(|p| p.name == "needs-props").unwrap();
+    assert!(
+        !proc
+            .metrics
+            .enabled
+            .load(std::sync::atomic::Ordering::Relaxed),
+        "processor should remain STOPPED after failed start"
+    );
+}
+
+#[tokio::test]
+async fn start_processor_with_all_required_properties_succeeds() {
+    let engine = start_empty_engine().await;
+    let handle = engine.handle().expect("handle must exist").clone();
+
+    let mut props = HashMap::new();
+    props.insert("Directory".to_string(), "/tmp/test".to_string());
+    // "With Default" is required but has a default, so it's not needed.
+    // "Optional Prop" is not required, so it's not needed.
+
+    handle
+        .add_processor(
+            "has-props".to_string(),
+            "RequiredPropTest".to_string(),
+            props,
+            "timer".to_string(),
+            1000,
+        )
+        .await
+        .expect("add_processor failed");
+
+    // Starting should succeed because "Directory" is supplied.
+    let result = handle.start_processor("has-props");
+    assert!(result.is_ok());
+
+    // Processor should be enabled.
+    let procs = handle.processors.read();
+    let proc = procs.iter().find(|p| p.name == "has-props").unwrap();
+    assert!(
+        proc.metrics
+            .enabled
+            .load(std::sync::atomic::Ordering::Relaxed),
+        "processor should be RUNNING after successful start"
+    );
+}
+
+#[tokio::test]
+async fn start_processor_not_found_returns_error() {
+    let engine = start_empty_engine().await;
+    let handle = engine.handle().expect("handle must exist").clone();
+
+    let result = handle.start_processor("nonexistent");
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        ConfigUpdateError::NotFound(_)
+    ));
+}
+
+#[tokio::test]
+async fn start_processor_no_required_properties_succeeds() {
+    let engine = start_empty_engine().await;
+    let handle = engine.handle().expect("handle must exist").clone();
+
+    // NoOp has no property descriptors at all.
+    handle
+        .add_processor(
+            "noop".to_string(),
+            "NoOp".to_string(),
+            HashMap::new(),
+            "timer".to_string(),
+            1000,
+        )
+        .await
+        .expect("add_processor failed");
+
+    let result = handle.start_processor("noop");
+    assert!(result.is_ok());
 }
