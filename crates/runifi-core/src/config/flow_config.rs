@@ -341,12 +341,15 @@ pub struct ProcessorConfig {
 
 #[derive(Debug, Deserialize)]
 pub struct SchedulingConfig {
-    /// "timer" or "event".
+    /// "timer", "event", or "cron".
     #[serde(default = "default_strategy")]
     pub strategy: String,
     /// Interval in milliseconds (for timer-driven).
     #[serde(default = "default_interval")]
     pub interval_ms: u64,
+    /// CRON expression (for cron-driven), e.g. "0 */5 * * * *".
+    #[serde(default)]
+    pub expression: Option<String>,
 }
 
 impl Default for SchedulingConfig {
@@ -354,6 +357,7 @@ impl Default for SchedulingConfig {
         Self {
             strategy: default_strategy(),
             interval_ms: default_interval(),
+            expression: None,
         }
     }
 }
@@ -380,12 +384,47 @@ pub struct ConnectionConfig {
     /// Load balancing config for cluster distribution (optional).
     #[serde(default)]
     pub load_balancing: Option<LoadBalanceConfig>,
+    /// FlowFile expiration duration string, e.g. "5m", "1h", "30s".
+    /// FlowFiles older than this are dropped from the queue.
+    #[serde(default)]
+    pub expiration: Option<String>,
+    /// Queue priority strategy: "FIFO" (default), "NewestFirst", "PriorityAttribute".
+    #[serde(default)]
+    pub priority: Option<String>,
+    /// Attribute name used for PriorityAttribute ordering.
+    #[serde(default)]
+    pub priority_attribute: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct BackPressureConfigToml {
     pub max_count: Option<usize>,
     pub max_bytes: Option<u64>,
+}
+
+/// Parse a human-readable duration string into seconds.
+///
+/// Supported suffixes: `s` (seconds), `m` (minutes), `h` (hours), `d` (days).
+/// Examples: "30s", "5m", "1h", "2d".
+pub fn parse_duration_str(s: &str) -> Option<std::time::Duration> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let (num_str, multiplier) = if let Some(n) = s.strip_suffix('d') {
+        (n, 86400u64)
+    } else if let Some(n) = s.strip_suffix('h') {
+        (n, 3600u64)
+    } else if let Some(n) = s.strip_suffix('m') {
+        (n, 60u64)
+    } else if let Some(n) = s.strip_suffix('s') {
+        (n, 1u64)
+    } else {
+        // Default to seconds if no suffix.
+        (s, 1u64)
+    };
+    let num: u64 = num_str.trim().parse().ok()?;
+    Some(std::time::Duration::from_secs(num * multiplier))
 }
 
 /// Engine-level configuration.
@@ -825,5 +864,77 @@ mod tests {
         let inner = &outer.process_groups[0];
         assert_eq!(inner.name, "inner-group");
         assert_eq!(inner.input_ports.as_ref().unwrap().ports, vec!["in"]);
+    }
+
+    #[test]
+    fn connection_with_expiration_and_priority() {
+        let toml_str = r#"
+            [flow]
+            name = "test-flow"
+
+            [[flow.processors]]
+            name = "gen"
+            type = "GenerateFlowFile"
+
+            [[flow.processors]]
+            name = "log"
+            type = "LogAttribute"
+
+            [[flow.connections]]
+            source = "gen"
+            relationship = "success"
+            destination = "log"
+            expiration = "5m"
+            priority = "NewestFirst"
+        "#;
+        let config: FlowConfig = toml::from_str(toml_str).unwrap();
+        let conn = &config.flow.connections[0];
+        assert_eq!(conn.expiration.as_deref(), Some("5m"));
+        assert_eq!(conn.priority.as_deref(), Some("NewestFirst"));
+    }
+
+    #[test]
+    fn cron_scheduling_config() {
+        let toml_str = r#"
+            [flow]
+            name = "test-flow"
+
+            [[flow.processors]]
+            name = "batch"
+            type = "GenerateFlowFile"
+            [flow.processors.scheduling]
+            strategy = "cron"
+            expression = "0 */5 * * * *"
+        "#;
+        let config: FlowConfig = toml::from_str(toml_str).unwrap();
+        let proc = &config.flow.processors[0];
+        assert_eq!(proc.scheduling.strategy, "cron");
+        assert_eq!(proc.scheduling.expression.as_deref(), Some("0 */5 * * * *"));
+    }
+
+    #[test]
+    fn parse_duration_str_variants() {
+        assert_eq!(
+            parse_duration_str("30s"),
+            Some(std::time::Duration::from_secs(30))
+        );
+        assert_eq!(
+            parse_duration_str("5m"),
+            Some(std::time::Duration::from_secs(300))
+        );
+        assert_eq!(
+            parse_duration_str("2h"),
+            Some(std::time::Duration::from_secs(7200))
+        );
+        assert_eq!(
+            parse_duration_str("1d"),
+            Some(std::time::Duration::from_secs(86400))
+        );
+        assert_eq!(
+            parse_duration_str("60"),
+            Some(std::time::Duration::from_secs(60))
+        );
+        assert_eq!(parse_duration_str(""), None);
+        assert_eq!(parse_duration_str("abc"), None);
     }
 }

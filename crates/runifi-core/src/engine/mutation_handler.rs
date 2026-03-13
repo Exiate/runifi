@@ -53,8 +53,12 @@ impl DefaultMutationHandler {
         properties: HashMap<String, String>,
         scheduling_strategy: &str,
         interval_ms: u64,
+        cron_expression: Option<&str>,
     ) -> std::result::Result<(), MutationError> {
-        if scheduling_strategy != "timer" && scheduling_strategy != "event" {
+        if scheduling_strategy != "timer"
+            && scheduling_strategy != "event"
+            && scheduling_strategy != "cron"
+        {
             return Err(MutationError::InvalidSchedulingStrategy(
                 scheduling_strategy.to_string(),
             ));
@@ -75,6 +79,16 @@ impl DefaultMutationHandler {
 
         let scheduling = if scheduling_strategy == "event" {
             SchedulingStrategy::EventDriven
+        } else if scheduling_strategy == "cron" {
+            let expr = cron_expression.unwrap_or("0 * * * * *");
+            // Validate the CRON expression.
+            use std::str::FromStr;
+            cron::Schedule::from_str(expr).map_err(|e| {
+                MutationError::InvalidCronExpression(expr.to_string(), e.to_string())
+            })?;
+            SchedulingStrategy::CronDriven {
+                expression: expr.to_string(),
+            }
         } else {
             SchedulingStrategy::TimerDriven { interval_ms }
         };

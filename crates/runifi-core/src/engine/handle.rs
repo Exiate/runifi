@@ -437,6 +437,27 @@ impl EngineHandle {
         scheduling_strategy: String,
         interval_ms: u64,
     ) -> Result<(), MutationError> {
+        self.add_processor_with_cron(
+            name,
+            type_name,
+            properties,
+            scheduling_strategy,
+            interval_ms,
+            None,
+        )
+        .await
+    }
+
+    /// Add a new processor at runtime with optional CRON expression.
+    pub async fn add_processor_with_cron(
+        &self,
+        name: String,
+        type_name: String,
+        properties: HashMap<String, String>,
+        scheduling_strategy: String,
+        interval_ms: u64,
+        cron_expression: Option<String>,
+    ) -> Result<(), MutationError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.mutation_tx
             .send(MutationCommand::AddProcessor {
@@ -445,6 +466,7 @@ impl EngineHandle {
                 properties,
                 scheduling_strategy,
                 interval_ms,
+                cron_expression,
                 reply: reply_tx,
             })
             .await
