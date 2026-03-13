@@ -54,6 +54,19 @@ function ProcessorNodeInner({ data }: NodeProps<ProcessorNodeType>) {
         style={{ top: '50%' }}
       />
 
+      {/* NiFi-style center connection handle — visible on hover */}
+      <Handle
+        type="source"
+        position={Position.Right}
+        id="center-source"
+        className="center-connect-handle"
+      />
+      <div className="center-connect-indicator" aria-label="Drag to connect">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M3 8H13M13 8L9 4M13 8L9 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+      </div>
+
       <div className="proc-node-header" style={headerStyle}>
         <div className="proc-node-identity">
           <span className="proc-node-name" title={label}>
@@ -112,14 +125,15 @@ function ProcessorNodeInner({ data }: NodeProps<ProcessorNodeType>) {
         </div>
       )}
 
+      {/* Hidden per-relationship handles for edge anchoring */}
       {rels.map((rel, idx) => (
         <Handle
           key={rel}
           type="source"
           position={Position.Right}
           id={rel}
+          className="edge-anchor-handle"
           style={{ top: handleTopPercent(idx, rels.length) }}
-          title={rel}
         />
       ))}
     </div>
