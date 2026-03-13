@@ -3,8 +3,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
-use axum::routing::{delete, get};
-use axum::{Json, Router};
+use axum::routing::{delete as delete_method, get};
+use axum::{Json, Router, middleware};
 use serde::Deserialize;
 
 use runifi_core::audit::{AuditAction, AuditEvent, AuditTarget};
@@ -15,27 +15,50 @@ use crate::dto::{
     FlowFileAttributeResponse, QueueListingResponse, QueuedFlowFileResponse,
 };
 use crate::error::ApiError;
+use crate::rbac;
 use crate::state::ApiState;
 
 pub fn routes() -> Router<ApiState> {
-    Router::new()
-        .route(
-            "/api/v1/connections",
-            get(list_connections).post(create_connection),
-        )
-        .route("/api/v1/connections/{id}", delete(delete_connection))
-        .route(
-            "/api/v1/connections/{id}/queue",
-            get(list_queue).delete(empty_queue),
-        )
+    // GET endpoints — ViewFlow (Viewer+)
+    let view_routes = Router::new()
+        .route("/api/v1/connections", get(list_connections))
+        .route("/api/v1/connections/{id}/queue", get(list_queue))
         .route(
             "/api/v1/connections/{id}/queue/{flowfile_id}",
-            get(get_flowfile).delete(remove_flowfile),
+            get(get_flowfile),
         )
+        .layer(middleware::from_fn(rbac::require_view_flow));
+
+    // Content access — AccessContent (Operator+)
+    let content_routes = Router::new()
         .route(
             "/api/v1/connections/{id}/queue/{flowfile_id}/content",
             get(download_content),
         )
+        .layer(middleware::from_fn(rbac::require_access_content));
+
+    // Flow mutation endpoints — ModifyFlow (Admin only)
+    let modify_routes = Router::new()
+        .route(
+            "/api/v1/connections",
+            axum::routing::post(create_connection),
+        )
+        .route("/api/v1/connections/{id}", delete_method(delete_connection))
+        .layer(middleware::from_fn(rbac::require_modify_flow));
+
+    // Queue management — OperateProcessors (Operator+)
+    let operate_routes = Router::new()
+        .route("/api/v1/connections/{id}/queue", delete_method(empty_queue))
+        .route(
+            "/api/v1/connections/{id}/queue/{flowfile_id}",
+            delete_method(remove_flowfile),
+        )
+        .layer(middleware::from_fn(rbac::require_operate_processors));
+
+    view_routes
+        .merge(content_routes)
+        .merge(modify_routes)
+        .merge(operate_routes)
 }
 
 async fn list_connections(State(state): State<ApiState>) -> Json<Vec<ConnectionResponse>> {

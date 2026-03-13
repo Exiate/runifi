@@ -1,30 +1,30 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{get, post, put};
-use axum::{Json, Router};
+use axum::routing::{delete as delete_method, get, post, put};
+use axum::{Json, Router, middleware};
 
 use crate::dto::{
     CreateProcessorRequest, ProcessorConfigResponse, ProcessorConfigUpdateRequest,
     ProcessorDetailResponse, ProcessorResponse, RelationshipResponse, UpdatePositionRequest,
 };
 use crate::error::ApiError;
+use crate::rbac;
 use crate::state::ApiState;
 
 pub fn routes() -> Router<ApiState> {
-    Router::new()
-        .route(
-            "/api/v1/processors",
-            get(list_processors).post(create_processor),
-        )
-        .route(
-            "/api/v1/processors/{name}",
-            get(get_processor).delete(delete_processor),
-        )
+    // GET endpoints — ViewFlow (Viewer+)
+    let view_routes = Router::new()
+        .route("/api/v1/processors", get(list_processors))
+        .route("/api/v1/processors/{name}", get(get_processor))
         .route(
             "/api/v1/processors/{name}/config",
-            get(get_processor_config).put(update_processor_config),
+            get(get_processor_config),
         )
+        .layer(middleware::from_fn(rbac::require_view_flow));
+
+    // POST lifecycle endpoints — OperateProcessors (Operator+)
+    let operate_routes = Router::new()
         .route(
             "/api/v1/processors/{name}/reset-circuit",
             post(reset_circuit),
@@ -33,7 +33,27 @@ pub fn routes() -> Router<ApiState> {
         .route("/api/v1/processors/{name}/start", post(start_processor))
         .route("/api/v1/processors/{name}/pause", post(pause_processor))
         .route("/api/v1/processors/{name}/resume", post(resume_processor))
+        .layer(middleware::from_fn(rbac::require_operate_processors));
+
+    // Flow mutation endpoints — ModifyFlow (Admin only)
+    let modify_routes = Router::new()
+        .route("/api/v1/processors", post(create_processor))
+        .route("/api/v1/processors/{name}", delete_method(delete_processor))
         .route("/api/v1/processors/{name}/position", put(update_position))
+        .layer(middleware::from_fn(rbac::require_modify_flow));
+
+    // Config update endpoint — ManageConfig (Admin only)
+    let config_routes = Router::new()
+        .route(
+            "/api/v1/processors/{name}/config",
+            put(update_processor_config),
+        )
+        .layer(middleware::from_fn(rbac::require_manage_config));
+
+    view_routes
+        .merge(operate_routes)
+        .merge(modify_routes)
+        .merge(config_routes)
 }
 
 async fn list_processors(State(state): State<ApiState>) -> Json<Vec<ProcessorResponse>> {

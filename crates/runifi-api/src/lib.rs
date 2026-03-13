@@ -2,6 +2,7 @@ pub mod auth;
 mod dashboard;
 mod dto;
 mod error;
+pub mod rbac;
 mod routes;
 mod state;
 

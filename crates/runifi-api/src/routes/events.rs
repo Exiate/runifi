@@ -13,10 +13,13 @@ use tokio_stream::StreamExt as _;
 use tokio_stream::wrappers::IntervalStream;
 
 use crate::dto::{BulletinResponse, ConnectionResponse, ProcessorResponse, SseMetricsEvent};
+use crate::rbac;
 use crate::state::ApiState;
 
 pub fn routes() -> Router<ApiState> {
-    Router::new().route("/api/v1/events", get(sse_events))
+    Router::new()
+        .route("/api/v1/events", get(sse_events))
+        .layer(axum::middleware::from_fn(rbac::require_view_flow))
 }
 
 async fn sse_events(

@@ -1,12 +1,15 @@
 use axum::extract::State;
 use axum::routing::get;
-use axum::{Json, Router};
+use axum::{Json, Router, middleware};
 
 use crate::dto::{FlowEdgeResponse, FlowNodeResponse, FlowResponse, PositionResponse};
+use crate::rbac;
 use crate::state::ApiState;
 
 pub fn routes() -> Router<ApiState> {
-    Router::new().route("/api/v1/flow", get(get_flow))
+    Router::new()
+        .route("/api/v1/flow", get(get_flow))
+        .layer(middleware::from_fn(rbac::require_view_flow))
 }
 
 async fn get_flow(State(state): State<ApiState>) -> Json<FlowResponse> {
