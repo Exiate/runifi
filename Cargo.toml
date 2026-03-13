@@ -62,6 +62,8 @@ aes-gcm = "0.10"             # AES-256-GCM authenticated encryption
 zeroize = { version = "1", features = ["derive"] }  # Secure memory zeroing
 hex = "0.4"                  # Hex encoding/decoding for keys
 base64 = "0.22"              # Base64 encoding for encrypted properties
+argon2 = "0.5"               # Password hashing
+jsonwebtoken = "9"           # JWT token generation/validation
 
 # CLI
 clap = { version = "4", features = ["derive"] }

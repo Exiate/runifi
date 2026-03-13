@@ -24,6 +24,8 @@ bytes = { workspace = true }
 subtle = { workspace = true }
 rand = { workspace = true }
 urlencoding = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 axum-test = "19"
