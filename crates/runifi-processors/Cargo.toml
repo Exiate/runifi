@@ -7,10 +7,11 @@ license.workspace = true
 
 [features]
 default = ["all"]
-all = ["filesystem", "routing", "debug"]
+all = ["filesystem", "routing", "debug", "transformation"]
 filesystem = []
 routing = []
 debug = []
+transformation = ["serde_json", "jsonpath_lib"]
 
 [dependencies]
 runifi-plugin-api = { workspace = true }
@@ -20,3 +21,5 @@ inventory = { workspace = true }
 rand = { workspace = true }
 regex-lite = { workspace = true }
 parking_lot = { workspace = true }
+serde_json = { workspace = true, optional = true }
+jsonpath_lib = { workspace = true, optional = true }

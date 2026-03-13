@@ -81,6 +81,7 @@ inventory::submit!(ProcessorDescriptor {
     type_name: "RequiredPropTest",
     description: "Processor with required properties — used in validation tests.",
     factory: || Box::new(RequiredPropProcessor),
+    tags: &["Testing"],
 });
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
