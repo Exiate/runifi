@@ -200,7 +200,6 @@ mod tests {
 
     use super::*;
     use crate::repository::content_memory::InMemoryContentRepository;
-    use crate::repository::key_provider::KeyId;
     use crate::repository::static_key_provider::StaticKeyProvider;
 
     fn make_provider(keys: Vec<(&str, Vec<u8>)>, active: &str) -> Arc<dyn KeyProvider> {

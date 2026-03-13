@@ -60,8 +60,7 @@ async fn main() -> Result<()> {
                 return Err(anyhow::anyhow!("{}", e));
             }
 
-            let config_str =
-                std::fs::read_to_string(path).context("Failed to read config file")?;
+            let config_str = std::fs::read_to_string(path).context("Failed to read config file")?;
             // Expand environment variable references before parsing.
             let config_str = expand_env_vars(&config_str);
             let cfg: FlowConfig =
