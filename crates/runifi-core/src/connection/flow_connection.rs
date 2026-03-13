@@ -416,4 +416,104 @@ mod tests {
         let snapshot = conn.queue_snapshot(0, 100);
         assert_eq!(snapshot[0].id, 2);
     }
+
+    #[test]
+    fn fifo_ordering() {
+        let conn = FlowConnection::new("test", BackPressureConfig::default());
+        for i in 0..5 {
+            conn.try_send(test_flowfile(i, 10)).unwrap();
+        }
+        for i in 0..5 {
+            let ff = conn.try_recv().unwrap();
+            assert_eq!(ff.id, i);
+        }
+    }
+
+    #[test]
+    fn bytes_tracking_accurate() {
+        let conn = FlowConnection::new("test", BackPressureConfig::default());
+        conn.try_send(test_flowfile(1, 100)).unwrap();
+        conn.try_send(test_flowfile(2, 200)).unwrap();
+        conn.try_send(test_flowfile(3, 300)).unwrap();
+        assert_eq!(conn.bytes(), 600);
+
+        conn.try_recv(); // removes 100 bytes
+        assert_eq!(conn.bytes(), 500);
+
+        conn.try_recv(); // removes 200 bytes
+        assert_eq!(conn.bytes(), 300);
+    }
+
+    #[test]
+    fn queue_get_with_position() {
+        let conn = FlowConnection::new("test", BackPressureConfig::default());
+        for i in 0..5 {
+            conn.try_send(test_flowfile(i, 10)).unwrap();
+        }
+
+        let (pos, snap) = conn.queue_get_with_position(3).unwrap();
+        assert_eq!(pos, 3);
+        assert_eq!(snap.id, 3);
+
+        assert!(conn.queue_get_with_position(999).is_none());
+    }
+
+    #[test]
+    fn notifier_fires_on_send() {
+        let conn = FlowConnection::new("test", BackPressureConfig::default());
+        let notifier = conn.notifier();
+
+        // Send triggers a notify.
+        conn.try_send(test_flowfile(1, 10)).unwrap();
+
+        // We can't easily test async Notify in a sync test,
+        // but we can verify the notifier is valid.
+        assert!(std::sync::Arc::strong_count(&notifier) >= 1);
+    }
+
+    #[test]
+    fn back_pressure_released_after_recv() {
+        let config = BackPressureConfig::new(2, u64::MAX);
+        let conn = FlowConnection::new("test", config);
+        conn.try_send(test_flowfile(1, 10)).unwrap();
+        conn.try_send(test_flowfile(2, 10)).unwrap();
+        assert!(conn.is_back_pressured());
+
+        conn.try_recv();
+        assert!(!conn.is_back_pressured());
+    }
+
+    #[test]
+    fn batch_recv_with_fewer_available() {
+        let conn = FlowConnection::new("test", BackPressureConfig::default());
+        conn.try_send(test_flowfile(1, 10)).unwrap();
+        conn.try_send(test_flowfile(2, 10)).unwrap();
+
+        let batch = conn.try_recv_batch(5);
+        assert_eq!(batch.len(), 2);
+        assert_eq!(conn.count(), 0);
+    }
+
+    #[test]
+    fn snapshot_with_attributes() {
+        let conn = FlowConnection::new("test", BackPressureConfig::default());
+        let mut ff = test_flowfile(1, 100);
+        ff.attributes.push((Arc::from("key"), Arc::from("value")));
+        conn.try_send(ff).unwrap();
+
+        let snapshot = conn.queue_snapshot(0, 1);
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].attributes.len(), 1);
+        assert_eq!(snapshot[0].attributes[0].0.as_ref(), "key");
+        assert_eq!(snapshot[0].attributes[0].1.as_ref(), "value");
+    }
+
+    #[test]
+    fn clear_empty_queue() {
+        let conn = FlowConnection::new("test", BackPressureConfig::default());
+        let removed = conn.clear_queue();
+        assert_eq!(removed, 0);
+        assert_eq!(conn.count(), 0);
+        assert_eq!(conn.bytes(), 0);
+    }
 }

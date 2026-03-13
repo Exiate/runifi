@@ -150,4 +150,106 @@ mod tests {
         };
         assert!(repo.read(&claim).is_err());
     }
+
+    #[test]
+    fn create_empty_content() {
+        let repo = InMemoryContentRepository::new();
+        let claim = repo.create(Bytes::new()).unwrap();
+        assert_eq!(claim.length, 0);
+        assert_eq!(claim.offset, 0);
+        let data = repo.read(&claim).unwrap();
+        assert!(data.is_empty());
+    }
+
+    #[test]
+    fn multiple_creates_produce_unique_ids() {
+        let repo = InMemoryContentRepository::new();
+        let c1 = repo.create(Bytes::from_static(b"a")).unwrap();
+        let c2 = repo.create(Bytes::from_static(b"b")).unwrap();
+        let c3 = repo.create(Bytes::from_static(b"c")).unwrap();
+        assert_ne!(c1.resource_id, c2.resource_id);
+        assert_ne!(c2.resource_id, c3.resource_id);
+    }
+
+    #[test]
+    fn zero_copy_slicing() {
+        let repo = InMemoryContentRepository::new();
+        let data = Bytes::from_static(b"hello world");
+        let claim = repo.create(data).unwrap();
+
+        // Read the full content.
+        let full = repo.read(&claim).unwrap();
+        assert_eq!(full, Bytes::from_static(b"hello world"));
+
+        // Read a slice.
+        let slice_claim = ContentClaim {
+            resource_id: claim.resource_id,
+            offset: 6,
+            length: 5,
+        };
+        let slice = repo.read(&slice_claim).unwrap();
+        assert_eq!(slice, Bytes::from_static(b"world"));
+    }
+
+    #[test]
+    fn out_of_bounds_read_fails() {
+        let repo = InMemoryContentRepository::new();
+        let claim = repo.create(Bytes::from_static(b"short")).unwrap();
+        let bad_claim = ContentClaim {
+            resource_id: claim.resource_id,
+            offset: 0,
+            length: 100, // Way beyond actual size.
+        };
+        assert!(repo.read(&bad_claim).is_err());
+    }
+
+    #[test]
+    fn increment_ref_on_missing_resource_fails() {
+        let repo = InMemoryContentRepository::new();
+        assert!(repo.increment_ref(9999).is_err());
+    }
+
+    #[test]
+    fn decrement_ref_on_missing_resource_fails() {
+        let repo = InMemoryContentRepository::new();
+        assert!(repo.decrement_ref(9999).is_err());
+    }
+
+    #[test]
+    fn concurrent_access() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let repo = Arc::new(InMemoryContentRepository::new());
+        let mut handles = Vec::new();
+
+        for i in 0..10 {
+            let repo = repo.clone();
+            handles.push(thread::spawn(move || {
+                let data = Bytes::from(format!("content-{}", i));
+                let claim = repo.create(data.clone()).unwrap();
+                let read_back = repo.read(&claim).unwrap();
+                assert_eq!(read_back, data);
+                claim
+            }));
+        }
+
+        let claims: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        // All claims should have unique IDs.
+        let mut ids: Vec<u64> = claims.iter().map(|c| c.resource_id).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 10);
+    }
+
+    #[test]
+    fn large_content() {
+        let repo = InMemoryContentRepository::new();
+        let data = Bytes::from(vec![0xABu8; 1024 * 1024]); // 1 MB
+        let claim = repo.create(data.clone()).unwrap();
+        assert_eq!(claim.length, 1024 * 1024);
+        let read_back = repo.read(&claim).unwrap();
+        assert_eq!(read_back.len(), 1024 * 1024);
+        assert_eq!(read_back, data);
+    }
 }

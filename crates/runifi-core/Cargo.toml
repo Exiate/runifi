@@ -40,3 +40,20 @@ tokio = { workspace = true, features = ["test-util", "macros"] }
 runifi-processors = { path = "../runifi-processors" }
 inventory = { workspace = true }
 tempfile = "3"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "flowfile_bench"
+harness = false
+
+[[bench]]
+name = "content_repo_bench"
+harness = false
+
+[[bench]]
+name = "connection_bench"
+harness = false
+
+[[bench]]
+name = "pipeline_bench"
+harness = false

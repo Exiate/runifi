@@ -68,3 +68,171 @@ impl FlowFile {
         self.penalized_until_nanos > now_nanos
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_flowfile(id: u64) -> FlowFile {
+        FlowFile {
+            id,
+            attributes: Vec::new(),
+            content_claim: None,
+            size: 0,
+            created_at_nanos: 0,
+            lineage_start_id: id,
+            penalized_until_nanos: 0,
+        }
+    }
+
+    #[test]
+    fn creation_has_correct_defaults() {
+        let ff = make_flowfile(1);
+        assert_eq!(ff.id, 1);
+        assert!(ff.attributes.is_empty());
+        assert!(ff.content_claim.is_none());
+        assert_eq!(ff.size, 0);
+        assert_eq!(ff.lineage_start_id, 1);
+        assert_eq!(ff.penalized_until_nanos, 0);
+    }
+
+    #[test]
+    fn set_and_get_attribute() {
+        let mut ff = make_flowfile(1);
+        ff.set_attribute(Arc::from("filename"), Arc::from("test.txt"));
+        assert_eq!(ff.get_attribute("filename").unwrap().as_ref(), "test.txt");
+    }
+
+    #[test]
+    fn get_missing_attribute_returns_none() {
+        let ff = make_flowfile(1);
+        assert!(ff.get_attribute("nonexistent").is_none());
+    }
+
+    #[test]
+    fn set_attribute_overwrites_existing() {
+        let mut ff = make_flowfile(1);
+        ff.set_attribute(Arc::from("key"), Arc::from("value1"));
+        ff.set_attribute(Arc::from("key"), Arc::from("value2"));
+        assert_eq!(ff.get_attribute("key").unwrap().as_ref(), "value2");
+        assert_eq!(ff.attributes.len(), 1);
+    }
+
+    #[test]
+    fn remove_attribute_returns_value() {
+        let mut ff = make_flowfile(1);
+        ff.set_attribute(Arc::from("key"), Arc::from("value"));
+        let removed = ff.remove_attribute("key");
+        assert_eq!(removed.unwrap().as_ref(), "value");
+        assert!(ff.get_attribute("key").is_none());
+    }
+
+    #[test]
+    fn remove_missing_attribute_returns_none() {
+        let mut ff = make_flowfile(1);
+        assert!(ff.remove_attribute("nonexistent").is_none());
+    }
+
+    #[test]
+    fn multiple_attributes() {
+        let mut ff = make_flowfile(1);
+        ff.set_attribute(Arc::from("a"), Arc::from("1"));
+        ff.set_attribute(Arc::from("b"), Arc::from("2"));
+        ff.set_attribute(Arc::from("c"), Arc::from("3"));
+        assert_eq!(ff.attributes.len(), 3);
+        assert_eq!(ff.get_attribute("a").unwrap().as_ref(), "1");
+        assert_eq!(ff.get_attribute("b").unwrap().as_ref(), "2");
+        assert_eq!(ff.get_attribute("c").unwrap().as_ref(), "3");
+    }
+
+    #[test]
+    fn clone_preserves_all_fields() {
+        let mut ff = make_flowfile(1);
+        ff.size = 1024;
+        ff.created_at_nanos = 42;
+        ff.set_attribute(Arc::from("key"), Arc::from("value"));
+        ff.content_claim = Some(ContentClaim {
+            resource_id: 10,
+            offset: 0,
+            length: 1024,
+        });
+
+        let cloned = ff.clone();
+        assert_eq!(cloned.id, ff.id);
+        assert_eq!(cloned.size, ff.size);
+        assert_eq!(cloned.created_at_nanos, ff.created_at_nanos);
+        assert_eq!(cloned.lineage_start_id, ff.lineage_start_id);
+        assert_eq!(cloned.get_attribute("key").unwrap().as_ref(), "value");
+        assert_eq!(cloned.content_claim, ff.content_claim);
+    }
+
+    #[test]
+    fn clone_attribute_independence() {
+        let mut ff = make_flowfile(1);
+        ff.set_attribute(Arc::from("key"), Arc::from("original"));
+
+        let mut cloned = ff.clone();
+        cloned.set_attribute(Arc::from("key"), Arc::from("modified"));
+
+        // Original should be unchanged.
+        assert_eq!(ff.get_attribute("key").unwrap().as_ref(), "original");
+        assert_eq!(cloned.get_attribute("key").unwrap().as_ref(), "modified");
+    }
+
+    #[test]
+    fn is_penalized_returns_true_when_penalized() {
+        let mut ff = make_flowfile(1);
+        ff.penalized_until_nanos = 1000;
+        assert!(ff.is_penalized(500));
+        assert!(!ff.is_penalized(1000));
+        assert!(!ff.is_penalized(1500));
+    }
+
+    #[test]
+    fn content_claim_equality() {
+        let claim1 = ContentClaim {
+            resource_id: 1,
+            offset: 0,
+            length: 100,
+        };
+        let claim2 = ContentClaim {
+            resource_id: 1,
+            offset: 0,
+            length: 100,
+        };
+        let claim3 = ContentClaim {
+            resource_id: 2,
+            offset: 0,
+            length: 100,
+        };
+        assert_eq!(claim1, claim2);
+        assert_ne!(claim1, claim3);
+    }
+
+    #[test]
+    fn remove_attribute_with_swap_remove_preserves_others() {
+        let mut ff = make_flowfile(1);
+        ff.set_attribute(Arc::from("a"), Arc::from("1"));
+        ff.set_attribute(Arc::from("b"), Arc::from("2"));
+        ff.set_attribute(Arc::from("c"), Arc::from("3"));
+
+        ff.remove_attribute("a");
+        assert_eq!(ff.attributes.len(), 2);
+        // swap_remove moves the last element to the removed position
+        assert!(ff.get_attribute("b").is_some());
+        assert!(ff.get_attribute("c").is_some());
+    }
+
+    #[test]
+    fn arc_str_sharing() {
+        // Verify Arc<str> can be shared across FlowFiles for common keys.
+        let key: Arc<str> = Arc::from("filename");
+        let mut ff1 = make_flowfile(1);
+        let mut ff2 = make_flowfile(2);
+        ff1.set_attribute(key.clone(), Arc::from("file1.txt"));
+        ff2.set_attribute(key.clone(), Arc::from("file2.txt"));
+
+        // Both FlowFiles share the same key Arc.
+        assert!(Arc::ptr_eq(&ff1.attributes[0].0, &ff2.attributes[0].0));
+    }
+}
