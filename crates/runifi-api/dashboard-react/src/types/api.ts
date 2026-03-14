@@ -43,6 +43,9 @@ export interface ConnectionResponse {
   queued_count: number;
   queued_bytes: number;
   back_pressured: boolean;
+  back_pressure_object_threshold: number;
+  back_pressure_bytes_threshold: number;
+  fill_percentage: number;
 }
 
 export interface FlowNodeResponse {

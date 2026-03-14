@@ -48,6 +48,9 @@ pub trait ConnectionQuery: Send + Sync {
         None
     }
 
+    /// Update back-pressure thresholds at runtime. Default is no-op.
+    fn update_back_pressure(&self, _max_count: usize, _max_bytes: u64) {}
+
     /// Access the underlying FlowConnection (for persistence of expiration/priority).
     /// Returns `None` if the implementation does not use a FlowConnection.
     fn flow_connection(&self) -> Option<&FlowConnection> {
@@ -139,6 +142,10 @@ impl ConnectionQuery for FlowConnectionQuery {
 
     fn load_balance_config(&self) -> Option<&LoadBalanceConfig> {
         self.connection.load_balance_config()
+    }
+
+    fn update_back_pressure(&self, max_count: usize, max_bytes: u64) {
+        self.connection.update_back_pressure(max_count, max_bytes);
     }
 
     fn flow_connection(&self) -> Option<&FlowConnection> {

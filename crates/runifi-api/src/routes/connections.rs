@@ -15,6 +15,7 @@ use runifi_core::engine::handle::ConnectionInfo;
 use crate::dto::{
     ConnectionDetailResponse, ConnectionResponse, CreateConnectionRequest,
     FlowFileAttributeResponse, QueueListingResponse, QueuedFlowFileResponse,
+    UpdateConnectionConfigRequest, compute_fill_percentage,
 };
 use crate::error::ApiError;
 use crate::rbac;
@@ -47,6 +48,7 @@ pub fn routes() -> Router<ApiState> {
     // GET endpoints — ViewFlow (Viewer+)
     let view_routes = Router::new()
         .route("/api/v1/connections", get(list_connections))
+        .route("/api/v1/connections/{id}", get(get_connection))
         .route("/api/v1/connections/{id}/queue", get(list_queue))
         .route(
             "/api/v1/connections/{id}/queue/{flowfile_id}",
@@ -69,6 +71,10 @@ pub fn routes() -> Router<ApiState> {
             axum::routing::post(create_connection),
         )
         .route("/api/v1/connections/{id}", delete_method(delete_connection))
+        .route(
+            "/api/v1/connections/{id}/config",
+            axum::routing::put(update_connection_config),
+        )
         .layer(middleware::from_fn(rbac::require_modify_flow));
 
     // Queue management — OperateProcessors (Operator+)
@@ -92,23 +98,76 @@ async fn list_connections(State(state): State<ApiState>) -> Json<Vec<ConnectionR
         .connections
         .read()
         .iter()
-        .map(|info| {
-            let (lb_strategy, lb_partition_attr, lb_compression) = load_balance_fields(info);
-            ConnectionResponse {
-                id: info.id.clone(),
-                source_name: info.source_name.clone(),
-                relationship: info.relationship.clone(),
-                dest_name: info.dest_name.clone(),
-                queued_count: info.connection.queue_count(),
-                queued_bytes: info.connection.queue_size_bytes(),
-                back_pressured: info.connection.is_back_pressured(),
-                load_balance_strategy: lb_strategy,
-                load_balance_partition_attribute: lb_partition_attr,
-                load_balance_compression: lb_compression,
-            }
-        })
+        .map(build_connection_response)
         .collect();
     Json(connections)
+}
+
+fn build_connection_response(info: &ConnectionInfo) -> ConnectionResponse {
+    let (lb_strategy, lb_partition_attr, lb_compression) = load_balance_fields(info);
+    let bp_config = info.connection.back_pressure_config();
+    let queued_count = info.connection.queue_count();
+    let queued_bytes = info.connection.queue_size_bytes();
+    ConnectionResponse {
+        id: info.id.clone(),
+        source_name: info.source_name.clone(),
+        relationship: info.relationship.clone(),
+        dest_name: info.dest_name.clone(),
+        queued_count,
+        queued_bytes,
+        back_pressured: info.connection.is_back_pressured(),
+        back_pressure_object_threshold: bp_config.max_count,
+        back_pressure_bytes_threshold: bp_config.max_bytes,
+        fill_percentage: compute_fill_percentage(
+            queued_count,
+            bp_config.max_count,
+            queued_bytes,
+            bp_config.max_bytes,
+        ),
+        load_balance_strategy: lb_strategy,
+        load_balance_partition_attribute: lb_partition_attr,
+        load_balance_compression: lb_compression,
+    }
+}
+
+/// Get a single connection by ID.
+async fn get_connection(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<ConnectionResponse>, ApiError> {
+    let conns = state.handle.connections.read();
+    let info = conns
+        .iter()
+        .find(|c| c.id == id)
+        .ok_or(ApiError::ConnectionNotFound(id))?;
+    Ok(Json(build_connection_response(info)))
+}
+
+/// Update back-pressure configuration for an existing connection.
+async fn update_connection_config(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateConnectionConfigRequest>,
+) -> Result<Json<ConnectionResponse>, ApiError> {
+    let conns = state.handle.connections.read();
+    let info = conns
+        .iter()
+        .find(|c| c.id == id)
+        .ok_or(ApiError::ConnectionNotFound(id.clone()))?;
+
+    let current = info.connection.back_pressure_config();
+    let new_max_count = body
+        .back_pressure_object_threshold
+        .unwrap_or(current.max_count);
+    let new_max_bytes = body
+        .back_pressure_bytes_threshold
+        .unwrap_or(current.max_bytes);
+
+    info.connection
+        .update_back_pressure(new_max_count, new_max_bytes);
+
+    let response = build_connection_response(info);
+    Ok(Json(response))
 }
 
 /// Create a new connection between two processors at runtime.
@@ -159,14 +218,25 @@ async fn create_connection(
         let conns = state.handle.connections.read();
         conns.iter().find(|c| c.id == conn_id).map(|info| {
             let (lb_strategy, lb_partition_attr, lb_compression) = load_balance_fields(info);
+            let bp_config = info.connection.back_pressure_config();
+            let queued_count = info.connection.queue_count();
+            let queued_bytes = info.connection.queue_size_bytes();
             ConnectionDetailResponse {
                 id: info.id.clone(),
                 source_name: info.source_name.clone(),
                 relationship: info.relationship.clone(),
                 dest_name: info.dest_name.clone(),
-                queued_count: info.connection.queue_count(),
-                queued_bytes: info.connection.queue_size_bytes(),
+                queued_count,
+                queued_bytes,
                 back_pressured: info.connection.is_back_pressured(),
+                back_pressure_object_threshold: bp_config.max_count,
+                back_pressure_bytes_threshold: bp_config.max_bytes,
+                fill_percentage: compute_fill_percentage(
+                    queued_count,
+                    bp_config.max_count,
+                    queued_bytes,
+                    bp_config.max_bytes,
+                ),
                 load_balance_strategy: lb_strategy,
                 load_balance_partition_attribute: lb_partition_attr,
                 load_balance_compression: lb_compression,

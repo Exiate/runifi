@@ -99,6 +99,9 @@ pub struct ConnectionResponse {
     pub queued_count: usize,
     pub queued_bytes: u64,
     pub back_pressured: bool,
+    pub back_pressure_object_threshold: usize,
+    pub back_pressure_bytes_threshold: u64,
+    pub fill_percentage: f64,
     /// Load balance strategy in effect for this connection.
     /// Omitted from JSON when `None` (no load balancing).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -109,6 +112,21 @@ pub struct ConnectionResponse {
     /// Whether compression is enabled for cross-node transfer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub load_balance_compression: Option<bool>,
+}
+
+/// Compute fill percentage as `max(count/max_count, bytes/max_bytes)` clamped to `[0.0, 1.0]`.
+pub fn compute_fill_percentage(count: usize, max_count: usize, bytes: u64, max_bytes: u64) -> f64 {
+    let count_pct = if max_count > 0 {
+        count as f64 / max_count as f64
+    } else {
+        0.0
+    };
+    let bytes_pct = if max_bytes > 0 {
+        bytes as f64 / max_bytes as f64
+    } else {
+        0.0
+    };
+    count_pct.max(bytes_pct).clamp(0.0, 1.0)
 }
 
 // ── Canvas position ────────────────────────────────────────────────────
@@ -494,6 +512,9 @@ pub struct ConnectionDetailResponse {
     pub queued_count: usize,
     pub queued_bytes: u64,
     pub back_pressured: bool,
+    pub back_pressure_object_threshold: usize,
+    pub back_pressure_bytes_threshold: u64,
+    pub fill_percentage: f64,
     /// Load balance strategy in effect for this connection.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub load_balance_strategy: Option<String>,
@@ -503,6 +524,13 @@ pub struct ConnectionDetailResponse {
     /// Whether compression is enabled for cross-node transfer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub load_balance_compression: Option<bool>,
+}
+
+/// Request body for `PUT /api/v1/connections/{id}/config`.
+#[derive(Deserialize)]
+pub struct UpdateConnectionConfigRequest {
+    pub back_pressure_object_threshold: Option<usize>,
+    pub back_pressure_bytes_threshold: Option<u64>,
 }
 
 // ── Controller service DTOs ────────────────────────────────────────────
@@ -804,4 +832,45 @@ pub struct RevertResponse {
     pub reverted_to: String,
     pub comment: String,
     pub message: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fill_percentage_empty_queue() {
+        assert_eq!(compute_fill_percentage(0, 10_000, 0, 1_073_741_824), 0.0);
+    }
+
+    #[test]
+    fn fill_percentage_by_count() {
+        let pct = compute_fill_percentage(5_000, 10_000, 0, 1_073_741_824);
+        assert!((pct - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn fill_percentage_by_bytes() {
+        let pct = compute_fill_percentage(0, 10_000, 536_870_912, 1_073_741_824);
+        assert!((pct - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn fill_percentage_takes_max() {
+        // count at 80%, bytes at 50% — should return 80%
+        let pct = compute_fill_percentage(8_000, 10_000, 536_870_912, 1_073_741_824);
+        assert!((pct - 0.8).abs() < 0.001);
+    }
+
+    #[test]
+    fn fill_percentage_clamped_to_1() {
+        // Over threshold
+        let pct = compute_fill_percentage(20_000, 10_000, 0, 1_073_741_824);
+        assert_eq!(pct, 1.0);
+    }
+
+    #[test]
+    fn fill_percentage_zero_thresholds() {
+        assert_eq!(compute_fill_percentage(100, 0, 100, 0), 0.0);
+    }
 }

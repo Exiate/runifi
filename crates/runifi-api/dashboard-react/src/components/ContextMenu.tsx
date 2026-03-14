@@ -14,6 +14,7 @@ interface ContextMenuProps {
   menu: ContextMenuState;
   onDelete: () => void;
   onConfigure?: () => void;
+  onConfigureConnection?: () => void;
   onStart?: () => void;
   onStop?: () => void;
   onPause?: () => void;
@@ -32,6 +33,7 @@ function ContextMenuInner({
   menu,
   onDelete,
   onConfigure,
+  onConfigureConnection,
   onStart,
   onStop,
   onPause,
@@ -172,6 +174,15 @@ function ContextMenuInner({
         role="menu"
         aria-label="Connection context menu"
       >
+        {onConfigureConnection && (
+          <button
+            className="context-menu-item"
+            onClick={() => { onConfigureConnection(); onClose(); }}
+            role="menuitem"
+          >
+            Configure
+          </button>
+        )}
         {onViewQueue && (
           <button
             className="context-menu-item"
