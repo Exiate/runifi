@@ -150,6 +150,20 @@ pub struct FlowResponse {
     /// Number of process groups in the flow.
     #[serde(skip_serializing_if = "is_zero")]
     pub process_group_count: usize,
+    /// Root-level process groups visible on the canvas.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub process_groups: Vec<FlowProcessGroupResponse>,
+}
+
+/// A process group summary in the flow topology response.
+#[derive(Serialize)]
+pub struct FlowProcessGroupResponse {
+    pub id: String,
+    pub name: String,
+    pub processor_count: usize,
+    pub input_port_count: usize,
+    pub output_port_count: usize,
+    pub position: Option<PositionResponse>,
 }
 
 fn is_zero(v: &usize) -> bool {

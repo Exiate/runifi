@@ -168,6 +168,14 @@ pub struct PersistedProcessGroup {
     pub parent_group_id: Option<String>,
     #[serde(default)]
     pub variables: HashMap<String, String>,
+    #[serde(default)]
+    pub comments: String,
+    #[serde(default)]
+    pub default_back_pressure_count: Option<usize>,
+    #[serde(default)]
+    pub default_back_pressure_bytes: Option<u64>,
+    #[serde(default)]
+    pub default_flowfile_expiration_ms: Option<u64>,
 }
 
 /// Persisted port data for a process group.
@@ -380,6 +388,10 @@ impl PersistedFlowState {
                     child_group_ids: g.child_group_ids.clone(),
                     parent_group_id: g.parent_group_id.clone(),
                     variables: g.variables.clone(),
+                    comments: g.comments.clone(),
+                    default_back_pressure_count: g.default_back_pressure_count,
+                    default_back_pressure_bytes: g.default_back_pressure_bytes,
+                    default_flowfile_expiration_ms: g.default_flowfile_expiration_ms,
                 }
             })
             .collect();

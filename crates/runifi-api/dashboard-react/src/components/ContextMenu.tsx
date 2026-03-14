@@ -8,6 +8,8 @@ export interface ContextMenuState {
   nodeState?: string;
   isCanvas?: boolean;
   selectedNodeIds?: string[];
+  isProcessGroup?: boolean;
+  groupId?: string;
 }
 
 export type AlignAction =
@@ -32,6 +34,8 @@ interface ContextMenuProps {
   onStopSelected?: () => void;
   onDeleteSelected?: () => void;
   onAlign?: (action: AlignAction) => void;
+  onEnterGroup?: () => void;
+  onConfigureGroup?: () => void;
   onClose: () => void;
 }
 
@@ -52,6 +56,8 @@ function ContextMenuInner({
   onStopSelected,
   onDeleteSelected,
   onAlign,
+  onEnterGroup,
+  onConfigureGroup,
   onClose,
 }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
@@ -242,6 +248,46 @@ function ContextMenuInner({
           role="menuitem"
         >
           Delete Connection
+        </button>
+      </div>
+    );
+  }
+
+  // Process group context menu
+  if (menu.isProcessGroup && isNode) {
+    return (
+      <div
+        ref={menuRef}
+        className="context-menu"
+        style={{ left: adjustedPos.x, top: adjustedPos.y }}
+        role="menu"
+        aria-label="Process group context menu"
+      >
+        {onEnterGroup && (
+          <button
+            className="context-menu-item"
+            onClick={() => { onEnterGroup(); onClose(); }}
+            role="menuitem"
+          >
+            Enter Group
+          </button>
+        )}
+        {onConfigureGroup && (
+          <button
+            className="context-menu-item"
+            onClick={() => { onConfigureGroup(); onClose(); }}
+            role="menuitem"
+          >
+            Configure
+          </button>
+        )}
+        <div className="context-menu-separator" aria-hidden="true" />
+        <button
+          className="context-menu-item context-menu-item-danger"
+          onClick={onDelete}
+          role="menuitem"
+        >
+          Delete Group
         </button>
       </div>
     );

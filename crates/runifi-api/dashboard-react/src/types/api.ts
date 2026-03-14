@@ -71,11 +71,54 @@ export interface FlowLabelResponse {
   font_size: number;
 }
 
+export interface FlowProcessGroupResponse {
+  id: string;
+  name: string;
+  processor_count: number;
+  input_port_count: number;
+  output_port_count: number;
+  position?: { x: number; y: number };
+}
+
 export interface FlowResponse {
   name: string;
   processors: FlowNodeResponse[];
   connections: FlowEdgeResponse[];
   labels?: FlowLabelResponse[];
+  process_groups?: FlowProcessGroupResponse[];
+}
+
+// ── Process group scoped flow ──────────────────────────────────────
+
+export interface ProcessGroupSummary {
+  id: string;
+  name: string;
+  processor_count: number;
+  input_port_count: number;
+  output_port_count: number;
+  position?: { x: number; y: number };
+}
+
+export interface BreadcrumbSegment {
+  id: string;
+  name: string;
+}
+
+export interface PortSummary {
+  id: string;
+  name: string;
+  port_type: string;
+}
+
+export interface ProcessGroupFlowResponse {
+  id: string;
+  name: string;
+  processors: FlowNodeResponse[];
+  connections: FlowEdgeResponse[];
+  child_groups: ProcessGroupSummary[];
+  input_ports: PortSummary[];
+  output_ports: PortSummary[];
+  breadcrumb: BreadcrumbSegment[];
 }
 
 export interface BulletinResponse {

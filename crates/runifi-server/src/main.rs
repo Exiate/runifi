@@ -1135,6 +1135,10 @@ fn restore_process_groups(
             child_group_ids: pg.child_group_ids.clone(),
             parent_group_id: pg.parent_group_id.clone(),
             variables: pg.variables.clone(),
+            comments: pg.comments.clone(),
+            default_back_pressure_count: pg.default_back_pressure_count,
+            default_back_pressure_bytes: pg.default_back_pressure_bytes,
+            default_flowfile_expiration_ms: pg.default_flowfile_expiration_ms,
         });
     }
 

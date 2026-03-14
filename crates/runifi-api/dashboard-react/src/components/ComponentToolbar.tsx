@@ -12,7 +12,7 @@ const COMPONENT_TYPES = [
   { id: 'processor', label: 'Processor', icon: '\u25C6', enabled: true, tooltip: 'Click to add a processor to the canvas' },
   { id: 'input-port', label: 'Input Port', icon: '\u25B6', enabled: true, tooltip: 'Drag to add an input port' },
   { id: 'output-port', label: 'Output Port', icon: '\u25C0', enabled: true, tooltip: 'Drag to add an output port' },
-  { id: 'process-group', label: 'Process Group', icon: '\uD83D\uDCC1', enabled: false, tooltip: 'Process groups (not yet implemented)' },
+  { id: 'process-group', label: 'Process Group', icon: '\u25A3', enabled: true, tooltip: 'Drag to add a process group' },
   { id: 'remote-process-group', label: 'Remote PG', icon: '\u2601', enabled: false, tooltip: 'Remote process groups (not yet implemented)' },
   { id: 'funnel', label: 'Funnel', icon: '\u25BD', enabled: true, tooltip: 'Click to add a funnel to the canvas' },
   { id: 'label', label: 'Label', icon: '\u25A1', enabled: true, tooltip: 'Drag to add a text label' },
