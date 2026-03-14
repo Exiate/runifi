@@ -11,5 +11,6 @@ pub mod flowfile_wal;
 pub mod key_provider;
 pub mod provenance_repo;
 pub mod segment;
+pub mod state_provider;
 pub mod static_key_provider;
 pub mod wal_format;

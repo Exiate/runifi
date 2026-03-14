@@ -10,6 +10,7 @@ use runifi_plugin_api::property::PropertyValue;
 use runifi_plugin_api::relationship::Relationship;
 use runifi_plugin_api::service::ServiceLookup;
 use runifi_plugin_api::session::ProcessSession;
+use runifi_plugin_api::state::StateManager;
 use runifi_plugin_api::{FlowFile, Processor};
 
 use super::bulletin::{BulletinBoard, BulletinSeverity};
@@ -21,6 +22,7 @@ use crate::registry::service_registry::{RegistryServiceLookup, SharedServiceRegi
 use crate::repository::content_repo::ContentRepository;
 use crate::repository::flowfile_repo::{FlowFileOp, FlowFileRepository};
 use crate::repository::provenance_repo::SharedProvenanceRepository;
+use crate::repository::state_provider::SharedLocalStateProvider;
 use crate::session::process_session::CoreProcessSession;
 
 /// Scheduling strategy for a processor node.
@@ -41,6 +43,7 @@ struct NodeProcessContext {
     properties: HashMap<String, String>,
     yield_duration_ms: u64,
     service_lookup: Option<Box<dyn ServiceLookup>>,
+    state_manager: Option<Box<dyn StateManager>>,
 }
 
 impl runifi_plugin_api::context::ProcessContext for NodeProcessContext {
@@ -69,6 +72,10 @@ impl runifi_plugin_api::context::ProcessContext for NodeProcessContext {
 
     fn service_lookup(&self) -> Option<&dyn ServiceLookup> {
         self.service_lookup.as_deref()
+    }
+
+    fn state_manager(&self) -> Option<&dyn StateManager> {
+        self.state_manager.as_deref()
     }
 }
 
@@ -114,6 +121,8 @@ pub struct ProcessorNode {
     flowfile_repo: Arc<dyn FlowFileRepository>,
     service_registry: Option<SharedServiceRegistry>,
     provenance_repo: SharedProvenanceRepository,
+    /// Local state provider for processor state persistence.
+    state_provider: Option<SharedLocalStateProvider>,
 }
 
 impl ProcessorNode {
@@ -149,6 +158,7 @@ impl ProcessorNode {
             flowfile_repo,
             service_registry: None,
             provenance_repo: Arc::new(crate::repository::provenance_repo::NullProvenanceRepository),
+            state_provider: None,
         }
     }
 
@@ -165,6 +175,11 @@ impl ProcessorNode {
     /// Set the processor type name for provenance events.
     pub fn set_type_name(&mut self, type_name: String) {
         self.type_name = type_name;
+    }
+
+    /// Set the local state provider for processor state persistence.
+    pub fn set_state_provider(&mut self, provider: SharedLocalStateProvider) {
+        self.state_provider = Some(provider);
     }
 
     /// Add an input connection and wire its notifier for event-driven wakeup.
@@ -228,6 +243,15 @@ impl ProcessorNode {
                 })
         };
 
+        let make_state_manager = || -> Option<Box<dyn StateManager>> {
+            self.state_provider.as_ref().map(|p| {
+                Box::new(crate::repository::state_provider::CoreStateManager::new(
+                    p.clone(),
+                    self.name.clone(),
+                )) as Box<dyn StateManager>
+            })
+        };
+
         #[allow(unused_assignments)]
         let mut last_ctx = NodeProcessContext {
             name: self.name.clone(),
@@ -235,6 +259,7 @@ impl ProcessorNode {
             properties: self.properties.read().clone(),
             yield_duration_ms: 1000,
             service_lookup: make_service_lookup(),
+            state_manager: make_state_manager(),
         };
 
         'lifecycle: loop {
@@ -246,6 +271,7 @@ impl ProcessorNode {
                 properties: self.properties.read().clone(),
                 yield_duration_ms: 1000,
                 service_lookup: make_service_lookup(),
+                state_manager: make_state_manager(),
             };
             last_ctx = NodeProcessContext {
                 name: ctx.name.clone(),
@@ -253,6 +279,7 @@ impl ProcessorNode {
                 properties: ctx.properties.clone(),
                 yield_duration_ms: ctx.yield_duration_ms,
                 service_lookup: make_service_lookup(),
+                state_manager: make_state_manager(),
             };
             // Wait until the processor is enabled (or cancelled).
             while !self.metrics.enabled.load(Ordering::Relaxed) {

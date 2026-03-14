@@ -27,6 +27,7 @@ use crate::connection::query::ConnectionQuery;
 use crate::registry::service_registry::{ServiceError, ServiceInfo, SharedServiceRegistry};
 use crate::repository::content_repo::ContentRepository;
 use crate::repository::provenance_repo::SharedProvenanceRepository;
+use crate::repository::state_provider::SharedLocalStateProvider;
 
 /// Error type for processor configuration updates.
 #[derive(Debug)]
@@ -219,6 +220,8 @@ pub struct EngineHandle {
     pub(crate) persistence: Option<FlowPersistence>,
     /// Provenance repository for FlowFile lineage tracking.
     pub provenance_repo: SharedProvenanceRepository,
+    /// Local state provider for processor state persistence.
+    pub state_provider: Option<SharedLocalStateProvider>,
 }
 
 impl EngineHandle {

@@ -1,5 +1,6 @@
 use crate::property::PropertyValue;
 use crate::service::ServiceLookup;
+use crate::state::StateManager;
 
 /// Provides runtime context to a processor during execution.
 ///
@@ -35,6 +36,22 @@ pub trait ProcessContext: Send + Sync {
     /// }
     /// ```
     fn service_lookup(&self) -> Option<&dyn ServiceLookup> {
+        None
+    }
+
+    /// Access the processor's state manager for persistent state storage.
+    ///
+    /// Returns `None` if state management is not available. Stateful processors
+    /// should declare their state requirements via `Processor::stateful()`.
+    ///
+    /// # Example
+    /// ```ignore
+    /// if let Some(state_mgr) = context.state_manager() {
+    ///     let state = state_mgr.get_state(StateScope::Local)?;
+    ///     let last_seen = state.get("last_file_seen").unwrap_or("none");
+    /// }
+    /// ```
+    fn state_manager(&self) -> Option<&dyn StateManager> {
         None
     }
 }

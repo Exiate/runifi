@@ -3,6 +3,7 @@ use crate::property::PropertyDescriptor;
 use crate::relationship::Relationship;
 use crate::result::ProcessResult;
 use crate::session::ProcessSession;
+use crate::state::StatefulSpec;
 
 /// The core processor trait. Processors are synchronous — the engine wraps
 /// them in `spawn_blocking` + `catch_unwind` for fault isolation.
@@ -38,6 +39,15 @@ pub trait Processor: Send + Sync + 'static {
     /// The properties this processor accepts.
     fn property_descriptors(&self) -> Vec<PropertyDescriptor> {
         Vec::new()
+    }
+
+    /// Declare that this processor is stateful.
+    ///
+    /// Returns `Some(StatefulSpec)` if the processor stores persistent state,
+    /// `None` otherwise (default). Stateful processors can access a
+    /// `StateManager` via `ProcessContext::state_manager()`.
+    fn stateful(&self) -> Option<StatefulSpec> {
+        None
     }
 }
 

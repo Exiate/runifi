@@ -9,6 +9,7 @@ pub mod service;
 pub mod session;
 pub mod sink;
 pub mod source;
+pub mod state;
 
 // Re-export key types at crate root for convenience.
 pub use context::ProcessContext;
@@ -24,3 +25,4 @@ pub use service::{ControllerService, ControllerServiceDescriptor, ServiceLookup}
 pub use session::ProcessSession;
 pub use sink::{Sink, SinkDescriptor};
 pub use source::{Source, SourceDescriptor};
+pub use state::{StateManager, StateMap, StateScope, StatefulSpec};
