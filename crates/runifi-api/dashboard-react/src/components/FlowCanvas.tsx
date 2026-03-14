@@ -365,6 +365,7 @@ function FlowCanvasInner({
   } | null>(null);
   const [configTarget, setConfigTarget] = useState<{ name: string; state: string } | null>(null);
   const [connConfigTarget, setConnConfigTarget] = useState<{ connectionId: string } | null>(null);
+  const [groupConfigTarget, setGroupConfigTarget] = useState<string | null>(null);
   const [colorPickerTarget, setColorPickerTarget] = useState<ColorPickerTarget | null>(null);
   const batchColorNodeIdsRef = useRef<string[] | null>(null);
 
@@ -459,7 +460,7 @@ function FlowCanvasInner({
             bulletin,
             pending: false,
           },
-        };
+        } as AnyNode;
       }),
     );
 
@@ -708,7 +709,7 @@ function FlowCanvasInner({
                           labelId: created.id,
                           pending: false,
                         },
-                      } as AnyNode
+                      } as AnyNode)
                     : n,
                 ),
               );
@@ -862,6 +863,9 @@ function FlowCanvasInner({
           queuedCount: 0,
           queuedBytes: 0,
           backPressured: false,
+          fillPercentage: 0,
+          backPressureObjectThreshold: 10000,
+          backPressureBytesThreshold: 1073741824,
           connectionId: '',
           pending: true,
           onQueueClick: handleQueueClick,
@@ -1273,6 +1277,9 @@ function FlowCanvasInner({
                   queuedCount: 0,
                   queuedBytes: 0,
                   backPressured: false,
+                  fillPercentage: 0,
+                  backPressureObjectThreshold: 10000,
+                  backPressureBytesThreshold: 1073741824,
                   connectionId: data.id,
                   pending: false,
                   onQueueClick: handleQueueClick,
@@ -1578,8 +1585,7 @@ function FlowCanvasInner({
     [colorPickerTarget, setNodes],
   );
 
-  // State for process group config modal
-  const [groupConfigTarget, setGroupConfigTarget] = useState<string | null>(null);
+  // State for process group config modal (moved up — used by isModalOpen)
 
   const handleNodeDoubleClick: NodeMouseHandler<AnyNode> = useCallback(
     (_event, node) => {
