@@ -3,6 +3,7 @@ use axum::response::{IntoResponse, Response};
 
 use runifi_core::engine::handle::ConfigUpdateError;
 use runifi_core::engine::mutation::MutationError;
+use runifi_core::engine::reporting_task_manager::ReportingTaskError;
 use runifi_core::registry::service_registry::ServiceError;
 
 /// API error type with automatic HTTP status mapping.
@@ -45,8 +46,20 @@ pub enum ApiError {
     #[error("Provenance event not found: {0}")]
     ProvenanceEventNotFound(u64),
 
+    #[error("Reporting task not found: {0}")]
+    ReportingTaskNotFound(String),
+
     #[error("Content no longer available for event {0} (expired or garbage collected)")]
     ContentGone(u64),
+
+    #[error("Cluster node not found: {0}")]
+    ClusterNodeNotFound(String),
+
+    #[error("Cluster not enabled")]
+    ClusterNotEnabled,
+
+    #[error("Cluster operation failed: {0}")]
+    ClusterError(String),
 }
 
 impl ApiError {
@@ -65,7 +78,11 @@ impl ApiError {
             ApiError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
             ApiError::Forbidden => StatusCode::FORBIDDEN,
             ApiError::ProvenanceEventNotFound(_) => StatusCode::NOT_FOUND,
+            ApiError::ReportingTaskNotFound(_) => StatusCode::NOT_FOUND,
             ApiError::ContentGone(_) => StatusCode::GONE,
+            ApiError::ClusterNodeNotFound(_) => StatusCode::NOT_FOUND,
+            ApiError::ClusterNotEnabled => StatusCode::SERVICE_UNAVAILABLE,
+            ApiError::ClusterError(_) => StatusCode::CONFLICT,
         }
     }
 
@@ -85,7 +102,11 @@ impl ApiError {
             ApiError::TooManyRequests => "Too many requests",
             ApiError::Forbidden => "Forbidden",
             ApiError::ProvenanceEventNotFound(_) => "Provenance event not found",
+            ApiError::ReportingTaskNotFound(_) => "Resource not found",
             ApiError::ContentGone(_) => "Content no longer available",
+            ApiError::ClusterNodeNotFound(_) => "Cluster node not found",
+            ApiError::ClusterNotEnabled => "Cluster not enabled",
+            ApiError::ClusterError(_) => "Cluster operation failed",
         }
     }
 
@@ -192,6 +213,23 @@ impl From<ServiceError> for ApiError {
             ServiceError::ConfigFailed(msg) => ApiError::BadRequest(msg),
             ServiceError::ValidationFailed(msg) => ApiError::BadRequest(msg),
             ServiceError::EnableFailed(msg) => ApiError::ConfigError(msg),
+        }
+    }
+}
+
+impl From<ReportingTaskError> for ApiError {
+    fn from(err: ReportingTaskError) -> Self {
+        match err {
+            ReportingTaskError::NotFound(name) => ApiError::ReportingTaskNotFound(name),
+            ReportingTaskError::DuplicateName(name) => {
+                ApiError::Conflict(format!("A reporting task named '{}' already exists", name))
+            }
+            ReportingTaskError::UnknownType(name) => {
+                ApiError::BadRequest(format!("Unknown reporting task type: {}", name))
+            }
+            ReportingTaskError::InvalidState { name, message } => {
+                ApiError::Conflict(format!("Reporting task '{}': {}", name, message))
+            }
         }
     }
 }

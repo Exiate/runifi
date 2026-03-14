@@ -1,8 +1,12 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
+use runifi_core::auth::chain::AuthProviderChain;
+use runifi_core::auth::identity_mapper::IdentityMapper;
 use runifi_core::auth::jwt::JwtConfig;
+use runifi_core::auth::session::SessionManager;
 use runifi_core::auth::store::UserStore;
+use runifi_core::cluster::ClusterCoordinator;
 use runifi_core::config::flow_config::{AuthConfig, SecurityConfig};
 use runifi_core::engine::handle::EngineHandle;
 use runifi_core::registry::plugin_registry::PluginRegistry;
@@ -31,6 +35,14 @@ pub struct ApiState {
     pub auth_config: AuthConfig,
     /// Flow version store for git-based versioning.
     pub version_store: Option<Arc<FlowVersionStore>>,
+    /// Authentication provider chain (pluggable enterprise auth).
+    pub auth_chain: Option<Arc<AuthProviderChain>>,
+    /// Identity-to-role mapper for external providers.
+    pub identity_mapper: Arc<IdentityMapper>,
+    /// Session manager for unified session handling.
+    pub session_manager: Option<Arc<SessionManager>>,
+    /// Cluster coordinator for cluster management operations.
+    pub cluster_coordinator: Option<Arc<ClusterCoordinator>>,
 }
 
 impl ApiState {
@@ -47,6 +59,10 @@ impl ApiState {
             jwt_config: None,
             auth_config: AuthConfig::default(),
             version_store: None,
+            auth_chain: None,
+            identity_mapper: Arc::new(IdentityMapper::default()),
+            session_manager: None,
+            cluster_coordinator: None,
         }
     }
 
@@ -68,6 +84,10 @@ impl ApiState {
             jwt_config: None,
             auth_config: AuthConfig::default(),
             version_store: None,
+            auth_chain: None,
+            identity_mapper: Arc::new(IdentityMapper::default()),
+            session_manager: None,
+            cluster_coordinator: None,
         }
     }
 
@@ -88,6 +108,18 @@ impl ApiState {
         self.auth_config = auth_config;
     }
 
+    /// Set the enterprise auth chain, identity mapper, and session manager.
+    pub fn set_auth_chain(
+        &mut self,
+        chain: Arc<AuthProviderChain>,
+        mapper: Arc<IdentityMapper>,
+        session_manager: Arc<SessionManager>,
+    ) {
+        self.auth_chain = Some(chain);
+        self.identity_mapper = mapper;
+        self.session_manager = Some(session_manager);
+    }
+
     /// Returns `true` if JWT-based user auth is enabled.
     pub fn user_auth_enabled(&self) -> bool {
         self.auth_config.enabled && self.jwt_config.is_some()
@@ -98,6 +130,11 @@ impl ApiState {
         self.version_store = Some(store);
     }
 
+    /// Set the cluster coordinator for cluster management operations.
+    pub fn set_cluster_coordinator(&mut self, coordinator: Arc<ClusterCoordinator>) {
+        self.cluster_coordinator = Some(coordinator);
+    }
+
     /// Create a controller service instance by type name.
     pub fn create_controller_service(
         &self,
@@ -106,5 +143,15 @@ impl ApiState {
         self.plugin_registry
             .as_ref()
             .and_then(|r| r.create_service(type_name))
+    }
+
+    /// Create a reporting task instance by type name.
+    pub fn create_reporting_task(
+        &self,
+        type_name: &str,
+    ) -> Option<Box<dyn runifi_plugin_api::ReportingTask>> {
+        self.plugin_registry
+            .as_ref()
+            .and_then(|r| r.create_reporting_task(type_name))
     }
 }

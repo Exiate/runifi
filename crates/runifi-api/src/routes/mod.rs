@@ -1,5 +1,6 @@
 pub mod auth_routes;
 pub mod bulletins;
+pub mod cluster;
 pub mod connections;
 pub mod events;
 pub mod flow;
@@ -8,6 +9,7 @@ pub mod plugins;
 pub mod process_groups;
 pub mod processors;
 pub mod provenance;
+pub mod reporting_tasks;
 pub mod secrets;
 pub mod services;
 pub mod system;

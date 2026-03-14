@@ -3,6 +3,8 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
+use super::protocol::NodeMetricsSummary;
+
 /// Unique identifier for a node within the cluster.
 ///
 /// Wraps a `String` for human-readable node names (e.g. "node-1") while
@@ -13,9 +15,9 @@ pub type ClusterNodeId = String;
 ///
 /// ```text
 ///   CONNECTING ──► CONNECTED ──► DISCONNECTING ──► DISCONNECTED
-///       │                              ▲                │
-///       └──────────────────────────────┘                │
-///                                                       │
+///       │              │               ▲                │
+///       │              ▼               │                │
+///       │         DECOMMISSIONING ─────┘                │
 ///       └───────────────────────────────────────────────┘
 ///              (reconnect after heartbeat recovery)
 /// ```
@@ -30,6 +32,8 @@ pub enum NodeState {
     Disconnecting,
     /// Node is not part of the cluster.
     Disconnected,
+    /// Node is being decommissioned — draining queues and stopping processors.
+    Decommissioning,
 }
 
 impl NodeState {
@@ -47,9 +51,14 @@ impl NodeState {
     pub fn valid_transitions(&self) -> &'static [NodeState] {
         match self {
             Self::Connecting => &[Self::Connected, Self::Disconnected],
-            Self::Connected => &[Self::Disconnecting, Self::Disconnected],
+            Self::Connected => &[
+                Self::Disconnecting,
+                Self::Disconnected,
+                Self::Decommissioning,
+            ],
             Self::Disconnecting => &[Self::Disconnected],
             Self::Disconnected => &[Self::Connecting],
+            Self::Decommissioning => &[Self::Disconnected],
         }
     }
 
@@ -66,6 +75,7 @@ impl fmt::Display for NodeState {
             Self::Connected => write!(f, "CONNECTED"),
             Self::Disconnecting => write!(f, "DISCONNECTING"),
             Self::Disconnected => write!(f, "DISCONNECTED"),
+            Self::Decommissioning => write!(f, "DECOMMISSIONING"),
         }
     }
 }
@@ -107,6 +117,10 @@ pub struct NodeInfo {
     pub missed_heartbeats: u32,
     /// Flow configuration version this node has applied.
     pub flow_version: u64,
+    /// Latest metrics received from the node's heartbeat.
+    pub metrics: Option<NodeMetricsSummary>,
+    /// Node start time (for uptime calculation).
+    pub start_time: Option<Instant>,
 }
 
 impl NodeInfo {
@@ -120,6 +134,8 @@ impl NodeInfo {
             last_heartbeat: None,
             missed_heartbeats: 0,
             flow_version: 0,
+            metrics: None,
+            start_time: None,
         }
     }
 
@@ -134,11 +150,14 @@ impl NodeInfo {
         }
     }
 
-    /// Record a successful heartbeat.
-    pub fn record_heartbeat(&mut self, flow_version: u64) {
+    /// Record a successful heartbeat, optionally updating cached metrics.
+    pub fn record_heartbeat(&mut self, flow_version: u64, metrics: Option<NodeMetricsSummary>) {
         self.last_heartbeat = Some(Instant::now());
         self.missed_heartbeats = 0;
         self.flow_version = flow_version;
+        if metrics.is_some() {
+            self.metrics = metrics;
+        }
     }
 
     /// Record a missed heartbeat. Returns `true` if the miss threshold
@@ -199,10 +218,16 @@ pub struct NodeSummary {
     pub roles: Vec<ClusterRole>,
     pub missed_heartbeats: u32,
     pub flow_version: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<NodeMetricsSummary>,
+    /// Uptime in seconds, if known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uptime_secs: Option<u64>,
 }
 
 impl From<&NodeInfo> for NodeSummary {
     fn from(info: &NodeInfo) -> Self {
+        let uptime_secs = info.start_time.map(|t| t.elapsed().as_secs());
         Self {
             id: info.id.clone(),
             address: info.address.clone(),
@@ -210,6 +235,8 @@ impl From<&NodeInfo> for NodeSummary {
             roles: info.roles.clone(),
             missed_heartbeats: info.missed_heartbeats,
             flow_version: info.flow_version,
+            metrics: info.metrics.clone(),
+            uptime_secs,
         }
     }
 }
@@ -226,6 +253,7 @@ mod tests {
 
         assert!(NodeState::Connected.can_transition_to(NodeState::Disconnecting));
         assert!(NodeState::Connected.can_transition_to(NodeState::Disconnected));
+        assert!(NodeState::Connected.can_transition_to(NodeState::Decommissioning));
         assert!(!NodeState::Connected.can_transition_to(NodeState::Connecting));
 
         assert!(NodeState::Disconnecting.can_transition_to(NodeState::Disconnected));
@@ -233,6 +261,12 @@ mod tests {
 
         assert!(NodeState::Disconnected.can_transition_to(NodeState::Connecting));
         assert!(!NodeState::Disconnected.can_transition_to(NodeState::Connected));
+
+        // Decommissioning can only transition to Disconnected.
+        assert!(NodeState::Decommissioning.can_transition_to(NodeState::Disconnected));
+        assert!(!NodeState::Decommissioning.can_transition_to(NodeState::Connected));
+        assert!(!NodeState::Decommissioning.can_transition_to(NodeState::Connecting));
+        assert!(!NodeState::Decommissioning.is_active());
     }
 
     #[test]
@@ -254,13 +288,28 @@ mod tests {
     fn node_heartbeat_tracking() {
         let mut node = NodeInfo::new("node-1".into(), "10.0.0.1:9443".into());
 
-        node.record_heartbeat(1);
+        node.record_heartbeat(1, None);
         assert_eq!(node.missed_heartbeats, 0);
         assert!(node.last_heartbeat.is_some());
 
         assert!(!node.record_missed_heartbeat(3));
         assert!(!node.record_missed_heartbeat(3));
         assert!(node.record_missed_heartbeat(3));
+    }
+
+    #[test]
+    fn node_heartbeat_stores_metrics() {
+        let mut node = NodeInfo::new("node-1".into(), "10.0.0.1:9443".into());
+        assert!(node.metrics.is_none());
+
+        let m = NodeMetricsSummary {
+            total_flowfiles: 100,
+            active_processors: 4,
+            system_load: Some(0.5),
+        };
+        node.record_heartbeat(1, Some(m));
+        assert!(node.metrics.is_some());
+        assert_eq!(node.metrics.as_ref().unwrap().total_flowfiles, 100);
     }
 
     #[test]
@@ -290,6 +339,7 @@ mod tests {
         assert_eq!(NodeState::Connected.to_string(), "CONNECTED");
         assert_eq!(NodeState::Disconnecting.to_string(), "DISCONNECTING");
         assert_eq!(NodeState::Disconnected.to_string(), "DISCONNECTED");
+        assert_eq!(NodeState::Decommissioning.to_string(), "DECOMMISSIONING");
     }
 
     #[test]

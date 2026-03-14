@@ -546,6 +546,12 @@ impl FlowEngine {
             persistence: self.persistence.clone(),
             provenance_repo: self.provenance_repo.clone(),
             state_provider: self.state_provider.clone(),
+            reporting_task_manager: Some(Arc::new(parking_lot::RwLock::new(
+                super::reporting_task_manager::ReportingTaskManager::new(
+                    self.bulletin_board.clone(),
+                    self.state_provider.clone(),
+                ),
+            ))),
         };
 
         // Wire persistence: pass only the data collections it needs for

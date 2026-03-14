@@ -1,18 +1,19 @@
 use dashmap::DashMap;
 use runifi_plugin_api::{
-    ControllerServiceDescriptor, Processor, ProcessorDescriptor, Sink, SinkDescriptor, Source,
-    SourceDescriptor,
+    ControllerServiceDescriptor, Processor, ProcessorDescriptor, ReportingTask,
+    ReportingTaskDescriptor, Sink, SinkDescriptor, Source, SourceDescriptor,
 };
 
 /// Registry of all discovered plugin descriptors.
 ///
-/// Uses `inventory` to discover all processors, sources, sinks, and services
-/// that were registered at compile time via `inventory::submit!`.
+/// Uses `inventory` to discover all processors, sources, sinks, services,
+/// and reporting tasks that were registered at compile time via `inventory::submit!`.
 pub struct PluginRegistry {
     processors: DashMap<&'static str, &'static ProcessorDescriptor>,
     sources: DashMap<&'static str, &'static SourceDescriptor>,
     sinks: DashMap<&'static str, &'static SinkDescriptor>,
     services: DashMap<&'static str, &'static ControllerServiceDescriptor>,
+    reporting_tasks: DashMap<&'static str, &'static ReportingTaskDescriptor>,
 }
 
 impl PluginRegistry {
@@ -23,6 +24,7 @@ impl PluginRegistry {
             sources: DashMap::new(),
             sinks: DashMap::new(),
             services: DashMap::new(),
+            reporting_tasks: DashMap::new(),
         };
 
         for desc in inventory::iter::<ProcessorDescriptor> {
@@ -43,6 +45,11 @@ impl PluginRegistry {
         for desc in inventory::iter::<ControllerServiceDescriptor> {
             tracing::info!(type_name = desc.type_name, "Registered controller service");
             registry.services.insert(desc.type_name, desc);
+        }
+
+        for desc in inventory::iter::<ReportingTaskDescriptor> {
+            tracing::info!(type_name = desc.type_name, "Registered reporting task");
+            registry.reporting_tasks.insert(desc.type_name, desc);
         }
 
         registry
@@ -123,6 +130,26 @@ impl PluginRegistry {
     /// Get tags for a sink type.
     pub fn sink_tags(&self, type_name: &str) -> Vec<String> {
         self.sinks
+            .get(type_name)
+            .map(|desc| desc.tags.iter().map(|t| t.to_string()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Create a new reporting task instance by type name.
+    pub fn create_reporting_task(&self, type_name: &str) -> Option<Box<dyn ReportingTask>> {
+        self.reporting_tasks
+            .get(type_name)
+            .map(|desc| (desc.value().factory)())
+    }
+
+    /// List all registered reporting task type names.
+    pub fn reporting_task_types(&self) -> Vec<&'static str> {
+        self.reporting_tasks.iter().map(|e| *e.key()).collect()
+    }
+
+    /// Get tags for a reporting task type.
+    pub fn reporting_task_tags(&self, type_name: &str) -> Vec<String> {
+        self.reporting_tasks
             .get(type_name)
             .map(|desc| desc.tags.iter().map(|t| t.to_string()).collect())
             .unwrap_or_default()

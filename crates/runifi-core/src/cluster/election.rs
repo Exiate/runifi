@@ -113,7 +113,7 @@ impl ElectionState {
     }
 
     /// Update the cluster size (used when nodes join/leave).
-    pub fn set_cluster_size(&mut self, size: usize) {
+    pub fn set_cluster_size(&self, size: usize) {
         self.inner.lock().cluster_size = size;
     }
 

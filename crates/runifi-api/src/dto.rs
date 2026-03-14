@@ -199,6 +199,7 @@ impl PluginResponse {
             PluginKind::Source => "source",
             PluginKind::Sink => "sink",
             PluginKind::Service => "service",
+            PluginKind::ReportingTask => "reporting_task",
         };
         Self {
             type_name: type_name.to_string(),
@@ -572,6 +573,72 @@ pub struct CreateServiceRequest {
 /// Request body for `PUT /api/v1/services/{name}/config`.
 #[derive(Deserialize)]
 pub struct UpdateServiceConfigRequest {
+    pub properties: HashMap<String, String>,
+}
+
+// ── Reporting task DTOs ───────────────────────────────────────────────
+
+/// Response for a reporting task instance.
+#[derive(Serialize)]
+pub struct ReportingTaskResponse {
+    pub name: String,
+    pub type_name: String,
+    pub state: String,
+    pub scheduling: String,
+    pub properties: HashMap<String, String>,
+    pub property_descriptors: Vec<ReportingTaskPropertyDescriptorResponse>,
+    pub metrics: ReportingTaskMetricsResponse,
+}
+
+/// Property descriptor for a reporting task.
+#[derive(Serialize)]
+pub struct ReportingTaskPropertyDescriptorResponse {
+    pub name: String,
+    pub description: String,
+    pub required: bool,
+    pub default_value: Option<String>,
+    pub sensitive: bool,
+}
+
+/// Metrics snapshot for a reporting task.
+#[derive(Serialize)]
+pub struct ReportingTaskMetricsResponse {
+    pub total_invocations: u64,
+    pub total_failures: u64,
+    pub consecutive_failures: u64,
+    pub circuit_open: bool,
+}
+
+/// Request body for `POST /api/v1/reporting-tasks`.
+#[derive(Deserialize)]
+pub struct CreateReportingTaskRequest {
+    /// Reporting task type name (must exist in PluginRegistry).
+    #[serde(rename = "type")]
+    pub type_name: String,
+    /// Unique name for this reporting task instance.
+    pub name: String,
+    /// Initial property values.
+    #[serde(default)]
+    pub properties: HashMap<String, String>,
+    /// Scheduling strategy: "timer" or "cron".
+    #[serde(default = "default_scheduling_strategy")]
+    pub scheduling_strategy: String,
+    /// Interval in ms for timer-driven scheduling. Default: 30000.
+    #[serde(default = "default_reporting_interval")]
+    pub interval_ms: u64,
+    /// CRON expression for cron-driven scheduling (reserved for future use).
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub cron_expression: Option<String>,
+}
+
+fn default_reporting_interval() -> u64 {
+    30_000
+}
+
+/// Request body for `PUT /api/v1/reporting-tasks/{name}/config`.
+#[derive(Deserialize)]
+pub struct UpdateReportingTaskConfigRequest {
     pub properties: HashMap<String, String>,
 }
 
