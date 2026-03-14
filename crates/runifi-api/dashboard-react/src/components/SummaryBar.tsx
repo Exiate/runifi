@@ -1,6 +1,6 @@
 import { memo, useMemo } from 'react';
 import type { SseMetricsEvent } from '../types/api';
-import { formatBytes, formatRate } from '../utils/format';
+import { formatBytes } from '../utils/format';
 
 interface SummaryBarProps {
   metrics: SseMetricsEvent | null;
@@ -12,33 +12,27 @@ function SummaryBarInner({ metrics, onOpenBulletins }: SummaryBarProps) {
     if (!metrics) return null;
 
     const procs = metrics.processors;
-    const counts = { running: 0, paused: 0, stopped: 0, 'circuit-open': 0 };
+    const counts = { running: 0, stopped: 0, invalid: 0, disabled: 0 };
     for (const p of procs) {
-      const s = p.state as keyof typeof counts;
-      if (s in counts) counts[s]++;
+      const s = p.state;
+      if (s === 'running') counts.running++;
+      else if (s === 'invalid') counts.invalid++;
+      else if (s === 'disabled') counts.disabled++;
+      else counts.stopped++;
     }
 
+    const activeThreads = procs.filter((p) => p.metrics.active).length;
     const totalQueued = metrics.connections.reduce((s, c) => s + c.queued_count, 0);
     const totalQueuedBytes = metrics.connections.reduce((s, c) => s + c.queued_bytes, 0);
-    const backPressureCount = metrics.connections.filter((c) => c.back_pressured).length;
-
-    const totalBytesInRate = procs.reduce((s, p) => s + p.metrics.bytes_in_rate, 0);
-    const totalBytesOutRate = procs.reduce((s, p) => s + p.metrics.bytes_out_rate, 0);
-    const totalFlowFilesInRate = procs.reduce((s, p) => s + p.metrics.flowfiles_in_rate, 0);
-    const totalFlowFilesOutRate = procs.reduce((s, p) => s + p.metrics.flowfiles_out_rate, 0);
 
     const warnCount = metrics.bulletins.filter((b) => b.severity === 'warn').length;
     const errorCount = metrics.bulletins.filter((b) => b.severity === 'error').length;
 
     return {
+      activeThreads,
       counts,
       totalQueued,
       totalQueuedBytes,
-      backPressureCount,
-      totalBytesInRate,
-      totalBytesOutRate,
-      totalFlowFilesInRate,
-      totalFlowFilesOutRate,
       warnCount,
       errorCount,
     };
@@ -54,61 +48,45 @@ function SummaryBarInner({ metrics, onOpenBulletins }: SummaryBarProps) {
     );
   }
 
-  const {
-    counts,
-    totalQueued,
-    totalQueuedBytes,
-    backPressureCount,
-    totalBytesInRate,
-    totalBytesOutRate,
-    totalFlowFilesInRate,
-    totalFlowFilesOutRate,
-    warnCount,
-    errorCount,
-  } = stats;
+  const { activeThreads, counts, totalQueued, totalQueuedBytes, warnCount, errorCount } = stats;
 
   return (
     <section className="nifi-status-bar" aria-label="System status">
       <div className="status-bar-group">
-        <span className="status-bar-item" title="Active threads (running processors)">
-          {counts.running} active threads
+        <span className="status-bar-segment" title="Currently executing processor tasks">
+          <span className="status-bar-label">Active Threads:</span>
+          <span className="status-bar-value">{activeThreads}</span>
         </span>
-        <span className="status-bar-item" title={`${totalQueued} queued, ${formatBytes(totalQueuedBytes)}`}>
-          {totalQueued.toLocaleString()} / {formatBytes(totalQueuedBytes)} queued
-        </span>
-      </div>
-
-      <div className="status-bar-group">
-        <span className="status-bar-item" title="FlowFile throughput (5-min rolling)">
-          {formatRate(totalFlowFilesInRate, 'FF')} in
-        </span>
-        <span className="status-bar-item" title="FlowFile throughput (5-min rolling)">
-          {formatRate(totalFlowFilesOutRate, 'FF')} out
-        </span>
-        <span className="status-bar-item" title="Bytes transferred in (5-min rolling)">
-          {formatBytes(Math.round(totalBytesInRate))}/s in
-        </span>
-        <span className="status-bar-item" title="Bytes transferred out (5-min rolling)">
-          {formatBytes(Math.round(totalBytesOutRate))}/s out
+        <span className="status-bar-divider" aria-hidden="true">|</span>
+        <span className="status-bar-segment" title={`${totalQueued.toLocaleString()} FlowFiles, ${formatBytes(totalQueuedBytes)}`}>
+          <span className="status-bar-label">Queued:</span>
+          <span className="status-bar-value">{totalQueued.toLocaleString()} ({formatBytes(totalQueuedBytes)})</span>
         </span>
       </div>
 
       <div className="status-bar-group">
-        {counts.running > 0 && (
-          <span className="state-pill running">{counts.running} running</span>
-        )}
-        {counts.stopped > 0 && (
-          <span className="state-pill stopped">{counts.stopped} stopped</span>
-        )}
-        {counts.paused > 0 && (
-          <span className="state-pill paused">{counts.paused} paused</span>
-        )}
-        {counts['circuit-open'] > 0 && (
-          <span className="state-pill circuit-open">{counts['circuit-open']} open</span>
-        )}
-        {backPressureCount > 0 && (
-          <span className="state-pill stopped">{backPressureCount} back-pressured</span>
-        )}
+        <span className="status-bar-segment status-running" title={`${counts.running} running processor${counts.running !== 1 ? 's' : ''}`}>
+          <span className="status-bar-label">Running:</span>
+          <span className="status-bar-value">{counts.running}</span>
+        </span>
+        <span className="status-bar-divider" aria-hidden="true">|</span>
+        <span className="status-bar-segment status-stopped" title={`${counts.stopped} stopped processor${counts.stopped !== 1 ? 's' : ''}`}>
+          <span className="status-bar-label">Stopped:</span>
+          <span className="status-bar-value">{counts.stopped}</span>
+        </span>
+        <span className="status-bar-divider" aria-hidden="true">|</span>
+        <span className="status-bar-segment status-invalid" title={`${counts.invalid} invalid processor${counts.invalid !== 1 ? 's' : ''}`}>
+          <span className="status-bar-label">Invalid:</span>
+          <span className="status-bar-value">{counts.invalid}</span>
+        </span>
+        <span className="status-bar-divider" aria-hidden="true">|</span>
+        <span className="status-bar-segment status-disabled" title={`${counts.disabled} disabled processor${counts.disabled !== 1 ? 's' : ''}`}>
+          <span className="status-bar-label">Disabled:</span>
+          <span className="status-bar-value">{counts.disabled}</span>
+        </span>
+      </div>
+
+      <div className="status-bar-group">
         <button
           className={`status-bar-bulletins${onOpenBulletins ? ' clickable' : ''}`}
           onClick={onOpenBulletins}

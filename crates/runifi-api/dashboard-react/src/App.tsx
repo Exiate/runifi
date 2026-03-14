@@ -3,6 +3,7 @@ import { Header } from './components/Header';
 import { SummaryBar } from './components/SummaryBar';
 import { FlowCanvas } from './components/FlowCanvas';
 import { ComponentToolbar } from './components/ComponentToolbar';
+import { OperatePalette, type SelectedProcessor } from './components/OperatePalette';
 import { ToastNotifier } from './components/ToastNotifier';
 import { ControllerServicesPanel } from './components/ControllerServicesPanel';
 import { BulletinBoard } from './components/BulletinBoard';
@@ -22,6 +23,8 @@ export function App() {
   const [addPluginAtCenter, setAddPluginAtCenter] = useState<PluginDescriptor | null>(null);
   const [bulletinOpen, setBulletinOpen] = useState(false);
   const [controllerServicesOpen, setControllerServicesOpen] = useState(false);
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
+  const [colorRequestNodeIds, setColorRequestNodeIds] = useState<string[] | null>(null);
 
   const uptimeSecs = liveMetrics?.uptime_secs ?? 0;
   const flowName = topology?.name ?? '';
@@ -36,8 +39,20 @@ export function App() {
     [liveMetrics],
   );
 
+  const selectedProcessors = useMemo<SelectedProcessor[]>(() => {
+    if (!liveMetrics || selectedNodeIds.length === 0) return [];
+    const result: SelectedProcessor[] = [];
+    for (const id of selectedNodeIds) {
+      const proc = liveMetrics.processors.find((p) => p.name === id);
+      if (proc) result.push({ name: proc.name, state: proc.state as string });
+    }
+    return result;
+  }, [selectedNodeIds, liveMetrics]);
+
   const handleDragEnd = () => setDraggedPlugin(null);
   const handleAddPluginHandled = useCallback(() => setAddPluginAtCenter(null), []);
+  const handleColorRequestHandled = useCallback(() => setColorRequestNodeIds(null), []);
+  const toggleBulletins = useCallback(() => setBulletinOpen((v) => !v), []);
 
   return (
     <div className="app-layout" onDragEnd={handleDragEnd}>
@@ -45,6 +60,7 @@ export function App() {
         flowName={flowName}
         uptimeSecs={uptimeSecs}
         sseStatus={sseStatus}
+        onOpenBulletins={toggleBulletins}
         onOpenControllerServices={() => setControllerServicesOpen(true)}
       />
       <ComponentToolbar
@@ -55,6 +71,11 @@ export function App() {
       />
 
       <div className="app-body">
+        <OperatePalette
+          selectedProcessors={selectedProcessors}
+          onToast={pushToast}
+          onColorSelected={setColorRequestNodeIds}
+        />
         <main className="app-main">
           <section className="dag-section" aria-labelledby="dag-heading">
             <h2 id="dag-heading" className="sr-only">Flow Topology</h2>
@@ -81,6 +102,9 @@ export function App() {
                 draggedPlugin={draggedPlugin}
                 addPluginAtCenter={addPluginAtCenter}
                 onAddPluginHandled={handleAddPluginHandled}
+                onSelectionChange={setSelectedNodeIds}
+                colorRequestNodeIds={colorRequestNodeIds}
+                onColorRequestHandled={handleColorRequestHandled}
               />
             )}
           </section>
@@ -96,7 +120,7 @@ export function App() {
 
       <SummaryBar
         metrics={liveMetrics}
-        onOpenBulletins={() => setBulletinOpen((v) => !v)}
+        onOpenBulletins={toggleBulletins}
       />
 
       <ToastNotifier toasts={toasts} onDismiss={dismissToast} />
