@@ -149,7 +149,9 @@ export interface PropertyDescriptorFull {
   description: string;
   default_value: string | null;
   required: boolean;
+  sensitive: boolean;
   allowed_values: string[] | null;
+  expression_language_supported: boolean;
 }
 
 export interface RelationshipDescriptor {
@@ -161,6 +163,7 @@ export interface RelationshipDescriptor {
 export interface SchedulingConfig {
   strategy: string;
   interval_ms: number | null;
+  concurrent_tasks: number;
 }
 
 export interface ProcessorConfigResponse {
@@ -170,6 +173,12 @@ export interface ProcessorConfigResponse {
   property_descriptors: PropertyDescriptorFull[];
   scheduling: SchedulingConfig;
   relationships: RelationshipDescriptor[];
+  penalty_duration_ms: number;
+  yield_duration_ms: number;
+  bulletin_level: string;
+  concurrent_tasks: number;
+  comments: string;
+  auto_terminated_relationships: string[];
 }
 
 // ── Queue inspection ───────────────────────────────────────────────
