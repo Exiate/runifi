@@ -567,6 +567,16 @@ pub struct ProvenanceEventResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_flowfile_id: Option<u64>,
     pub details: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub parent_flowfile_ids: Vec<u64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub child_flowfile_ids: Vec<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transit_uri: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_claim_id: Option<u64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub previous_attributes: Vec<ProvenanceAttributeResponse>,
 }
 
 /// Attribute snapshot in a provenance event.
@@ -610,6 +620,12 @@ pub struct ProvenanceSearchParams {
     pub max_results: Option<usize>,
     /// Pagination offset (default 0).
     pub offset: Option<usize>,
+    /// Filter by processor type.
+    pub processor_type: Option<String>,
+    /// Filter by minimum content size.
+    pub min_size: Option<u64>,
+    /// Filter by maximum content size.
+    pub max_size: Option<u64>,
 }
 
 /// Response for provenance replay.
@@ -620,6 +636,16 @@ pub struct ProvenanceReplayResponse {
     pub flowfile_id: u64,
     pub processor_name: String,
     pub message: String,
+}
+
+/// Summary statistics for the provenance repository.
+#[derive(Serialize)]
+pub struct ProvenanceStatsResponse {
+    pub event_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oldest_timestamp_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub newest_timestamp_ms: Option<u64>,
 }
 
 impl ProvenanceEventResponse {
@@ -645,6 +671,18 @@ impl ProvenanceEventResponse {
             relationship: event.relationship.clone(),
             source_flowfile_id: event.source_flowfile_id,
             details: event.details.clone(),
+            parent_flowfile_ids: event.parent_flowfile_ids.clone(),
+            child_flowfile_ids: event.child_flowfile_ids.clone(),
+            transit_uri: event.transit_uri.clone(),
+            content_claim_id: event.content_claim_id,
+            previous_attributes: event
+                .previous_attributes
+                .iter()
+                .map(|(k, v)| ProvenanceAttributeResponse {
+                    key: k.clone(),
+                    value: v.clone(),
+                })
+                .collect(),
         }
     }
 }

@@ -356,6 +356,51 @@ async fn main() -> Result<()> {
     );
     engine.set_state_provider(state_provider);
 
+    // Set up provenance repository.
+    let provenance_config = &config.engine.provenance;
+    match provenance_config.repo_type.as_str() {
+        "file" => {
+            use runifi_core::repository::provenance_file::{
+                FileProvenanceConfig, FileProvenanceRepository,
+            };
+            let file_config = FileProvenanceConfig {
+                directory: provenance_config.directory.clone(),
+                max_segment_size: provenance_config.segment_size_mb * 1024 * 1024,
+                retention_days: provenance_config.retention_days,
+                max_total_size: provenance_config.max_storage_gb * 1024 * 1024 * 1024,
+            };
+            let provenance_repo = FileProvenanceRepository::new(file_config)
+                .context("Failed to initialize file-backed provenance repository")?;
+            engine.set_provenance_repo(Arc::new(provenance_repo));
+            tracing::info!(
+                "Provenance repository: file-backed (dir={}, retention={}d, max={}GB)",
+                provenance_config.directory.display(),
+                provenance_config.retention_days,
+                provenance_config.max_storage_gb,
+            );
+        }
+        _ => {
+            use runifi_core::repository::provenance_repo::{
+                InMemoryProvenanceRepository, ProvenanceConfig,
+            };
+            let mem_config = ProvenanceConfig {
+                max_events: provenance_config.max_events,
+                max_age_nanos: provenance_config.retention_days as u64
+                    * 24
+                    * 60
+                    * 60
+                    * 1_000_000_000,
+            };
+            engine.set_provenance_repo(Arc::new(InMemoryProvenanceRepository::with_config(
+                mem_config,
+            )));
+            tracing::info!(
+                "Provenance repository: in-memory (max_events={})",
+                provenance_config.max_events,
+            );
+        }
+    }
+
     // Populate the engine from either runtime state or seed config.
     if let Some(ref state) = runtime_flow {
         load_from_persisted_state(&mut engine, state, &registry)?;
