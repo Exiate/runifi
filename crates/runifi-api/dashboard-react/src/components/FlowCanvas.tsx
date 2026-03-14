@@ -32,9 +32,10 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { ContextMenu, type ContextMenuState } from './ContextMenu';
 import { ProcessorConfigModal } from './ProcessorConfigModal';
 import { QueueInspectorModal } from './QueueInspectorModal';
+import { ConnectionConfigModal } from './ConnectionConfigModal';
 import { ColorPickerDialog } from './ColorPickerDialog';
 import { computeLayout } from '../utils/layout';
-import { stateColor } from '../utils/format';
+import { stateColor, backPressureEdgeColor } from '../utils/format';
 import { getSmartHandlePositions, sourceHandleId, targetHandleId } from '../utils/edgeRouting';
 import type { FlowResponse, SseMetricsEvent, PluginDescriptor } from '../types/api';
 import type { ProcessorNodeData, ConnectionEdgeData, LabelNodeData } from '../types/flow';
@@ -121,7 +122,7 @@ function buildEdges(
           c.relationship === conn.relationship,
       ) ?? null;
 
-    const backPressured = live?.back_pressured ?? false;
+    const fillPercentage = live?.fill_percentage ?? 0;
 
     const srcNode = nodeMap.get(conn.source);
     const tgtNode = nodeMap.get(conn.destination);
@@ -150,14 +151,17 @@ function buildEdges(
         relationship: conn.relationship,
         queuedCount: live?.queued_count ?? 0,
         queuedBytes: live?.queued_bytes ?? 0,
-        backPressured,
+        backPressured: live?.back_pressured ?? false,
+        fillPercentage,
+        backPressureObjectThreshold: live?.back_pressure_object_threshold ?? 10000,
+        backPressureBytesThreshold: live?.back_pressure_bytes_threshold ?? 1073741824,
         connectionId: live?.id ?? '',
         pending: false,
         onQueueClick,
         smartSourcePosition: smartSourcePos,
         smartTargetPosition: smartTargetPos,
       },
-      style: { stroke: backPressured ? 'var(--danger)' : 'var(--border)' },
+      style: { stroke: backPressureEdgeColor(fillPercentage) },
     };
   });
 }
@@ -258,6 +262,7 @@ function FlowCanvasInner({
     existingRels: string[];
   } | null>(null);
   const [configTarget, setConfigTarget] = useState<{ name: string; state: string } | null>(null);
+  const [connConfigTarget, setConnConfigTarget] = useState<{ connectionId: string } | null>(null);
   const [colorPickerTarget, setColorPickerTarget] = useState<ColorPickerTarget | null>(null);
 
   const topologyKey = useRef(topology.name);
@@ -356,7 +361,7 @@ function FlowCanvasInner({
 
         if (
           edge.data?.queuedCount === live.queued_count &&
-          edge.data?.backPressured === live.back_pressured
+          edge.data?.fillPercentage === live.fill_percentage
         ) {
           return edge;
         }
@@ -368,14 +373,18 @@ function FlowCanvasInner({
             queuedCount: live.queued_count,
             queuedBytes: live.queued_bytes,
             backPressured: live.back_pressured,
+            fillPercentage: live.fill_percentage,
+            backPressureObjectThreshold: live.back_pressure_object_threshold,
+            backPressureBytesThreshold: live.back_pressure_bytes_threshold,
             connectionId: live.id,
             pending: false,
             onQueueClick: handleQueueClick,
+            onConfigureConnection: edge.data?.onConfigureConnection,
             smartSourcePosition: edge.data?.smartSourcePosition,
             smartTargetPosition: edge.data?.smartTargetPosition,
           },
           style: {
-            stroke: live.back_pressured ? 'var(--danger)' : 'var(--border)',
+            stroke: backPressureEdgeColor(live.fill_percentage),
           },
         };
       }),
@@ -1088,6 +1097,15 @@ function FlowCanvasInner({
     }
   }, [contextMenu, edges]);
 
+  const handleContextConfigureConnection = useCallback(() => {
+    if (!contextMenu?.edgeId) return;
+    const edge = edges.find((e) => e.id === contextMenu.edgeId);
+    setContextMenu(null);
+    if (edge && edge.data?.connectionId) {
+      setConnConfigTarget({ connectionId: edge.data.connectionId });
+    }
+  }, [contextMenu, edges]);
+
   const handleColorSelect = useCallback(
     (color: string) => {
       if (!colorPickerTarget) return;
@@ -1119,6 +1137,15 @@ function FlowCanvasInner({
       if (node.type === 'labelNode') return;
       const procData = node.data as ProcessorNodeData;
       setConfigTarget({ name: node.id, state: procData.state });
+    },
+    [],
+  );
+
+  const handleEdgeDoubleClick: EdgeMouseHandler<ConnEdge> = useCallback(
+    (_event, edge) => {
+      if (edge.data?.connectionId) {
+        setConnConfigTarget({ connectionId: edge.data.connectionId });
+      }
     },
     [],
   );
@@ -1155,6 +1182,7 @@ function FlowCanvasInner({
         onEdgeContextMenu={handleEdgeContextMenu}
         onPaneContextMenu={handleCanvasContextMenu}
         onNodeDoubleClick={handleNodeDoubleClick}
+        onEdgeDoubleClick={handleEdgeDoubleClick}
         onPaneClick={() => setContextMenu(null)}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
@@ -1274,6 +1302,7 @@ function FlowCanvasInner({
                 : undefined
             }
             onChangeColor={isProcessorCtx ? handleContextChangeColor : undefined}
+            onConfigureConnection={contextMenu.edgeId ? handleContextConfigureConnection : undefined}
             onViewQueue={contextMenu.edgeId ? handleContextViewQueue : undefined}
             onSelectAll={contextMenu.isCanvas ? handleSelectAll : undefined}
             onStartSelected={handleStartSelected}
@@ -1299,6 +1328,14 @@ function FlowCanvasInner({
           connectionLabel={queueInspectTarget.label}
           onToast={onToast}
           onClose={() => setQueueInspectTarget(null)}
+        />
+      )}
+
+      {connConfigTarget && (
+        <ConnectionConfigModal
+          connectionId={connConfigTarget.connectionId}
+          onToast={onToast}
+          onClose={() => setConnConfigTarget(null)}
         />
       )}
 

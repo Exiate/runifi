@@ -1160,6 +1160,20 @@ body {
   text-align: center;
 }
 
+.config-error {
+  font-size: 0.8rem;
+  color: var(--danger);
+  padding: 1rem 0;
+  text-align: center;
+}
+
+.config-value-display {
+  font-size: 0.82rem;
+  color: var(--text);
+  padding: 0.3rem 0;
+  font-variant-numeric: tabular-nums;
+}
+
 .config-tabs {
   display: flex;
   gap: 0;
@@ -1699,11 +1713,68 @@ body {
   color: var(--danger);
 }
 
+.conn-edge-queue-badge.warning {
+  background: rgba(255, 170, 0, 0.15);
+  border-color: #ffaa00;
+  color: #ffaa00;
+}
+
+.conn-edge-queue-badge.danger {
+  background: rgba(221, 0, 0, 0.15);
+  border-color: #dd0000;
+  color: #dd0000;
+}
+
 .conn-edge-queue-badge.clickable {
   cursor: pointer;
   text-decoration: underline;
   text-decoration-style: dotted;
   text-underline-offset: 2px;
+}
+
+/* ── Connection edge tooltip ────────────────────────────────── */
+
+.conn-edge-tooltip {
+  background: rgba(15, 17, 23, 0.95);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--text);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 100;
+  min-width: 200px;
+  margin-top: 4px;
+}
+
+.conn-edge-tooltip-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 2px 0;
+}
+
+.conn-edge-tooltip-label {
+  color: var(--text-dim);
+}
+
+.conn-edge-tooltip-value {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Animated flow direction on edges ───────────────────────── */
+
+@keyframes flowAnimation {
+  from { stroke-dashoffset: 24; }
+  to { stroke-dashoffset: 0; }
+}
+
+.conn-edge-flow-line {
+  stroke-dasharray: 8 16;
+  animation: flowAnimation 1s linear infinite;
+  opacity: 0.4;
+  pointer-events: none;
 }
 
 /* ── Color picker dialog ────────────────────────────────────── */

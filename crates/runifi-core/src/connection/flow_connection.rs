@@ -67,7 +67,10 @@ pub struct FlowConnection {
     pub id: String,
     sender: Sender<FlowFile>,
     receiver: Receiver<FlowFile>,
-    config: BackPressureConfig,
+    /// Runtime-updatable back-pressure object threshold.
+    bp_max_count: AtomicUsize,
+    /// Runtime-updatable back-pressure bytes threshold.
+    bp_max_bytes: AtomicU64,
     count: AtomicUsize,
     bytes: AtomicU64,
     notify: Arc<Notify>,
@@ -90,7 +93,8 @@ impl FlowConnection {
             id: id.into(),
             sender,
             receiver,
-            config,
+            bp_max_count: AtomicUsize::new(config.max_count),
+            bp_max_bytes: AtomicU64::new(config.max_bytes),
             count: AtomicUsize::new(0),
             bytes: AtomicU64::new(0),
             notify: Arc::new(Notify::new()),
@@ -113,7 +117,8 @@ impl FlowConnection {
             id: id.into(),
             sender,
             receiver,
-            config,
+            bp_max_count: AtomicUsize::new(config.max_count),
+            bp_max_bytes: AtomicU64::new(config.max_bytes),
             count: AtomicUsize::new(0),
             bytes: AtomicU64::new(0),
             notify: Arc::new(Notify::new()),
@@ -135,7 +140,8 @@ impl FlowConnection {
             id: id.into(),
             sender,
             receiver,
-            config,
+            bp_max_count: AtomicUsize::new(config.max_count),
+            bp_max_bytes: AtomicU64::new(config.max_bytes),
             count: AtomicUsize::new(0),
             bytes: AtomicU64::new(0),
             notify: Arc::new(Notify::new()),
@@ -304,8 +310,8 @@ impl FlowConnection {
 
     /// Check if back-pressure is active (queue exceeds thresholds).
     pub fn is_back_pressured(&self) -> bool {
-        self.count.load(Ordering::Relaxed) >= self.config.max_count
-            || self.bytes.load(Ordering::Relaxed) >= self.config.max_bytes
+        self.count.load(Ordering::Relaxed) >= self.bp_max_count.load(Ordering::Relaxed)
+            || self.bytes.load(Ordering::Relaxed) >= self.bp_max_bytes.load(Ordering::Relaxed)
     }
 
     /// Current number of FlowFiles in the queue.
@@ -319,8 +325,18 @@ impl FlowConnection {
     }
 
     /// Get the back-pressure configuration for this connection.
+    /// Returns the current runtime thresholds (which may differ from the initial config).
     pub fn back_pressure_config(&self) -> BackPressureConfig {
-        self.config
+        BackPressureConfig::new(
+            self.bp_max_count.load(Ordering::Relaxed),
+            self.bp_max_bytes.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Update back-pressure thresholds at runtime without rebuilding the channel.
+    pub fn update_back_pressure(&self, max_count: usize, max_bytes: u64) {
+        self.bp_max_count.store(max_count, Ordering::Relaxed);
+        self.bp_max_bytes.store(max_bytes, Ordering::Relaxed);
     }
 
     /// Get a handle to the notify for async wakeup.
@@ -965,5 +981,31 @@ mod tests {
         assert_eq!(conn.back_pressure_config().max_count, 2);
         assert_eq!(conn.back_pressure_config().max_bytes, 100);
         assert_eq!(conn.expiration(), Some(Duration::from_secs(300)));
+    }
+
+    #[test]
+    fn update_back_pressure_thresholds() {
+        let config = BackPressureConfig::new(100, 1000);
+        let conn = FlowConnection::new("test", config);
+
+        // Send enough to not trigger BP at 100 threshold
+        for i in 0..50 {
+            conn.try_send(test_flowfile(i, 10)).unwrap();
+        }
+        assert!(!conn.is_back_pressured());
+
+        // Lower threshold so current count exceeds it
+        conn.update_back_pressure(30, 1000);
+        assert!(conn.is_back_pressured());
+        assert_eq!(conn.back_pressure_config().max_count, 30);
+
+        // Raise threshold back
+        conn.update_back_pressure(100, 1000);
+        assert!(!conn.is_back_pressured());
+    }
+
+    #[test]
+    fn default_max_bytes_is_1gb() {
+        assert_eq!(BackPressureConfig::DEFAULT_MAX_BYTES, 1_073_741_824);
     }
 }
