@@ -4,6 +4,7 @@ pub mod processor;
 pub mod property;
 pub mod record;
 pub mod relationship;
+pub mod reporting;
 pub mod result;
 pub mod service;
 pub mod session;
@@ -21,6 +22,7 @@ pub use record::{
     Record, RecordFieldType, RecordReader, RecordSchema, RecordValue, RecordWriter, SchemaField,
 };
 pub use relationship::{REL_FAILURE, REL_ORIGINAL, REL_SUCCESS, Relationship};
+pub use reporting::{ReportingContext, ReportingTask, ReportingTaskDescriptor};
 pub use result::{PluginError, ProcessResult};
 pub use service::{ControllerService, ControllerServiceDescriptor, ServiceLookup};
 pub use session::ProcessSession;

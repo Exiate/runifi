@@ -523,6 +523,13 @@ async fn main() -> Result<()> {
             tags: Vec::new(),
         });
     }
+    for name in registry.reporting_task_types() {
+        plugin_types.push(PluginTypeInfo {
+            type_name: name.to_string(),
+            kind: PluginKind::ReportingTask,
+            tags: registry.reporting_task_tags(name),
+        });
+    }
     engine.set_plugin_types(plugin_types);
 
     // Initialize user management if auth is enabled.

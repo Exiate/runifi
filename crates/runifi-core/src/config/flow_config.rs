@@ -228,6 +228,9 @@ pub struct FlowDefinition {
     /// Process Groups for hierarchical flow organization.
     #[serde(default)]
     pub process_groups: Vec<ProcessGroupConfig>,
+    /// Reporting tasks for system-level monitoring.
+    #[serde(default)]
+    pub reporting_tasks: Vec<ReportingTaskConfig>,
 }
 
 impl Default for FlowDefinition {
@@ -238,8 +241,25 @@ impl Default for FlowDefinition {
             connections: Vec::new(),
             services: Vec::new(),
             process_groups: Vec::new(),
+            reporting_tasks: Vec::new(),
         }
     }
+}
+
+/// Configuration for a reporting task instance.
+#[derive(Debug, Deserialize, Clone)]
+pub struct ReportingTaskConfig {
+    /// Unique instance name (e.g. "status-logger").
+    pub name: String,
+    /// Reporting task type name (e.g. "LogReportingTask") — must match a registered plugin.
+    #[serde(rename = "type")]
+    pub type_name: String,
+    /// Scheduling strategy.
+    #[serde(default)]
+    pub scheduling: SchedulingConfig,
+    /// Task-specific properties.
+    #[serde(default)]
+    pub properties: HashMap<String, String>,
 }
 
 /// Configuration for a Process Group — a hierarchical container for
@@ -339,7 +359,7 @@ pub struct ProcessorConfig {
     pub properties: HashMap<String, String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct SchedulingConfig {
     /// "timer", "event", or "cron".
     #[serde(default = "default_strategy")]

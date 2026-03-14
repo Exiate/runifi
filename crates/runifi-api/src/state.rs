@@ -107,4 +107,14 @@ impl ApiState {
             .as_ref()
             .and_then(|r| r.create_service(type_name))
     }
+
+    /// Create a reporting task instance by type name.
+    pub fn create_reporting_task(
+        &self,
+        type_name: &str,
+    ) -> Option<Box<dyn runifi_plugin_api::ReportingTask>> {
+        self.plugin_registry
+            .as_ref()
+            .and_then(|r| r.create_reporting_task(type_name))
+    }
 }
