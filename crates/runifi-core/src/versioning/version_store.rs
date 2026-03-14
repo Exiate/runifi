@@ -331,6 +331,7 @@ mod tests {
                         expression: None,
                     },
                     properties: HashMap::from([("File Size".to_string(), "5120".to_string())]),
+                    sensitive_properties: vec![],
                 },
                 PersistedProcessor {
                     name: "log".to_string(),
@@ -341,6 +342,7 @@ mod tests {
                         expression: None,
                     },
                     properties: HashMap::new(),
+                    sensitive_properties: vec![],
                 },
             ],
             connections: vec![PersistedConnection {

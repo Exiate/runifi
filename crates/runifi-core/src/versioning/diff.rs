@@ -245,6 +245,7 @@ mod tests {
                         expression: None,
                     },
                     properties: HashMap::new(),
+                    sensitive_properties: vec![],
                 })
                 .collect(),
             connections: conns

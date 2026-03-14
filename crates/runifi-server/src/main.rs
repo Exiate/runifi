@@ -16,6 +16,9 @@ use runifi_core::config::permissions::check_config_permissions;
 use runifi_core::config::property_encryption::{
     decrypt_property_value, expand_env_vars, is_encrypted_value,
 };
+use runifi_core::config::secrets::{
+    EnvSecretsProvider, FileSecretsProvider, SecretsProvider, resolve_secret_refs,
+};
 use runifi_core::connection::back_pressure::BackPressureConfig;
 use runifi_core::connection::flow_connection::QueuePriority;
 use runifi_core::engine::flow_engine::FlowEngine;
@@ -183,10 +186,45 @@ async fn main() -> Result<()> {
     // Build the engine-level key provider for repository encryption (if configured).
     let repo_key_provider: Option<Arc<dyn KeyProvider>> = build_key_provider(&config)?;
 
+    // Build secrets provider for ${secret:KEY} resolution.
+    let secrets_provider: Arc<dyn SecretsProvider> = build_secrets_provider(&config)?;
+
+    // Resolve ${secret:KEY} references in seed config processor properties.
+    for proc_config in &mut config.flow.processors {
+        for (_prop_name, prop_value) in proc_config.properties.iter_mut() {
+            if prop_value.contains("${secret:") {
+                *prop_value = resolve_secret_refs(prop_value, secrets_provider.as_ref())
+                    .with_context(|| {
+                        format!(
+                            "Failed to resolve secret reference in processor '{}' property",
+                            proc_config.name
+                        )
+                    })?;
+            }
+        }
+    }
+    for svc_config in &mut config.flow.services {
+        for (_prop_name, prop_value) in svc_config.properties.iter_mut() {
+            if prop_value.contains("${secret:") {
+                *prop_value = resolve_secret_refs(prop_value, secrets_provider.as_ref())
+                    .with_context(|| {
+                        format!(
+                            "Failed to resolve secret reference in service '{}' property",
+                            svc_config.name
+                        )
+                    })?;
+            }
+        }
+    }
+
     // Check for persisted runtime flow state.
     let conf_dir = config.engine.conf_dir.clone();
     let runtime_flow = match persistence::load_runtime_flow(&conf_dir) {
-        Ok(Some(state)) => {
+        Ok(Some(mut state)) => {
+            // Decrypt any ENC() values in the persisted state.
+            state
+                .decrypt_sensitive_properties(encryption_key.as_deref())
+                .context("Failed to decrypt sensitive properties in persisted flow state")?;
             tracing::info!(
                 conf_dir = %conf_dir.display(),
                 processors = state.processors.len(),
@@ -346,6 +384,11 @@ async fn main() -> Result<()> {
 
     // Set up flow persistence.
     let persistence_layer = FlowPersistence::new(conf_dir.clone());
+    // Pass the encryption key to the persistence layer so sensitive properties
+    // are encrypted in the persisted flow state.
+    if let Some(ref key) = encryption_key {
+        persistence_layer.set_encryption_key(key.clone());
+    }
     engine.set_persistence(persistence_layer);
 
     // Set up processor state provider (file-backed, stored under conf_dir/state/local/).
@@ -641,6 +684,36 @@ fn build_key_provider(config: &FlowConfig) -> Result<Option<Arc<dyn KeyProvider>
     };
 
     Ok(Some(provider))
+}
+
+/// Build a secrets provider from the `[secrets]` config section.
+fn build_secrets_provider(config: &FlowConfig) -> Result<Arc<dyn SecretsProvider>> {
+    match config.secrets.provider.as_str() {
+        "environment" => {
+            let prefix = config.secrets.env_prefix.clone();
+            tracing::info!(prefix = %prefix, "Using environment secrets provider");
+            Ok(Arc::new(EnvSecretsProvider::with_prefix(prefix)))
+        }
+        "file" => {
+            let path = config.secrets.file_path.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("secrets.file_path is required when secrets.provider = \"file\"")
+            })?;
+            let provider = FileSecretsProvider::from_path(std::path::Path::new(path))
+                .map_err(|e| anyhow::anyhow!("Failed to load secrets file '{}': {}", path, e))?;
+            tracing::info!(path = %path, "Using file secrets provider");
+            Ok(Arc::new(provider))
+        }
+        "static" => {
+            tracing::info!("Using static (empty) secrets provider");
+            Ok(Arc::new(
+                runifi_core::config::secrets::StaticSecretsProvider::empty(),
+            ))
+        }
+        other => Err(anyhow::anyhow!(
+            "Unknown secrets provider type: '{}'. Supported: environment, file, static",
+            other
+        )),
+    }
 }
 
 /// Optionally wrap a content repository with encryption based on config.

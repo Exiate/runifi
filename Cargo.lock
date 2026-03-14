@@ -2591,6 +2591,7 @@ dependencies = [
  "bytes",
  "chrono",
  "governor",
+ "hex",
  "include_dir",
  "rand 0.9.2",
  "runifi-core",
@@ -2613,6 +2614,8 @@ name = "runifi-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clap",
+ "hex",
  "runifi-core",
  "serde",
  "serde_json",

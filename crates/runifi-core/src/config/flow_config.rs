@@ -21,6 +21,55 @@ pub struct FlowConfig {
     pub auth: AuthConfig,
     #[serde(default)]
     pub cluster: ClusterConfig,
+    #[serde(default)]
+    pub secrets: SecretsConfig,
+}
+
+/// Configuration for secrets management — provider selection and property
+/// encryption settings.
+///
+/// ```toml
+/// [secrets]
+/// provider = "environment"
+/// env_prefix = "RUNIFI_SECRET_"
+///
+/// # For file-based secrets:
+/// # provider = "file"
+/// # file_path = "/etc/runifi/secrets.env"
+///
+/// # Property encryption key provider (reuses engine.encryption.key_provider
+/// # by default, or specify here for independent configuration).
+/// # encryption_key_provider = "file"
+/// ```
+#[derive(Debug, Deserialize)]
+pub struct SecretsConfig {
+    /// Secrets provider type: `"environment"` (default), `"file"`, `"static"`.
+    #[serde(default = "default_secrets_provider")]
+    pub provider: String,
+    /// Prefix for environment variable names (for `"environment"` provider).
+    #[serde(default = "default_secrets_env_prefix")]
+    pub env_prefix: String,
+    /// Path to secrets file (for `"file"` provider).
+    #[serde(default)]
+    pub file_path: Option<String>,
+}
+
+impl Default for SecretsConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_secrets_provider(),
+            env_prefix: default_secrets_env_prefix(),
+            file_path: None,
+        }
+    }
+}
+
+fn default_secrets_provider() -> String {
+    "environment".to_string()
+}
+
+fn default_secrets_env_prefix() -> String {
+    "RUNIFI_SECRET_".to_string()
 }
 
 /// Configuration for the web API server.

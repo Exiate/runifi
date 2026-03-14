@@ -53,6 +53,9 @@ pub struct PersistedProcessor {
     pub type_name: String,
     pub scheduling: PersistedScheduling,
     pub properties: HashMap<String, String>,
+    /// Names of properties that are sensitive (encrypted on disk).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sensitive_properties: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,22 +185,62 @@ pub(crate) struct SnapshotSource {
     pub service_registry: crate::registry::service_registry::SharedServiceRegistry,
     pub labels: Arc<RwLock<Vec<LabelInfo>>>,
     pub process_groups: Arc<RwLock<Vec<ProcessGroupInfo>>>,
+    /// Encryption key for sensitive property values (None = no encryption).
+    pub encryption_key: Option<Vec<u8>>,
 }
 
 // ── Snapshot from live engine state ───────────────────────────────────────────
 
 impl PersistedFlowState {
     /// Capture a snapshot of the current flow state from the snapshot source.
+    ///
+    /// When `source.encryption_key` is set, sensitive property values are
+    /// encrypted into `ENC(base64)` format before serialization.
     pub(crate) fn snapshot(source: &SnapshotSource) -> Self {
         let processors: Vec<PersistedProcessor> = source
             .processors
             .read()
             .iter()
-            .map(|p| PersistedProcessor {
-                name: p.name.clone(),
-                type_name: p.type_name.clone(),
-                scheduling: scheduling_display_to_persisted(&p.scheduling_display),
-                properties: p.properties.read().clone(),
+            .map(|p| {
+                let sensitive_names: Vec<String> = p
+                    .property_descriptors
+                    .iter()
+                    .filter(|pd| pd.sensitive)
+                    .map(|pd| pd.name.clone())
+                    .collect();
+
+                let mut properties = p.properties.read().clone();
+
+                // Encrypt sensitive property values if an encryption key is available.
+                if let Some(ref key) = source.encryption_key {
+                    for name in &sensitive_names {
+                        if let Some(value) = properties.get_mut(name)
+                            && !value.is_empty()
+                        {
+                            match crate::config::property_encryption::encrypt_property_value(
+                                value, key,
+                            ) {
+                                Ok(encrypted) => *value = encrypted,
+                                Err(e) => {
+                                    tracing::error!(
+                                        processor = %p.name,
+                                        property = %name,
+                                        error = %e,
+                                        "Failed to encrypt sensitive property for persistence"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
+                PersistedProcessor {
+                    name: p.name.clone(),
+                    type_name: p.type_name.clone(),
+                    scheduling: scheduling_display_to_persisted(&p.scheduling_display),
+                    properties,
+                    sensitive_properties: sensitive_names,
+                }
             })
             .collect();
 
@@ -341,6 +384,69 @@ impl PersistedFlowState {
     }
 }
 
+impl PersistedFlowState {
+    /// Decrypt all `ENC()` property values in the persisted state.
+    ///
+    /// This is called at load time to convert encrypted values back to
+    /// plaintext before handing them to the engine. If the key is `None`
+    /// but encrypted values are found, returns an error.
+    pub fn decrypt_sensitive_properties(&mut self, key: Option<&[u8]>) -> std::io::Result<()> {
+        use crate::config::property_encryption::{decrypt_property_value, is_encrypted_value};
+
+        for proc in &mut self.processors {
+            for (_prop_name, prop_value) in proc.properties.iter_mut() {
+                if is_encrypted_value(prop_value) {
+                    let k = key.ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!(
+                                "Processor '{}' has encrypted properties but no encryption key is configured",
+                                proc.name
+                            ),
+                        )
+                    })?;
+                    *prop_value = decrypt_property_value(prop_value, k).map_err(|e| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!(
+                                "Failed to decrypt property on processor '{}': {}",
+                                proc.name, e
+                            ),
+                        )
+                    })?;
+                }
+            }
+        }
+
+        for svc in &mut self.services {
+            for (_prop_name, prop_value) in svc.properties.iter_mut() {
+                if is_encrypted_value(prop_value) {
+                    let k = key.ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!(
+                                "Service '{}' has encrypted properties but no encryption key is configured",
+                                svc.name
+                            ),
+                        )
+                    })?;
+                    *prop_value = decrypt_property_value(prop_value, k).map_err(|e| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!(
+                                "Failed to decrypt property on service '{}': {}",
+                                svc.name, e
+                            ),
+                        )
+                    })?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
 /// Parse a scheduling display string (e.g. "timer-driven (1000ms)", "event-driven")
 /// back into a `PersistedScheduling`.
 pub fn scheduling_display_to_persisted(display: &str) -> PersistedScheduling {
@@ -476,6 +582,7 @@ struct FlowPersistenceInner {
     conf_dir: PathBuf,
     notify: Notify,
     source: RwLock<Option<SnapshotSource>>,
+    encryption_key: RwLock<Option<Vec<u8>>>,
 }
 
 impl FlowPersistence {
@@ -486,8 +593,15 @@ impl FlowPersistence {
                 conf_dir,
                 notify: Notify::new(),
                 source: RwLock::new(None),
+                encryption_key: RwLock::new(None),
             }),
         }
+    }
+
+    /// Set the encryption key used to encrypt sensitive property values
+    /// in the persisted flow state. Must be exactly 32 bytes (AES-256).
+    pub fn set_encryption_key(&self, key: Vec<u8>) {
+        *self.inner.encryption_key.write() = Some(key);
     }
 
     /// Set the snapshot source — the live data collections needed for
@@ -506,6 +620,7 @@ impl FlowPersistence {
         labels: Arc<RwLock<Vec<LabelInfo>>>,
         process_groups: Arc<RwLock<Vec<ProcessGroupInfo>>>,
     ) {
+        let encryption_key = self.inner.encryption_key.read().clone();
         *self.inner.source.write() = Some(SnapshotSource {
             flow_name,
             processors,
@@ -514,6 +629,7 @@ impl FlowPersistence {
             service_registry,
             labels,
             process_groups,
+            encryption_key,
         });
     }
 
@@ -607,6 +723,7 @@ mod tests {
                     expression: None,
                 },
                 properties: HashMap::new(),
+                sensitive_properties: vec![],
             }],
             connections: vec![],
             positions: HashMap::new(),
@@ -631,6 +748,7 @@ mod tests {
                         expression: None,
                     },
                     properties: HashMap::from([("File Size".to_string(), "5120".to_string())]),
+                    sensitive_properties: vec![],
                 },
                 PersistedProcessor {
                     name: "log".to_string(),
@@ -641,6 +759,7 @@ mod tests {
                         expression: None,
                     },
                     properties: HashMap::new(),
+                    sensitive_properties: vec![],
                 },
             ],
             connections: vec![PersistedConnection {
@@ -911,5 +1030,100 @@ mod tests {
         let loaded = load_runtime_flow(&conf_dir).unwrap();
         assert!(loaded.is_some());
         assert_eq!(loaded.unwrap().flow_name, "debounce-test");
+    }
+
+    #[test]
+    fn test_decrypt_sensitive_properties_round_trip() {
+        use crate::config::property_encryption::encrypt_property_value;
+
+        let key = vec![0xAAu8; 32];
+        let encrypted = encrypt_property_value("my-password", &key).unwrap();
+
+        let mut state = PersistedFlowState {
+            version: CURRENT_VERSION,
+            flow_name: "encrypt-test".to_string(),
+            processors: vec![PersistedProcessor {
+                name: "db-proc".to_string(),
+                type_name: "DBConnect".to_string(),
+                scheduling: PersistedScheduling {
+                    strategy: "timer".to_string(),
+                    interval_ms: 1000,
+                    expression: None,
+                },
+                properties: HashMap::from([
+                    ("Password".to_string(), encrypted),
+                    ("Host".to_string(), "localhost".to_string()),
+                ]),
+                sensitive_properties: vec!["Password".to_string()],
+            }],
+            connections: vec![],
+            positions: HashMap::new(),
+            services: vec![],
+            labels: vec![],
+            process_groups: vec![],
+        };
+
+        // Decrypt with the correct key.
+        state.decrypt_sensitive_properties(Some(&key)).unwrap();
+        assert_eq!(
+            state.processors[0].properties.get("Password").unwrap(),
+            "my-password"
+        );
+        assert_eq!(
+            state.processors[0].properties.get("Host").unwrap(),
+            "localhost"
+        );
+    }
+
+    #[test]
+    fn test_decrypt_fails_without_key() {
+        use crate::config::property_encryption::encrypt_property_value;
+
+        let key = vec![0xAAu8; 32];
+        let encrypted = encrypt_property_value("secret", &key).unwrap();
+
+        let mut state = PersistedFlowState {
+            version: CURRENT_VERSION,
+            flow_name: "no-key".to_string(),
+            processors: vec![PersistedProcessor {
+                name: "proc".to_string(),
+                type_name: "Test".to_string(),
+                scheduling: PersistedScheduling {
+                    strategy: "timer".to_string(),
+                    interval_ms: 100,
+                    expression: None,
+                },
+                properties: HashMap::from([("Secret".to_string(), encrypted)]),
+                sensitive_properties: vec!["Secret".to_string()],
+            }],
+            connections: vec![],
+            positions: HashMap::new(),
+            services: vec![],
+            labels: vec![],
+            process_groups: vec![],
+        };
+
+        // No key provided — should fail.
+        let result = state.decrypt_sensitive_properties(None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_sensitive_properties_not_serialized_when_empty() {
+        let state = PersistedProcessor {
+            name: "test".to_string(),
+            type_name: "Test".to_string(),
+            scheduling: PersistedScheduling {
+                strategy: "timer".to_string(),
+                interval_ms: 100,
+                expression: None,
+            },
+            properties: HashMap::new(),
+            sensitive_properties: vec![],
+        };
+
+        let json = serde_json::to_string(&state).unwrap();
+        // sensitive_properties should be omitted when empty (skip_serializing_if)
+        assert!(!json.contains("sensitive_properties"));
     }
 }

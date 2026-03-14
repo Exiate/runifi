@@ -21,6 +21,12 @@ use super::process_group::{PortInfo, PortType, ProcessGroupId, ProcessGroupInfo}
 use super::processor_node::{
     SharedInputConnections, SharedInputNotifiers, SharedOutputConnections,
 };
+/// Mask value used for sensitive properties in API responses.
+///
+/// When this value is received in a property update, the existing value
+/// is preserved (the caller did not change it).
+pub const SENSITIVE_VALUE_MASK: &str = "********";
+
 use crate::audit::{AuditAction, AuditEvent, AuditLogger, AuditTarget};
 use crate::connection::back_pressure::BackPressureConfig;
 use crate::connection::query::ConnectionQuery;
@@ -422,11 +428,15 @@ impl EngineHandle {
     // ── Config updates ───────────────────────────────────────────────────────
 
     /// Update properties for a processor by name.
-    /// Returns `Ok(())` if successful, or an error describing the failure.
+    ///
+    /// If a sensitive property is submitted with the sentinel value
+    /// `"********"`, the existing value is preserved (the caller did not
+    /// change it). Returns `Ok(())` if successful, or an error describing
+    /// the failure.
     pub fn update_processor_properties(
         &self,
         name: &str,
-        new_properties: HashMap<String, String>,
+        mut new_properties: HashMap<String, String>,
     ) -> Result<(), ConfigUpdateError> {
         let processors = self.processors.read();
         let info = processors
@@ -451,6 +461,17 @@ impl EngineHandle {
             return Err(ConfigUpdateError::StateConflict(
                 "Processor must be stopped before updating configuration".to_string(),
             ));
+        }
+
+        // Preserve existing values for sensitive properties submitted with the mask.
+        for desc in &info.property_descriptors {
+            if desc.sensitive
+                && let Some(value) = new_properties.get(&desc.name)
+                && value == SENSITIVE_VALUE_MASK
+                && let Some(existing) = props.get(&desc.name)
+            {
+                new_properties.insert(desc.name.clone(), existing.clone());
+            }
         }
 
         for desc in &info.property_descriptors {
@@ -487,6 +508,21 @@ impl EngineHandle {
         ));
         self.notify_persist();
         Ok(())
+    }
+
+    /// Rotate the encryption key for sensitive properties.
+    ///
+    /// Re-reads all processor and service properties that are marked as
+    /// sensitive and triggers a persist, which will re-encrypt them with
+    /// the new key (set on `FlowPersistence`).
+    pub fn rotate_encryption_key(&self, new_key: &[u8]) {
+        if let Some(ref p) = self.persistence {
+            p.set_encryption_key(new_key.to_vec());
+            p.notify_changed();
+            tracing::info!(
+                "Encryption key rotated — flow state will be re-encrypted on next persist"
+            );
+        }
     }
 
     // ── Runtime topology mutations ───────────────────────────────────────────
@@ -808,11 +844,20 @@ impl EngineHandle {
             .processors
             .read()
             .iter()
-            .map(|p| PersistedProcessor {
-                name: p.name.clone(),
-                type_name: p.type_name.clone(),
-                scheduling: scheduling_display_to_persisted(&p.scheduling_display),
-                properties: p.properties.read().clone(),
+            .map(|p| {
+                let sensitive_properties: Vec<String> = p
+                    .property_descriptors
+                    .iter()
+                    .filter(|pd| pd.sensitive)
+                    .map(|pd| pd.name.clone())
+                    .collect();
+                PersistedProcessor {
+                    name: p.name.clone(),
+                    type_name: p.type_name.clone(),
+                    scheduling: scheduling_display_to_persisted(&p.scheduling_display),
+                    properties: p.properties.read().clone(),
+                    sensitive_properties,
+                }
             })
             .collect();
 

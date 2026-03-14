@@ -142,6 +142,14 @@ impl DefaultMutationHandler {
         );
         pn.set_provenance_repo(self.provenance_repo.clone());
         pn.set_type_name(type_name.to_string());
+        let sensitive_names: Vec<String> = prop_descriptors
+            .iter()
+            .filter(|d| d.sensitive)
+            .map(|d| d.name.clone())
+            .collect();
+        if !sensitive_names.is_empty() {
+            pn.set_sensitive_property_names(sensitive_names);
+        }
 
         let input_h = pn.input_connections_handle();
         let output_h = pn.output_connections_handle();
