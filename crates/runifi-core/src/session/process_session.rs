@@ -39,10 +39,8 @@ pub struct CoreProcessSession {
     /// IDs of FlowFiles removed during `commit()`, for WAL DELETE ops.
     committed_remove_ids: Vec<u64>,
 
-    /// Round-robin index for fair input connection scheduling.
-    /// Tracks which input connection to check first on the next `get()` or `get_batch()` call,
-    /// preventing starvation of later connections when earlier ones are busy.
-    next_input_index: usize,
+    // Note: round-robin scheduling was removed in favor of FIFO (oldest-first)
+    // ordering across all input connections. See get() and get_batch().
 
     // Provenance tracking
     provenance_repo: SharedProvenanceRepository,
@@ -72,7 +70,6 @@ impl CoreProcessSession {
             committed: false,
             yield_duration_ms,
             committed_remove_ids: Vec::new(),
-            next_input_index: 0,
             provenance_repo: Arc::new(crate::repository::provenance_repo::NullProvenanceRepository),
             processor_name: String::new(),
             processor_type: String::new(),
@@ -154,23 +151,29 @@ impl CoreProcessSession {
 
 impl ProcessSession for CoreProcessSession {
     fn get(&mut self) -> Option<FlowFile> {
-        let n = self.input_connections.len();
-        if n == 0 {
+        if self.input_connections.is_empty() {
             return None;
         }
-        // Round-robin: start from next_input_index, wrap around all connections.
-        for i in 0..n {
-            let idx = (self.next_input_index + i) % n;
+
+        // FIFO: pick the connection whose front FlowFile has the smallest
+        // created_at_nanos (oldest first). This matches NiFi's semantics
+        // where all input queues are merged by arrival time.
+        let oldest_idx = self
+            .input_connections
+            .iter()
+            .enumerate()
+            .filter_map(|(i, conn)| conn.peek_oldest_timestamp().map(|ts| (i, ts)))
+            .min_by_key(|(_, ts)| *ts)
+            .map(|(i, _)| i);
+
+        if let Some(idx) = oldest_idx {
             let conn = &self.input_connections[idx];
             if let Some(ff) = conn.try_recv() {
-                // Record RECEIVE provenance event.
                 let mut event = self.make_provenance_event(&ff, ProvenanceEventType::Receive);
                 event.details = format!("Received from connection '{}'", conn.id);
                 self.pending_provenance.push(event);
 
                 self.acquired_flowfiles.push(ff.clone());
-                // Advance to the next connection for the next call.
-                self.next_input_index = (idx + 1) % n;
                 return Some(ff);
             }
         }
@@ -178,67 +181,41 @@ impl ProcessSession for CoreProcessSession {
     }
 
     fn get_batch(&mut self, max: usize) -> Vec<FlowFile> {
-        let n = self.input_connections.len();
-        if n == 0 || max == 0 {
+        if self.input_connections.is_empty() || max == 0 {
             return Vec::new();
         }
 
         let mut batch = Vec::with_capacity(max);
 
-        // Fair distribution: divide max evenly across inputs, starting from
-        // next_input_index for round-robin fairness.
-        let per_input = max / n;
-        let mut extra = max % n;
+        // FIFO across all inputs: repeatedly pick the connection whose front
+        // FlowFile has the smallest created_at_nanos, pull one item, repeat
+        // until the batch is full or all inputs are empty.
+        while batch.len() < max {
+            let oldest_idx = self
+                .input_connections
+                .iter()
+                .enumerate()
+                .filter_map(|(i, conn)| conn.peek_oldest_timestamp().map(|ts| (i, ts)))
+                .min_by_key(|(_, ts)| *ts)
+                .map(|(i, _)| i);
 
-        // Phase 1: Take up to (per_input + 1) from each connection in round-robin order.
-        // Connections starting from next_input_index get the extra slots first.
-        for i in 0..n {
-            let idx = (self.next_input_index + i) % n;
-            let conn = &self.input_connections[idx];
-            let quota = if extra > 0 {
-                extra -= 1;
-                per_input + 1
-            } else {
-                per_input
-            };
-            if quota == 0 {
-                continue;
-            }
-            let received = conn.try_recv_batch(quota);
-            for ff in &received {
-                let mut event = self.make_provenance_event(ff, ProvenanceEventType::Receive);
-                event.details = format!("Received from connection '{}'", conn.id);
-                self.pending_provenance.push(event);
-                self.acquired_flowfiles.push(ff.clone());
-            }
-            batch.extend(received);
-        }
-
-        // Phase 2: If we still have capacity (some connections had fewer than their quota),
-        // fill remaining slots from any connection that has data, in round-robin order.
-        if batch.len() < max {
-            let remaining = max - batch.len();
-            for i in 0..n {
-                if batch.len() >= max {
-                    break;
+            match oldest_idx {
+                Some(idx) => {
+                    let conn = &self.input_connections[idx];
+                    if let Some(ff) = conn.try_recv() {
+                        let mut event =
+                            self.make_provenance_event(&ff, ProvenanceEventType::Receive);
+                        event.details = format!("Received from connection '{}'", conn.id);
+                        self.pending_provenance.push(event);
+                        self.acquired_flowfiles.push(ff.clone());
+                        batch.push(ff);
+                    } else {
+                        // peek said data existed but try_recv failed (race) — retry.
+                        continue;
+                    }
                 }
-                let idx = (self.next_input_index + i) % n;
-                let conn = &self.input_connections[idx];
-                let to_take = remaining.min(max - batch.len());
-                let received = conn.try_recv_batch(to_take);
-                for ff in &received {
-                    let mut event = self.make_provenance_event(ff, ProvenanceEventType::Receive);
-                    event.details = format!("Received from connection '{}'", conn.id);
-                    self.pending_provenance.push(event);
-                    self.acquired_flowfiles.push(ff.clone());
-                }
-                batch.extend(received);
+                None => break, // All inputs are empty.
             }
-        }
-
-        // Advance round-robin index for next call.
-        if !batch.is_empty() {
-            self.next_input_index = (self.next_input_index + 1) % n;
         }
 
         batch
@@ -443,6 +420,18 @@ mod tests {
             content_claim: None,
             size: 0,
             created_at_nanos: 0,
+            lineage_start_id: id,
+            penalized_until_nanos: 0,
+        }
+    }
+
+    fn make_flowfile_with_time(id: u64, created_at_nanos: u64) -> FlowFile {
+        FlowFile {
+            id,
+            attributes: Vec::new(),
+            content_claim: None,
+            size: 0,
+            created_at_nanos,
             lineage_start_id: id,
             penalized_until_nanos: 0,
         }
@@ -779,36 +768,26 @@ mod tests {
         assert_eq!(prov_repo.event_count(), 0);
     }
 
-    // ── Fair distribution tests ─────────────────────────────────────
+    // ── FIFO ordering tests ─────────────────────────────────────
 
     #[test]
-    fn get_rotates_across_inputs() {
+    fn get_returns_oldest_across_inputs() {
         let conn1 = Arc::new(FlowConnection::new("conn1", BackPressureConfig::default()));
         let conn2 = Arc::new(FlowConnection::new("conn2", BackPressureConfig::default()));
 
-        // Load both connections with FlowFiles.
-        for i in 0..5 {
-            conn1.try_send(make_flowfile(100 + i)).unwrap();
-            conn2.try_send(make_flowfile(200 + i)).unwrap();
-        }
+        // conn2 has the oldest FlowFile (t=100), conn1 has a newer one (t=200).
+        conn1.try_send(make_flowfile_with_time(1, 200)).unwrap();
+        conn2.try_send(make_flowfile_with_time(2, 100)).unwrap();
 
         let mut session = make_session(vec![conn1, conn2]);
 
-        // First get() should come from conn1 (index 0).
+        // Should return FlowFile id=2 from conn2 first (oldest).
         let ff1 = session.get().unwrap();
-        assert_eq!(ff1.id, 100);
+        assert_eq!(ff1.id, 2);
 
-        // Second get() should come from conn2 (index 1) due to round-robin.
+        // Then FlowFile id=1 from conn1.
         let ff2 = session.get().unwrap();
-        assert_eq!(ff2.id, 200);
-
-        // Third get() wraps back to conn1.
-        let ff3 = session.get().unwrap();
-        assert_eq!(ff3.id, 101);
-
-        // Fourth get() from conn2 again.
-        let ff4 = session.get().unwrap();
-        assert_eq!(ff4.id, 201);
+        assert_eq!(ff2.id, 1);
     }
 
     #[test]
@@ -817,126 +796,139 @@ mod tests {
         let conn2 = Arc::new(FlowConnection::new("conn2", BackPressureConfig::default()));
 
         // Only conn2 has data.
-        conn2.try_send(make_flowfile(200)).unwrap();
+        conn2.try_send(make_flowfile_with_time(200, 100)).unwrap();
 
         let mut session = make_session(vec![conn1, conn2]);
 
-        // Should find data in conn2 even though conn1 is checked first.
+        // Should find data in conn2 even though conn1 is empty.
         let ff = session.get().unwrap();
         assert_eq!(ff.id, 200);
     }
 
     #[test]
-    fn get_batch_distributes_fairly_across_inputs() {
+    fn get_batch_returns_oldest_first_across_inputs() {
+        let conn1 = Arc::new(FlowConnection::new("conn1", BackPressureConfig::default()));
+        let conn2 = Arc::new(FlowConnection::new("conn2", BackPressureConfig::default()));
+
+        // Interleave timestamps across two connections:
+        // conn1: t=100, t=300, t=500
+        // conn2: t=200, t=400, t=600
+        conn1.try_send(make_flowfile_with_time(1, 100)).unwrap();
+        conn1.try_send(make_flowfile_with_time(3, 300)).unwrap();
+        conn1.try_send(make_flowfile_with_time(5, 500)).unwrap();
+        conn2.try_send(make_flowfile_with_time(2, 200)).unwrap();
+        conn2.try_send(make_flowfile_with_time(4, 400)).unwrap();
+        conn2.try_send(make_flowfile_with_time(6, 600)).unwrap();
+
+        let mut session = make_session(vec![conn1, conn2]);
+
+        let batch = session.get_batch(6);
+        assert_eq!(batch.len(), 6);
+
+        // Should be in strict temporal order: 1, 2, 3, 4, 5, 6.
+        let ids: Vec<u64> = batch.iter().map(|ff| ff.id).collect();
+        assert_eq!(ids, vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn get_batch_three_inputs_temporal_order() {
         let conn1 = Arc::new(FlowConnection::new("conn1", BackPressureConfig::default()));
         let conn2 = Arc::new(FlowConnection::new("conn2", BackPressureConfig::default()));
         let conn3 = Arc::new(FlowConnection::new("conn3", BackPressureConfig::default()));
 
-        // Load each connection with 10 FlowFiles.
-        for i in 0..10 {
-            conn1.try_send(make_flowfile(100 + i)).unwrap();
-            conn2.try_send(make_flowfile(200 + i)).unwrap();
-            conn3.try_send(make_flowfile(300 + i)).unwrap();
-        }
+        // Scatter timestamps across three connections.
+        conn1.try_send(make_flowfile_with_time(10, 100)).unwrap();
+        conn2.try_send(make_flowfile_with_time(20, 50)).unwrap();
+        conn3.try_send(make_flowfile_with_time(30, 150)).unwrap();
+        conn1.try_send(make_flowfile_with_time(11, 200)).unwrap();
+        conn2.try_send(make_flowfile_with_time(21, 175)).unwrap();
+        conn3.try_send(make_flowfile_with_time(31, 250)).unwrap();
 
-        let mut session = make_session(vec![conn1.clone(), conn2.clone(), conn3.clone()]);
+        let mut session = make_session(vec![conn1, conn2, conn3]);
 
-        // Request 6 items: should get 2 from each connection (6/3 = 2 each).
         let batch = session.get_batch(6);
         assert_eq!(batch.len(), 6);
 
-        // Count items from each connection.
-        let from_conn1 = batch
-            .iter()
-            .filter(|ff| ff.id >= 100 && ff.id < 200)
-            .count();
-        let from_conn2 = batch
-            .iter()
-            .filter(|ff| ff.id >= 200 && ff.id < 300)
-            .count();
-        let from_conn3 = batch
-            .iter()
-            .filter(|ff| ff.id >= 300 && ff.id < 400)
-            .count();
-
-        assert_eq!(from_conn1, 2);
-        assert_eq!(from_conn2, 2);
-        assert_eq!(from_conn3, 2);
+        // Expected temporal order: 20(50), 10(100), 30(150), 21(175), 11(200), 31(250)
+        let ids: Vec<u64> = batch.iter().map(|ff| ff.id).collect();
+        assert_eq!(ids, vec![20, 10, 30, 21, 11, 31]);
     }
 
     #[test]
-    fn get_batch_handles_uneven_division() {
+    fn get_batch_older_items_on_later_connection_come_first() {
+        // This is the key scenario that round-robin got wrong:
+        // conn2 has older FlowFiles, but with round-robin conn1 would be
+        // processed first because it's earlier in the list.
         let conn1 = Arc::new(FlowConnection::new("conn1", BackPressureConfig::default()));
         let conn2 = Arc::new(FlowConnection::new("conn2", BackPressureConfig::default()));
 
+        // conn1: newer FlowFiles (t=5000, 6000, 7000)
+        conn1.try_send(make_flowfile_with_time(1, 5000)).unwrap();
+        conn1.try_send(make_flowfile_with_time(2, 6000)).unwrap();
+        conn1.try_send(make_flowfile_with_time(3, 7000)).unwrap();
+
+        // conn2: older FlowFiles (t=1000, 2000, 3000)
+        conn2.try_send(make_flowfile_with_time(4, 1000)).unwrap();
+        conn2.try_send(make_flowfile_with_time(5, 2000)).unwrap();
+        conn2.try_send(make_flowfile_with_time(6, 3000)).unwrap();
+
+        let mut session = make_session(vec![conn1, conn2]);
+
+        let batch = session.get_batch(6);
+        assert_eq!(batch.len(), 6);
+
+        // All of conn2's items should come before conn1's items.
+        let ids: Vec<u64> = batch.iter().map(|ff| ff.id).collect();
+        assert_eq!(ids, vec![4, 5, 6, 1, 2, 3]);
+    }
+
+    #[test]
+    fn get_batch_fills_from_available_when_one_is_sparse() {
+        let conn1 = Arc::new(FlowConnection::new("conn1", BackPressureConfig::default()));
+        let conn2 = Arc::new(FlowConnection::new("conn2", BackPressureConfig::default()));
+
+        // conn1 has only 1 old item, conn2 has plenty of newer items.
+        conn1.try_send(make_flowfile_with_time(100, 50)).unwrap();
         for i in 0..10 {
-            conn1.try_send(make_flowfile(100 + i)).unwrap();
-            conn2.try_send(make_flowfile(200 + i)).unwrap();
+            conn2
+                .try_send(make_flowfile_with_time(200 + i, 100 + i * 10))
+                .unwrap();
         }
 
         let mut session = make_session(vec![conn1.clone(), conn2.clone()]);
 
-        // Request 5 items from 2 connections: 5/2 = 2 each + 1 extra.
-        let batch = session.get_batch(5);
-        assert_eq!(batch.len(), 5);
-
-        let from_conn1 = batch
-            .iter()
-            .filter(|ff| ff.id >= 100 && ff.id < 200)
-            .count();
-        let from_conn2 = batch
-            .iter()
-            .filter(|ff| ff.id >= 200 && ff.id < 300)
-            .count();
-
-        // One connection gets 3, the other gets 2.
-        assert!(from_conn1 >= 2 && from_conn1 <= 3);
-        assert!(from_conn2 >= 2 && from_conn2 <= 3);
-        assert_eq!(from_conn1 + from_conn2, 5);
-    }
-
-    #[test]
-    fn get_batch_fills_remainder_from_available() {
-        let conn1 = Arc::new(FlowConnection::new("conn1", BackPressureConfig::default()));
-        let conn2 = Arc::new(FlowConnection::new("conn2", BackPressureConfig::default()));
-
-        // conn1 has only 1 item, conn2 has plenty.
-        conn1.try_send(make_flowfile(100)).unwrap();
-        for i in 0..10 {
-            conn2.try_send(make_flowfile(200 + i)).unwrap();
-        }
-
-        let mut session = make_session(vec![conn1.clone(), conn2.clone()]);
-
-        // Request 6: conn1 quota is 3 but only has 1. Remainder should come from conn2.
         let batch = session.get_batch(6);
         assert_eq!(batch.len(), 6);
 
-        let from_conn1 = batch
-            .iter()
-            .filter(|ff| ff.id >= 100 && ff.id < 200)
-            .count();
+        // conn1's single old item (t=50) should be first.
+        assert_eq!(batch[0].id, 100);
+
+        // Remaining 5 should come from conn2 in order.
         let from_conn2 = batch
             .iter()
             .filter(|ff| ff.id >= 200 && ff.id < 300)
             .count();
-
-        assert_eq!(from_conn1, 1);
         assert_eq!(from_conn2, 5);
     }
 
     #[test]
-    fn get_batch_starvation_prevented() {
-        // This is the original bug scenario: conn1 has >= max items,
-        // conn2 should still get its fair share.
+    fn get_batch_no_starvation_with_fifo() {
+        // With FIFO ordering, even if conn1 has many items, conn2's older
+        // items will be pulled first.
         let conn1 = Arc::new(FlowConnection::new("conn1", BackPressureConfig::default()));
         let conn2 = Arc::new(FlowConnection::new("conn2", BackPressureConfig::default()));
 
+        // conn1: timestamps 1, 3, 5, 7, 9, ...
         for i in 0..100 {
-            conn1.try_send(make_flowfile(100 + i)).unwrap();
+            conn1
+                .try_send(make_flowfile_with_time(100 + i, 1 + i * 2))
+                .unwrap();
         }
+        // conn2: timestamps 2, 4, 6, 8, 10, ...
         for i in 0..100 {
-            conn2.try_send(make_flowfile(200 + i)).unwrap();
+            conn2
+                .try_send(make_flowfile_with_time(200 + i, 2 + i * 2))
+                .unwrap();
         }
 
         let mut session = make_session(vec![conn1.clone(), conn2.clone()]);
@@ -944,6 +936,7 @@ mod tests {
         let batch = session.get_batch(10);
         assert_eq!(batch.len(), 10);
 
+        // Both connections contribute — FIFO interleaves by timestamp.
         let from_conn1 = batch
             .iter()
             .filter(|ff| ff.id >= 100 && ff.id < 200)
@@ -953,22 +946,27 @@ mod tests {
             .filter(|ff| ff.id >= 200 && ff.id < 300)
             .count();
 
-        // Both connections should contribute — conn2 must NOT be starved.
         assert_eq!(from_conn1, 5);
         assert_eq!(from_conn2, 5);
+
+        // Verify strict temporal order.
+        let timestamps: Vec<u64> = batch.iter().map(|ff| ff.created_at_nanos).collect();
+        for w in timestamps.windows(2) {
+            assert!(w[0] <= w[1], "Timestamps must be non-decreasing");
+        }
     }
 
     #[test]
     fn get_batch_single_connection_unchanged() {
         let conn = Arc::new(FlowConnection::new("conn1", BackPressureConfig::default()));
         for i in 0..10 {
-            conn.try_send(make_flowfile(i)).unwrap();
+            conn.try_send(make_flowfile_with_time(i, i * 100)).unwrap();
         }
 
         let mut session = make_session(vec![conn.clone()]);
         let batch = session.get_batch(5);
         assert_eq!(batch.len(), 5);
-        // With a single connection, all items come from it.
+        // With a single connection, all items come from it in FIFO order.
         for (i, ff) in batch.iter().enumerate() {
             assert_eq!(ff.id, i as u64);
         }
@@ -985,41 +983,19 @@ mod tests {
     }
 
     #[test]
-    fn get_batch_three_inputs_round_robin_advances() {
+    fn get_batch_partial_fill() {
         let conn1 = Arc::new(FlowConnection::new("conn1", BackPressureConfig::default()));
         let conn2 = Arc::new(FlowConnection::new("conn2", BackPressureConfig::default()));
-        let conn3 = Arc::new(FlowConnection::new("conn3", BackPressureConfig::default()));
 
-        for i in 0..20 {
-            conn1.try_send(make_flowfile(100 + i)).unwrap();
-            conn2.try_send(make_flowfile(200 + i)).unwrap();
-            conn3.try_send(make_flowfile(300 + i)).unwrap();
-        }
+        conn1.try_send(make_flowfile_with_time(1, 100)).unwrap();
+        conn2.try_send(make_flowfile_with_time(2, 200)).unwrap();
 
-        let mut session = make_session(vec![conn1.clone(), conn2.clone(), conn3.clone()]);
+        let mut session = make_session(vec![conn1, conn2]);
 
-        // First batch: starts at index 0.
-        let batch1 = session.get_batch(3);
-        assert_eq!(batch1.len(), 3);
-
-        // Second batch: round-robin should have advanced.
-        let batch2 = session.get_batch(3);
-        assert_eq!(batch2.len(), 3);
-
-        // Over two calls requesting 3 each (6 total), each connection
-        // should have been drawn from.
-        let total_from_conn1 = conn1.count();
-        let total_from_conn2 = conn2.count();
-        let total_from_conn3 = conn3.count();
-
-        // Each started with 20, so items taken = 20 - remaining.
-        let taken1 = 20 - total_from_conn1;
-        let taken2 = 20 - total_from_conn2;
-        let taken3 = 20 - total_from_conn3;
-        assert_eq!(taken1 + taken2 + taken3, 6);
-        // Each connection should have contributed at least 1.
-        assert!(taken1 >= 1);
-        assert!(taken2 >= 1);
-        assert!(taken3 >= 1);
+        // Request 10 but only 2 are available.
+        let batch = session.get_batch(10);
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch[0].id, 1); // Oldest first.
+        assert_eq!(batch[1].id, 2);
     }
 }
