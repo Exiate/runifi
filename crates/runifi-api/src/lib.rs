@@ -109,6 +109,7 @@ pub fn create_router_with_registry(
         .merge(routes::provenance::routes())
         .merge(routes::reporting_tasks::routes())
         .merge(routes::versions::routes())
+        .merge(routes::cluster::routes())
         .merge(routes::process_groups::routes())
         .merge(dashboard::routes())
         .layer(axum::middleware::from_fn_with_state(

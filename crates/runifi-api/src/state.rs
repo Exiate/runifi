@@ -6,6 +6,7 @@ use runifi_core::auth::identity_mapper::IdentityMapper;
 use runifi_core::auth::jwt::JwtConfig;
 use runifi_core::auth::session::SessionManager;
 use runifi_core::auth::store::UserStore;
+use runifi_core::cluster::ClusterCoordinator;
 use runifi_core::config::flow_config::{AuthConfig, SecurityConfig};
 use runifi_core::engine::handle::EngineHandle;
 use runifi_core::registry::plugin_registry::PluginRegistry;
@@ -40,6 +41,8 @@ pub struct ApiState {
     pub identity_mapper: Arc<IdentityMapper>,
     /// Session manager for unified session handling.
     pub session_manager: Option<Arc<SessionManager>>,
+    /// Cluster coordinator for cluster management operations.
+    pub cluster_coordinator: Option<Arc<ClusterCoordinator>>,
 }
 
 impl ApiState {
@@ -59,6 +62,7 @@ impl ApiState {
             auth_chain: None,
             identity_mapper: Arc::new(IdentityMapper::default()),
             session_manager: None,
+            cluster_coordinator: None,
         }
     }
 
@@ -83,6 +87,7 @@ impl ApiState {
             auth_chain: None,
             identity_mapper: Arc::new(IdentityMapper::default()),
             session_manager: None,
+            cluster_coordinator: None,
         }
     }
 
@@ -123,6 +128,11 @@ impl ApiState {
     /// Set the flow version store for git-based versioning.
     pub fn set_version_store(&mut self, store: Arc<FlowVersionStore>) {
         self.version_store = Some(store);
+    }
+
+    /// Set the cluster coordinator for cluster management operations.
+    pub fn set_cluster_coordinator(&mut self, coordinator: Arc<ClusterCoordinator>) {
+        self.cluster_coordinator = Some(coordinator);
     }
 
     /// Create a controller service instance by type name.

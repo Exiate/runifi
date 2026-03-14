@@ -1,5 +1,6 @@
 pub mod auth_routes;
 pub mod bulletins;
+pub mod cluster;
 pub mod connections;
 pub mod events;
 pub mod flow;
