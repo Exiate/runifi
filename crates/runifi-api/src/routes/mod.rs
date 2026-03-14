@@ -8,6 +8,7 @@ pub mod plugins;
 pub mod process_groups;
 pub mod processors;
 pub mod provenance;
+pub mod reporting_tasks;
 pub mod services;
 pub mod system;
 pub mod user_groups;

@@ -38,6 +38,13 @@ pub mod push_flowfile;
 #[cfg(feature = "record")]
 pub mod record;
 
+#[cfg(feature = "reporting")]
+pub mod bulletin_forwarder_task;
+#[cfg(feature = "reporting")]
+pub mod log_reporting_task;
+#[cfg(feature = "reporting")]
+pub mod prometheus_reporting_task;
+
 pub mod funnel;
 
 pub mod distributed_map_cache;

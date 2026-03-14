@@ -91,6 +91,7 @@ pub fn create_router_with_registry(
         .merge(routes::user_groups::routes())
         .merge(routes::labels::routes())
         .merge(routes::provenance::routes())
+        .merge(routes::reporting_tasks::routes())
         .merge(routes::versions::routes())
         .merge(routes::process_groups::routes())
         .merge(dashboard::routes())

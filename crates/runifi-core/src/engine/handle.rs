@@ -121,6 +121,7 @@ pub enum PluginKind {
     Source,
     Sink,
     Service,
+    ReportingTask,
 }
 
 /// Canvas position for a processor node (UI metadata only, not core engine data).
@@ -222,6 +223,8 @@ pub struct EngineHandle {
     pub provenance_repo: SharedProvenanceRepository,
     /// Local state provider for processor state persistence.
     pub state_provider: Option<SharedLocalStateProvider>,
+    /// Reporting task manager for system-level monitoring tasks.
+    pub reporting_task_manager: Option<super::reporting_task_manager::SharedReportingTaskManager>,
 }
 
 impl EngineHandle {
@@ -725,6 +728,26 @@ impl EngineHandle {
     /// Get info about a specific controller service.
     pub fn get_service_info(&self, name: &str) -> Option<ServiceInfo> {
         self.service_registry.read().get_service(name)
+    }
+
+    // ── Reporting task management ─────────────────────────────────────────
+
+    /// List all reporting tasks.
+    pub fn list_reporting_tasks(&self) -> Vec<super::reporting_task_manager::ReportingTaskInfo> {
+        self.reporting_task_manager
+            .as_ref()
+            .map(|m| m.read().list_tasks())
+            .unwrap_or_default()
+    }
+
+    /// Get info about a specific reporting task.
+    pub fn get_reporting_task(
+        &self,
+        name: &str,
+    ) -> Option<super::reporting_task_manager::ReportingTaskInfo> {
+        self.reporting_task_manager
+            .as_ref()
+            .and_then(|m| m.read().get_task(name))
     }
 
     // ── Label management ────────────────────────────────────────────────
