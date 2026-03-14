@@ -202,7 +202,10 @@ fn extract_credentials(req: &Request) -> AuthCredentials {
         }
     }
 
-    // No credentials found — return empty bearer to trigger Unsupported from all providers.
+    // No credentials found. Return an empty BearerToken so the chain
+    // attempts validation and returns Failed — rejecting the unauthenticated
+    // request. The legacy auth path below is only reached when no provider
+    // chain is configured.
     AuthCredentials::BearerToken(String::new())
 }
 

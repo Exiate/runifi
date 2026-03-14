@@ -43,11 +43,20 @@ fn default_identity_field() -> String {
 #[derive(Debug)]
 pub struct MtlsAuthProvider {
     config: MtlsConfig,
+    /// Pre-compiled identity regex (avoids per-request regex compilation).
+    identity_regex: Option<regex_lite::Regex>,
 }
 
 impl MtlsAuthProvider {
     pub fn new(config: MtlsConfig) -> Self {
-        Self { config }
+        let identity_regex = config
+            .identity_regex
+            .as_deref()
+            .and_then(|r| regex_lite::Regex::new(r).ok());
+        Self {
+            config,
+            identity_regex,
+        }
     }
 
     /// Get the mTLS configuration.
@@ -122,10 +131,8 @@ impl MtlsAuthProvider {
             }
         };
 
-        // Apply optional regex extraction.
-        if let Some(regex_str) = &self.config.identity_regex {
-            let re = regex_lite::Regex::new(regex_str)
-                .map_err(|e| AuthError::ConfigError(format!("Invalid identity_regex: {}", e)))?;
+        // Apply optional regex extraction (pre-compiled at construction time).
+        if let Some(ref re) = self.identity_regex {
             if let Some(caps) = re.captures(&raw_identity) {
                 // Use first capture group, or the whole match if no groups.
                 let matched = caps
@@ -137,7 +144,8 @@ impl MtlsAuthProvider {
             }
             return Err(AuthError::CertificateRejected(format!(
                 "CN/SAN '{}' did not match regex '{}'",
-                raw_identity, regex_str
+                raw_identity,
+                self.config.identity_regex.as_deref().unwrap_or("")
             )));
         }
 

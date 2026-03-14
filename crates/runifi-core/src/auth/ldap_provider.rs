@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use super::provider::{AuthCredentials, AuthError, AuthProvider, AuthResult, CredentialType};
+use super::provider::{AuthCredentials, AuthProvider, AuthResult, CredentialType};
 
 /// LDAP provider configuration from TOML.
 #[derive(Debug, Deserialize, Clone)]
@@ -137,10 +137,9 @@ impl AuthProvider for LdapAuthProvider {
         // LDAP protocol operations require a network client.
         // This is a structural implementation — actual LDAP bind/search
         // requires the ldap3 crate (added as optional dependency).
-        // For now, return unavailable so the chain falls through.
-        AuthResult::Failed(AuthError::ProviderUnavailable(
-            "LDAP provider requires ldap3 runtime (compile with --features ldap)".into(),
-        ))
+        // Return Unsupported so the chain continues to the next provider.
+        tracing::warn!("LDAP provider not compiled — skipping (compile with --features ldap)");
+        AuthResult::Unsupported
     }
 }
 

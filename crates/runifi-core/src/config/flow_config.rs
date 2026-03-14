@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use serde::Deserialize;
@@ -814,7 +814,7 @@ pub struct AuthConfig {
     /// Group-to-role mapping for external providers.
     /// Maps identity provider group names to RuniFi roles.
     #[serde(default)]
-    pub group_mapping: HashMap<String, String>,
+    pub group_mapping: BTreeMap<String, String>,
     /// Default role when no group mapping matches.
     #[serde(default = "default_role")]
     pub default_role: String,
@@ -837,7 +837,7 @@ impl Default for AuthConfig {
             ldap: None,
             mtls: None,
             chain_order: Vec::new(),
-            group_mapping: HashMap::new(),
+            group_mapping: BTreeMap::new(),
             default_role: default_role(),
             max_sessions_per_user: None,
         }

@@ -20,12 +20,21 @@ impl ApiKeyAuthProvider {
     }
 
     fn validate_key(&self, provided: &str) -> Option<&str> {
+        let mut found_role: Option<&str> = None;
+        // Compare against all keys in constant time to prevent length-based
+        // timing side-channels. Pad both values to equal length before comparison.
         for key in self.security.key_strings() {
-            if provided.len() == key.len() && provided.as_bytes().ct_eq(key.as_bytes()).into() {
-                return self.security.role_for_key(provided);
+            let max_len = provided.len().max(key.len());
+            let mut a = vec![0u8; max_len];
+            let mut b = vec![0u8; max_len];
+            a[..provided.len()].copy_from_slice(provided.as_bytes());
+            b[..key.len()].copy_from_slice(key.as_bytes());
+            let lengths_match = provided.len() == key.len();
+            if lengths_match && bool::from(a.ct_eq(&b)) && found_role.is_none() {
+                found_role = self.security.role_for_key(key);
             }
         }
-        None
+        found_role
     }
 }
 
@@ -51,7 +60,7 @@ impl AuthProvider for ApiKeyAuthProvider {
 
         match self.validate_key(key) {
             Some(role) => AuthResult::Authenticated(UserIdentity {
-                username: format!("api-key-{}", &key[..key.len().min(8)]),
+                username: format!("api-key-***{}", &key[key.len().saturating_sub(4)..]),
                 display_name: None,
                 groups: vec![role.to_string()],
                 provider: "api-key".into(),
@@ -91,6 +100,8 @@ mod tests {
             AuthResult::Authenticated(id) => {
                 assert_eq!(id.provider, "api-key");
                 assert!(id.groups.contains(&"admin".to_string()));
+                // Username shows only last 4 chars of key.
+                assert_eq!(id.username, "api-key-***2345");
             }
             _ => panic!("Expected Authenticated"),
         }

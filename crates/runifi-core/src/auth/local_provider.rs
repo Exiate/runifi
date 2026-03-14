@@ -23,6 +23,16 @@ impl LocalAuthProvider {
             jwt_config,
         }
     }
+
+    /// Resolve group names for a local user by scanning all groups.
+    fn resolve_groups(&self, user_id: &uuid::Uuid) -> Vec<String> {
+        self.user_store
+            .list_groups()
+            .into_iter()
+            .filter(|g| g.members.contains(user_id))
+            .map(|g| g.name)
+            .collect()
+    }
 }
 
 #[async_trait::async_trait]
@@ -39,15 +49,18 @@ impl AuthProvider for LocalAuthProvider {
         match credentials {
             AuthCredentials::Password { username, password } => {
                 match self.user_store.authenticate(username, password) {
-                    Ok(user) => AuthResult::Authenticated(UserIdentity {
-                        username: user.username,
-                        display_name: None,
-                        groups: vec![],
-                        provider: "local".into(),
-                        email: None,
-                        expires_at: None,
-                        provider_data: Some(user.id.to_string()),
-                    }),
+                    Ok(user) => {
+                        let groups = self.resolve_groups(&user.id);
+                        AuthResult::Authenticated(UserIdentity {
+                            username: user.username,
+                            display_name: None,
+                            groups,
+                            provider: "local".into(),
+                            email: None,
+                            expires_at: None,
+                            provider_data: Some(user.id.to_string()),
+                        })
+                    }
                     Err(super::store::UserStoreError::AccountDisabled(u)) => {
                         AuthResult::Failed(AuthError::AccountDisabled(u))
                     }
@@ -59,10 +72,14 @@ impl AuthProvider for LocalAuthProvider {
                     if self.user_store.is_token_revoked(&claims.jti) {
                         return AuthResult::Failed(AuthError::TokenRevoked);
                     }
+                    let user_id = claims.sub.parse::<uuid::Uuid>().ok();
+                    let groups = user_id
+                        .map(|id| self.resolve_groups(&id))
+                        .unwrap_or_default();
                     AuthResult::Authenticated(UserIdentity {
                         username: claims.username,
                         display_name: None,
-                        groups: vec![],
+                        groups,
                         provider: "local".into(),
                         email: None,
                         expires_at: None,
