@@ -504,6 +504,7 @@ impl EngineHandle {
 
     /// Update extended processor configuration (properties + settings + scheduling + relationships + comments).
     /// Accepts partial updates — only non-None fields are applied.
+    #[allow(clippy::too_many_arguments)]
     pub fn update_processor_config(
         &self,
         name: &str,
@@ -938,9 +939,15 @@ impl EngineHandle {
             .read()
             .iter()
             .map(|p| {
-                let penalty = p.penalty_duration_ms.load(std::sync::atomic::Ordering::Relaxed);
-                let yield_ms = p.yield_duration_ms.load(std::sync::atomic::Ordering::Relaxed);
-                let concurrent = p.concurrent_tasks.load(std::sync::atomic::Ordering::Relaxed);
+                let penalty = p
+                    .penalty_duration_ms
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let yield_ms = p
+                    .yield_duration_ms
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let concurrent = p
+                    .concurrent_tasks
+                    .load(std::sync::atomic::Ordering::Relaxed);
                 let bulletin = p.bulletin_level.read().clone();
                 let comments = p.comments.read().clone();
                 let auto_term = p.auto_terminated_relationships.read().clone();
@@ -949,12 +956,36 @@ impl EngineHandle {
                     type_name: p.type_name.clone(),
                     scheduling: scheduling_display_to_persisted(&p.scheduling_display),
                     properties: p.properties.read().clone(),
-                    penalty_duration_ms: if penalty != 30_000 { Some(penalty) } else { None },
-                    yield_duration_ms: if yield_ms != 1_000 { Some(yield_ms) } else { None },
-                    bulletin_level: if bulletin != "WARN" { Some(bulletin) } else { None },
-                    concurrent_tasks: if concurrent != 1 { Some(concurrent) } else { None },
-                    auto_terminated_relationships: if auto_term.is_empty() { None } else { Some(auto_term) },
-                    comments: if comments.is_empty() { None } else { Some(comments) },
+                    penalty_duration_ms: if penalty != 30_000 {
+                        Some(penalty)
+                    } else {
+                        None
+                    },
+                    yield_duration_ms: if yield_ms != 1_000 {
+                        Some(yield_ms)
+                    } else {
+                        None
+                    },
+                    bulletin_level: if bulletin != "WARN" {
+                        Some(bulletin)
+                    } else {
+                        None
+                    },
+                    concurrent_tasks: if concurrent != 1 {
+                        Some(concurrent)
+                    } else {
+                        None
+                    },
+                    auto_terminated_relationships: if auto_term.is_empty() {
+                        None
+                    } else {
+                        Some(auto_term)
+                    },
+                    comments: if comments.is_empty() {
+                        None
+                    } else {
+                        Some(comments)
+                    },
                 }
             })
             .collect();

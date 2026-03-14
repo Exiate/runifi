@@ -346,18 +346,16 @@ async fn update_processor_config(
     Path(name): Path<String>,
     Json(body): Json<ProcessorConfigUpdateRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    state
-        .handle
-        .update_processor_config(
-            &name,
-            body.properties,
-            body.penalty_duration_ms,
-            body.yield_duration_ms,
-            body.bulletin_level,
-            body.concurrent_tasks,
-            body.auto_terminated_relationships,
-            body.comments,
-        )?;
+    state.handle.update_processor_config(
+        &name,
+        body.properties,
+        body.penalty_duration_ms,
+        body.yield_duration_ms,
+        body.bulletin_level,
+        body.concurrent_tasks,
+        body.auto_terminated_relationships,
+        body.comments,
+    )?;
 
     Ok(Json(
         serde_json::json!({ "status": "updated", "processor": name }),

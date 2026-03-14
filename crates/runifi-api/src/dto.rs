@@ -374,8 +374,7 @@ impl ProcessorConfigResponse {
             .relationships
             .iter()
             .map(|r| {
-                let is_auto_terminated =
-                    r.auto_terminated || auto_term.contains(&r.name);
+                let is_auto_terminated = r.auto_terminated || auto_term.contains(&r.name);
                 RelationshipResponse {
                     name: r.name.clone(),
                     description: r.description.clone(),

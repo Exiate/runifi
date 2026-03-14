@@ -1104,7 +1104,7 @@ body {
 /* ── Processor config modal ─────────────────────────────────── */
 
 .config-panel {
-  max-width: 560px;
+  max-width: 700px;
   width: 100%;
   max-height: 90vh;
   overflow: hidden;
@@ -1273,6 +1273,167 @@ body {
   letter-spacing: 0.05em;
   color: var(--text-dim);
   margin-bottom: 0.5rem;
+}
+
+/* Tab error badge */
+.config-tab.has-error::after {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  background: var(--danger);
+  border-radius: 50%;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+/* EL support indicator */
+.config-el-indicator {
+  font-size: 0.6rem;
+  color: var(--accent);
+  background: rgba(79, 143, 247, 0.1);
+  border-radius: 3px;
+  padding: 0.05rem 0.3rem;
+  font-family: monospace;
+}
+
+/* Sensitive field eye toggle */
+.config-eye-toggle {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0.2rem;
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+.config-eye-toggle:hover {
+  color: var(--text);
+}
+
+/* Sensitive field wrapper */
+.config-sensitive-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.config-sensitive-wrapper .form-input {
+  flex: 1;
+}
+
+/* Validation indicator */
+.config-validation-ok {
+  color: var(--success);
+  font-size: 0.75rem;
+  margin-left: 0.3rem;
+}
+
+.config-validation-error {
+  color: var(--danger);
+  font-size: 0.75rem;
+  margin-left: 0.3rem;
+}
+
+/* Validation badge on tab headers */
+.config-tab-badge {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  background: var(--danger);
+  border-radius: 50%;
+  margin-left: 5px;
+  vertical-align: middle;
+}
+
+/* Input with unit suffix (e.g. "ms") */
+.config-input-with-unit {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.config-input-with-unit .form-input {
+  flex: 1;
+}
+
+.config-unit {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+/* Input with action button (e.g. eye toggle for sensitive fields) */
+.config-input-with-action {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.config-input-with-action .form-input {
+  flex: 1;
+}
+
+/* Expression Language support badge */
+.config-el-badge {
+  font-size: 0.58rem;
+  font-weight: 700;
+  color: var(--accent);
+  background: rgba(79, 143, 247, 0.1);
+  border-radius: 3px;
+  padding: 0.05rem 0.3rem;
+  font-family: monospace;
+}
+
+/* Sensitive property badge */
+.config-sensitive-badge {
+  font-size: 0.58rem;
+  font-weight: 700;
+  color: var(--warning);
+  background: rgba(251, 191, 36, 0.1);
+  border-radius: 3px;
+  padding: 0.05rem 0.3rem;
+}
+
+/* Relationship auto-terminate checkbox (config modal) */
+.config-checkbox {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.config-checkbox:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* Required mark asterisk */
+.config-required-mark {
+  color: var(--danger);
+  font-weight: 700;
+  margin-right: 0.15rem;
+}
+
+/* Field status line (default + validation) */
+.config-field-status {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+/* Relationship auto-terminate checkbox */
+.rel-checkbox {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+/* Number spinner for concurrent tasks */
+.config-spinner {
+  width: 80px;
 }
 
 /* ── Relationship table (shared by config + queue) ──────────── */
