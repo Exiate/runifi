@@ -15,6 +15,8 @@ pub enum InvocationResult {
     Failed(String),
     /// Processor panicked (caught by catch_unwind).
     Panic(String),
+    /// Processor requested a yield (no more work available right now).
+    Yield,
 }
 
 /// Wraps a processor with fault isolation, failure tracking, and circuit breaker logic.
@@ -109,6 +111,11 @@ impl ProcessorSupervisor {
                 self.consecutive_failures = 0;
                 InvocationResult::Success
             }
+            Ok(Err(runifi_plugin_api::result::PluginError::Yield)) => {
+                // Yield is not a failure — reset consecutive failures.
+                self.consecutive_failures = 0;
+                InvocationResult::Yield
+            }
             Ok(Err(e)) => {
                 self.record_failure();
                 InvocationResult::Failed(e.to_string())
@@ -140,6 +147,19 @@ impl ProcessorSupervisor {
     /// Get the processor's relationships.
     pub fn relationships(&self) -> Vec<runifi_plugin_api::Relationship> {
         self.processor.relationships()
+    }
+
+    /// Get the processor's property descriptors.
+    pub fn property_descriptors(&self) -> Vec<runifi_plugin_api::PropertyDescriptor> {
+        self.processor.property_descriptors()
+    }
+
+    /// Validate the processor's configuration.
+    pub fn validate(
+        &self,
+        context: &dyn ProcessContext,
+    ) -> Vec<runifi_plugin_api::ValidationResult> {
+        self.processor.validate(context)
     }
 
     fn record_failure(&mut self) {

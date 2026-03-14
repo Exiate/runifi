@@ -37,6 +37,9 @@ pub fn routes() -> Router<ApiState> {
         .route("/api/v1/processors/{name}/start", post(start_processor))
         .route("/api/v1/processors/{name}/pause", post(pause_processor))
         .route("/api/v1/processors/{name}/resume", post(resume_processor))
+        .route("/api/v1/processors/{name}/disable", put(disable_processor))
+        .route("/api/v1/processors/{name}/enable", put(enable_processor))
+        .route("/api/v1/processors/{name}/validation", get(get_validation))
         .route(
             "/api/v1/processors/{name}/state",
             delete_method(clear_processor_state),
@@ -414,6 +417,46 @@ async fn resume_processor(
     } else {
         Err(ApiError::ProcessorNotFound(name))
     }
+}
+
+async fn disable_processor(
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    state
+        .handle
+        .disable_processor(&name)
+        .map_err(ApiError::ProcessorNotFound)?;
+    Ok(Json(
+        serde_json::json!({ "status": "disabled", "processor": name }),
+    ))
+}
+
+async fn enable_processor(
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    state
+        .handle
+        .enable_processor(&name)
+        .map_err(ApiError::ProcessorNotFound)?;
+    Ok(Json(
+        serde_json::json!({ "status": "enabled", "processor": name }),
+    ))
+}
+
+async fn get_validation(
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let errors = state
+        .handle
+        .get_validation_errors(&name)
+        .map_err(ApiError::ProcessorNotFound)?;
+    Ok(Json(serde_json::json!({
+        "valid": errors.is_empty(),
+        "errors": errors,
+    })))
 }
 
 // ── Processor State Endpoints ─────────────────────────────────────────────────
