@@ -61,6 +61,7 @@ pub struct PropertyDescriptorInfo {
     pub default_value: Option<String>,
     pub sensitive: bool,
     pub allowed_values: Option<Vec<String>>,
+    pub expression_language_supported: bool,
 }
 
 /// Static metadata about a processor relationship, suitable for API responses.
@@ -94,6 +95,18 @@ pub struct ProcessorInfo {
     /// Shared input notifier list — held so the mutation handler can register
     /// event-driven wakeup notifiers for hot-added input connections.
     pub input_notifiers: SharedInputNotifiers,
+    /// Penalty duration in milliseconds (default 30000).
+    pub penalty_duration_ms: Arc<AtomicU64>,
+    /// Yield duration in milliseconds (default 1000).
+    pub yield_duration_ms: Arc<AtomicU64>,
+    /// Bulletin level threshold: DEBUG, INFO, WARN, ERROR (default WARN).
+    pub bulletin_level: Arc<RwLock<String>>,
+    /// Number of concurrent tasks (default 1, currently enforced as max 1).
+    pub concurrent_tasks: Arc<AtomicU64>,
+    /// User comments (persisted with config).
+    pub comments: Arc<RwLock<String>>,
+    /// Auto-terminated relationship names (configurable at runtime).
+    pub auto_terminated_relationships: Arc<RwLock<Vec<String>>>,
 }
 
 /// Information about a connection, visible to the API.
@@ -489,6 +502,123 @@ impl EngineHandle {
         Ok(())
     }
 
+    /// Update extended processor configuration (properties + settings + scheduling + relationships + comments).
+    /// Accepts partial updates — only non-None fields are applied.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_processor_config(
+        &self,
+        name: &str,
+        properties: Option<HashMap<String, String>>,
+        penalty_duration_ms: Option<u64>,
+        yield_duration_ms: Option<u64>,
+        bulletin_level: Option<String>,
+        concurrent_tasks: Option<u64>,
+        auto_terminated_relationships: Option<Vec<String>>,
+        comments: Option<String>,
+    ) -> Result<(), ConfigUpdateError> {
+        let processors = self.processors.read();
+        let info = processors
+            .iter()
+            .find(|p| p.name == name)
+            .ok_or_else(|| ConfigUpdateError::NotFound(format!("Processor not found: {}", name)))?;
+
+        // Check stopped state.
+        let enabled = info
+            .metrics
+            .enabled
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let active = info
+            .metrics
+            .active
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if enabled || active {
+            return Err(ConfigUpdateError::StateConflict(
+                "Processor must be stopped before updating configuration".to_string(),
+            ));
+        }
+
+        // Validate and apply properties if provided.
+        if let Some(ref new_properties) = properties {
+            let mut props = info.properties.write();
+            for desc in &info.property_descriptors {
+                if desc.required {
+                    let has_value = new_properties.contains_key(&desc.name);
+                    let has_default = desc.default_value.is_some();
+                    if !has_value && !has_default {
+                        return Err(ConfigUpdateError::ValidationError(format!(
+                            "Required property '{}' is missing",
+                            desc.name
+                        )));
+                    }
+                }
+            }
+            for (key, value) in new_properties {
+                if let Some(desc) = info.property_descriptors.iter().find(|d| d.name == *key)
+                    && let Some(ref allowed) = desc.allowed_values
+                    && !allowed.iter().any(|v| v == value)
+                {
+                    return Err(ConfigUpdateError::ValidationError(format!(
+                        "Invalid value '{}' for property '{}'. Allowed: {:?}",
+                        value, key, allowed
+                    )));
+                }
+            }
+            *props = new_properties.clone();
+        }
+
+        // Apply penalty duration.
+        if let Some(penalty) = penalty_duration_ms {
+            info.penalty_duration_ms
+                .store(penalty, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        // Apply yield duration.
+        if let Some(yield_ms) = yield_duration_ms {
+            info.yield_duration_ms
+                .store(yield_ms, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        // Validate and apply bulletin level.
+        if let Some(ref level) = bulletin_level {
+            match level.as_str() {
+                "DEBUG" | "INFO" | "WARN" | "ERROR" => {
+                    *info.bulletin_level.write() = level.clone();
+                }
+                _ => {
+                    return Err(ConfigUpdateError::ValidationError(format!(
+                        "Invalid bulletin level '{}'. Allowed: DEBUG, INFO, WARN, ERROR",
+                        level
+                    )));
+                }
+            }
+        }
+
+        // Apply concurrent tasks (accept for forward compat, enforce max 1 for now).
+        if let Some(tasks) = concurrent_tasks {
+            let clamped = tasks.clamp(1, 1);
+            info.concurrent_tasks
+                .store(clamped, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        // Apply auto-terminated relationships.
+        if let Some(ref auto_term) = auto_terminated_relationships {
+            *info.auto_terminated_relationships.write() = auto_term.clone();
+        }
+
+        // Apply comments.
+        if let Some(ref c) = comments {
+            *info.comments.write() = c.clone();
+        }
+
+        drop(processors);
+        self.audit_logger.log(&AuditEvent::success(
+            AuditAction::ProcessorConfigured,
+            AuditTarget::processor(name),
+        ));
+        self.notify_persist();
+        Ok(())
+    }
+
     // ── Runtime topology mutations ───────────────────────────────────────────
 
     /// Add a new processor at runtime (hot-add).
@@ -808,11 +938,55 @@ impl EngineHandle {
             .processors
             .read()
             .iter()
-            .map(|p| PersistedProcessor {
-                name: p.name.clone(),
-                type_name: p.type_name.clone(),
-                scheduling: scheduling_display_to_persisted(&p.scheduling_display),
-                properties: p.properties.read().clone(),
+            .map(|p| {
+                let penalty = p
+                    .penalty_duration_ms
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let yield_ms = p
+                    .yield_duration_ms
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let concurrent = p
+                    .concurrent_tasks
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let bulletin = p.bulletin_level.read().clone();
+                let comments = p.comments.read().clone();
+                let auto_term = p.auto_terminated_relationships.read().clone();
+                PersistedProcessor {
+                    name: p.name.clone(),
+                    type_name: p.type_name.clone(),
+                    scheduling: scheduling_display_to_persisted(&p.scheduling_display),
+                    properties: p.properties.read().clone(),
+                    penalty_duration_ms: if penalty != 30_000 {
+                        Some(penalty)
+                    } else {
+                        None
+                    },
+                    yield_duration_ms: if yield_ms != 1_000 {
+                        Some(yield_ms)
+                    } else {
+                        None
+                    },
+                    bulletin_level: if bulletin != "WARN" {
+                        Some(bulletin)
+                    } else {
+                        None
+                    },
+                    concurrent_tasks: if concurrent != 1 {
+                        Some(concurrent)
+                    } else {
+                        None
+                    },
+                    auto_terminated_relationships: if auto_term.is_empty() {
+                        None
+                    } else {
+                        Some(auto_term)
+                    },
+                    comments: if comments.is_empty() {
+                        None
+                    } else {
+                        Some(comments)
+                    },
+                }
             })
             .collect();
 

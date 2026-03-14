@@ -197,6 +197,7 @@ async fn create_processor(
                         );
                         leaked
                     }),
+                    expression_language_supported: d.expression_language_supported,
                 })
                 .collect()
         })
@@ -246,6 +247,7 @@ async fn create_processor(
                     );
                     leaked
                 }),
+                expression_language_supported: d.expression_language_supported,
             })
             .collect();
 
@@ -344,13 +346,16 @@ async fn update_processor_config(
     Path(name): Path<String>,
     Json(body): Json<ProcessorConfigUpdateRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let properties = body
-        .properties
-        .ok_or_else(|| ApiError::BadRequest("Missing 'properties' field in request body".into()))?;
-
-    state
-        .handle
-        .update_processor_properties(&name, properties)?;
+    state.handle.update_processor_config(
+        &name,
+        body.properties,
+        body.penalty_duration_ms,
+        body.yield_duration_ms,
+        body.bulletin_level,
+        body.concurrent_tasks,
+        body.auto_terminated_relationships,
+        body.comments,
+    )?;
 
     Ok(Json(
         serde_json::json!({ "status": "updated", "processor": name }),
