@@ -20,6 +20,7 @@ import {
   type OnConnect,
   type NodeMouseHandler,
   type EdgeMouseHandler,
+  Panel,
 } from '@xyflow/react';
 
 import { ProcessorNode } from './ProcessorNode';
@@ -29,7 +30,13 @@ import { ConnectionEdge } from './ConnectionEdge';
 import { AddProcessorModal } from './AddProcessorModal';
 import { ConnectionModal } from './ConnectionModal';
 import { ConfirmDialog } from './ConfirmDialog';
-import { ContextMenu, type ContextMenuState } from './ContextMenu';
+import { ContextMenu, type ContextMenuState, type AlignAction } from './ContextMenu';
+import { CanvasSearch } from './CanvasSearch';
+import {
+  alignLeft, alignCenter, alignRight,
+  alignTop, alignMiddle, alignBottom,
+  distributeHorizontally, distributeVertically,
+} from '../utils/alignment';
 import { ProcessorConfigModal } from './ProcessorConfigModal';
 import { QueueInspectorModal } from './QueueInspectorModal';
 import { ConnectionConfigModal } from './ConnectionConfigModal';
@@ -79,6 +86,11 @@ interface QueueInspectTarget {
 interface ColorPickerTarget {
   nodeId: string;
   currentColor: string;
+}
+
+interface ClipboardEntry {
+  nodes: Array<{ id: string; type: string; position: { x: number; y: number }; data: Record<string, unknown> }>;
+  edges: ConnEdge[];
 }
 
 export interface FlowCanvasProps {
@@ -192,7 +204,7 @@ function FlowCanvasInner({
   colorRequestNodeIds,
   onColorRequestHandled,
 }: FlowCanvasProps) {
-  const { screenToFlowPosition, getViewport } = useReactFlow();
+  const { screenToFlowPosition, getViewport, setCenter, fitView } = useReactFlow();
 
   const [queueInspectTarget, setQueueInspectTarget] = useState<QueueInspectTarget | null>(null);
   const handleQueueClick = useCallback((connectionId: string, label: string) => {
@@ -604,7 +616,7 @@ function FlowCanvasInner({
               setNodes((prev) =>
                 prev.map((n): AnyNode =>
                   n.id === newLabel.id
-                    ? {
+                    ? ({
                         ...n,
                         id: `label-${created.id}`,
                         data: {
@@ -987,15 +999,322 @@ function FlowCanvasInner({
     setContextMenu(null);
   }, [setNodes]);
 
+  // --- Clipboard ---
+  const clipboardRef = useRef<ClipboardEntry | null>(null);
+  const pasteCountRef = useRef(0);
+
+  const handleCopy = useCallback((silent = false) => {
+    const selectedNodes = nodes.filter((n) => n.selected);
+    if (selectedNodes.length === 0) return;
+    const selectedIds = new Set(selectedNodes.map((n) => n.id));
+    const internalEdges = edges.filter(
+      (e) => selectedIds.has(e.source) && selectedIds.has(e.target),
+    );
+    clipboardRef.current = {
+      nodes: selectedNodes.map((n) => ({
+        id: n.id,
+        type: n.type ?? 'processorNode',
+        position: { ...n.position },
+        data: { ...n.data },
+      })),
+      edges: internalEdges.map((e) => ({ ...e })),
+    };
+    pasteCountRef.current = 0;
+    if (!silent) onToast('info', `Copied ${selectedNodes.length} component(s).`);
+  }, [nodes, edges, onToast]);
+
+  const handlePaste = useCallback(
+    (offsetX = 40, offsetY = 40) => {
+      const clip = clipboardRef.current;
+      if (!clip || clip.nodes.length === 0) return;
+
+      pasteCountRef.current += 1;
+      const totalOffsetX = offsetX * pasteCountRef.current;
+      const totalOffsetY = offsetY * pasteCountRef.current;
+
+      const existingIds = new Set(nodes.map((n) => n.id));
+      const idMap = new Map<string, string>();
+
+      // Create new nodes with unique names
+      for (const cn of clip.nodes) {
+        let newId = cn.id;
+        if (existingIds.has(newId)) {
+          let suffix = 1;
+          while (existingIds.has(`${cn.id} (copy${suffix > 1 ? ` ${suffix}` : ''})`)) suffix++;
+          newId = `${cn.id} (copy${suffix > 1 ? ` ${suffix}` : ''})`;
+        }
+        idMap.set(cn.id, newId);
+        existingIds.add(newId);
+      }
+
+      // Deselect current selection
+      setNodes((prev) => prev.map((n) => ({ ...n, selected: false })));
+
+      const newNodes: AnyNode[] = [];
+      const apiCalls: Promise<void>[] = [];
+
+      for (const cn of clip.nodes) {
+        const newId = idMap.get(cn.id)!;
+        const position = { x: cn.position.x + totalOffsetX, y: cn.position.y + totalOffsetY };
+
+        if (cn.type === 'labelNode') {
+          const labelData = cn.data as LabelNodeData;
+          const newLabel: LabelFlowNode = {
+            id: `label-pending-${Date.now()}-${newId}`,
+            type: 'labelNode' as const,
+            position,
+            data: { ...labelData, labelId: '', pending: true },
+            draggable: true,
+            selectable: true,
+            connectable: false,
+            selected: true,
+          };
+          newNodes.push(newLabel);
+
+          const tempId = newLabel.id;
+          apiCalls.push(
+            fetch('/api/v1/process-groups/root/labels', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                text: labelData.text,
+                x: position.x,
+                y: position.y,
+                width: labelData.width,
+                height: labelData.height,
+                background_color: labelData.backgroundColor,
+                font_size: labelData.fontSize,
+              }),
+            })
+              .then((res) => {
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                return res.json() as Promise<{ id: string }>;
+              })
+              .then((created) => {
+                setNodes((prev) =>
+                  prev.map((n) =>
+                    n.id === tempId
+                      ? ({ ...n, id: `label-${created.id}`, data: { ...(n.data as LabelNodeData), labelId: created.id, pending: false } } as AnyNode)
+                      : n,
+                  ),
+                );
+              })
+              .catch((err: unknown) => {
+                setNodes((prev) => prev.filter((n) => n.id !== tempId));
+                const msg = err instanceof Error ? err.message : String(err);
+                onToast('error', `Failed to paste label: ${msg}`);
+              }),
+          );
+        } else {
+          const procData = cn.data as ProcessorNodeData;
+          const newNode: AnyNode = {
+            id: newId,
+            type: cn.type as 'processorNode' | 'funnelNode',
+            position,
+            data: {
+              ...procData,
+              label: newId,
+              state: 'stopped',
+              metrics: null,
+              bulletin: null,
+              pending: true,
+            },
+            selected: true,
+          };
+          newNodes.push(newNode);
+
+          apiCalls.push(
+            fetch('/api/v1/processors', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                type: procData.typeName,
+                name: newId,
+                position,
+                properties: {},
+              }),
+            })
+              .then((res) => {
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                setNodes((prev) =>
+                  prev.map((n) =>
+                    n.id === newId ? ({ ...n, data: { ...n.data, pending: false } } as AnyNode) : n,
+                  ),
+                );
+              })
+              .catch((err: unknown) => {
+                setNodes((prev) => prev.filter((n) => n.id !== newId));
+                const msg = err instanceof Error ? err.message : String(err);
+                onToast('error', `Failed to paste "${newId}": ${msg}`);
+              }),
+          );
+        }
+      }
+
+      setNodes((prev) => [...prev, ...newNodes]);
+
+      // Create connections between pasted nodes after API calls
+      Promise.allSettled(apiCalls).then(() => {
+        for (const ce of clip.edges) {
+          const newSource = idMap.get(ce.source);
+          const newTarget = idMap.get(ce.target);
+          if (!newSource || !newTarget || !ce.data) continue;
+
+          const relationship = ce.data.relationship;
+          fetch('/api/v1/connections', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              source: newSource,
+              relationship,
+              destination: newTarget,
+            }),
+          })
+            .then((res) => {
+              if (!res.ok) throw new Error(`HTTP ${res.status}`);
+              return res.json() as Promise<{ id: string }>;
+            })
+            .then((data) => {
+              const edgeId = `${newSource}--${relationship}--${newTarget}--${Date.now()}`;
+              const newEdge: ConnEdge = {
+                id: edgeId,
+                source: newSource,
+                target: newTarget,
+                sourceHandle: ce.sourceHandle,
+                targetHandle: ce.targetHandle,
+                type: 'connectionEdge' as const,
+                data: {
+                  relationship,
+                  queuedCount: 0,
+                  queuedBytes: 0,
+                  backPressured: false,
+                  connectionId: data.id,
+                  pending: false,
+                  onQueueClick: handleQueueClick,
+                },
+                style: { stroke: 'var(--border)' },
+              };
+              setEdges((prev) => addEdge(newEdge, prev));
+            })
+            .catch((err: unknown) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              onToast('error', `Failed to recreate connection: ${msg}`);
+            });
+        }
+      });
+
+      onToast('info', `Pasting ${clip.nodes.length} component(s)...`);
+    },
+    [nodes, setNodes, setEdges, onToast, handleQueueClick],
+  );
+
+  const handleDuplicate = useCallback(() => {
+    handleCopy(true);
+    handlePaste(20, 20);
+  }, [handleCopy, handlePaste]);
+
+  // --- Alignment ---
+  const handleAlign = useCallback(
+    (action: AlignAction) => {
+      const selectedNodes = nodes.filter((n) => n.selected);
+      if (selectedNodes.length < 2) return;
+
+      const alignFns: Record<AlignAction, (nodes: typeof selectedNodes) => Map<string, { x: number; y: number }>> = {
+        'align-left': alignLeft,
+        'align-center': alignCenter,
+        'align-right': alignRight,
+        'align-top': alignTop,
+        'align-middle': alignMiddle,
+        'align-bottom': alignBottom,
+        'distribute-horizontal': distributeHorizontally,
+        'distribute-vertical': distributeVertically,
+      };
+
+      const fn = alignFns[action];
+      if (!fn) return;
+      const newPositions = fn(selectedNodes);
+
+      setNodes((prev) =>
+        prev.map((n) => {
+          const pos = newPositions.get(n.id);
+          if (!pos) return n;
+          return { ...n, position: pos };
+        }),
+      );
+
+      // Persist positions and recalculate edge routing
+      const movedIds = new Set<string>();
+      for (const [id, pos] of newPositions) {
+        persistPosition(id, pos.x, pos.y);
+        movedIds.add(id);
+      }
+      recalcEdgeRouting(movedIds);
+      setContextMenu(null);
+    },
+    [nodes, setNodes, persistPosition, recalcEdgeRouting],
+  );
+
+  // --- Canvas Search ---
+  const handleSearchSelect = useCallback(
+    (nodeId: string) => {
+      const node = nodes.find((n) => n.id === nodeId);
+      if (!node) return;
+      // Deselect all, then select the found node
+      setNodes((prev) =>
+        prev.map((n) => ({
+          ...n,
+          selected: n.id === nodeId,
+        })),
+      );
+      // Pan to node center
+      const width = node.measured?.width ?? 220;
+      const height = node.measured?.height ?? 100;
+      setCenter(
+        node.position.x + width / 2,
+        node.position.y + height / 2,
+        { zoom: 1, duration: 400 },
+      );
+    },
+    [nodes, setNodes, setCenter],
+  );
+
+  // --- Fit View ---
+  const handleFitView = useCallback(() => {
+    fitView({ padding: 0.15, duration: 300 });
+  }, [fitView]);
+
+  // --- Check if any modal/dialog is open ---
+  const isModalOpen = useCallback(() => {
+    return !!(pendingDrop || deleteTarget || pendingConnectionContext || configTarget || colorPickerTarget || queueInspectTarget);
+  }, [pendingDrop, deleteTarget, pendingConnectionContext, configTarget, colorPickerTarget, queueInspectTarget]);
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (
-          document.activeElement?.tagName === 'INPUT' ||
-          document.activeElement?.tagName === 'TEXTAREA'
-        )
-          return;
+      const isInput =
+        document.activeElement?.tagName === 'INPUT' ||
+        document.activeElement?.tagName === 'TEXTAREA' ||
+        (document.activeElement as HTMLElement)?.isContentEditable;
+      const modalOpen = isModalOpen();
 
+      // Escape always works
+      if (e.key === 'Escape') {
+        setContextMenu(null);
+        setPendingDrop(null);
+        setPendingConnectionContext(null);
+        setDeleteTarget(null);
+        setColorPickerTarget(null);
+        setQueueInspectTarget(null);
+        // Deselect all nodes
+        if (!modalOpen) {
+          setNodes((prev) => prev.map((n) => ({ ...n, selected: false })));
+        }
+        return;
+      }
+
+      // All other shortcuts disabled when modal open or input focused
+      if (isInput || modalOpen) return;
+
+      if (e.key === 'Delete' || e.key === 'Backspace') {
         const selectedIds = nodes.filter((n) => n.selected).map((n) => n.id);
         if (selectedIds.length > 1) {
           handleDeleteSelected();
@@ -1010,25 +1329,31 @@ function FlowCanvasInner({
         } else if (selectedEdge) {
           initiateDelete('edge', selectedEdge.id);
         }
+        return;
       }
-      if (e.key === 'Escape') {
-        setContextMenu(null);
-        setPendingDrop(null);
-        setPendingConnectionContext(null);
-        setDeleteTarget(null);
-        setColorPickerTarget(null);
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
-        if (
-          document.activeElement?.tagName === 'INPUT' ||
-          document.activeElement?.tagName === 'TEXTAREA'
-        )
-          return;
-        e.preventDefault();
-        handleSelectAll();
+
+      if (e.ctrlKey || e.metaKey) {
+        switch (e.key) {
+          case 'a':
+            e.preventDefault();
+            handleSelectAll();
+            break;
+          case 'c':
+            e.preventDefault();
+            handleCopy();
+            break;
+          case 'v':
+            e.preventDefault();
+            handlePaste();
+            break;
+          case 'd':
+            e.preventDefault();
+            handleDuplicate();
+            break;
+        }
       }
     },
-    [nodes, edges, initiateDelete, handleDeleteSelected, handleSelectAll],
+    [nodes, edges, initiateDelete, handleDeleteSelected, handleSelectAll, handleCopy, handlePaste, handleDuplicate, isModalOpen, setNodes],
   );
 
   const handleNodeContextMenu: NodeMouseHandler<AnyNode> = useCallback(
@@ -1222,8 +1547,8 @@ function FlowCanvasInner({
         }}
         fitView
         fitViewOptions={{ padding: 0.15 }}
-        minZoom={0.3}
-        maxZoom={2}
+        minZoom={0.2}
+        maxZoom={3}
         attributionPosition="bottom-right"
         colorMode="dark"
         deleteKeyCode={null}
@@ -1247,6 +1572,19 @@ function FlowCanvasInner({
             border: '1px solid var(--border)',
           }}
         />
+        <Panel position="top-right" className="canvas-top-panel">
+          <CanvasSearch nodes={nodes} onResultSelect={handleSearchSelect} />
+          <button
+            className="canvas-fit-btn"
+            onClick={handleFitView}
+            title="Fit to screen"
+            aria-label="Fit all components to screen"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+            </svg>
+          </button>
+        </Panel>
       </ReactFlow>
 
       {draggedPlugin && (
@@ -1340,6 +1678,7 @@ function FlowCanvasInner({
             onStartSelected={handleStartSelected}
             onStopSelected={handleStopSelected}
             onDeleteSelected={handleDeleteSelected}
+            onAlign={handleAlign}
             onClose={() => setContextMenu(null)}
           />
         );
