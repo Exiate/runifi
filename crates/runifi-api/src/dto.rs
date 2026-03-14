@@ -95,6 +95,16 @@ pub struct ConnectionResponse {
     pub queued_count: usize,
     pub queued_bytes: u64,
     pub back_pressured: bool,
+    /// Load balance strategy in effect for this connection.
+    /// Omitted from JSON when `None` (no load balancing).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub load_balance_strategy: Option<String>,
+    /// Partition attribute for `partition_by_attribute` strategy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub load_balance_partition_attribute: Option<String>,
+    /// Whether compression is enabled for cross-node transfer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub load_balance_compression: Option<bool>,
 }
 
 // ── Canvas position ────────────────────────────────────────────────────
@@ -410,6 +420,16 @@ pub struct CreateConnectionRequest {
     pub max_queue_size: Option<usize>,
     /// Maximum bytes in queue before back-pressure (default: 100 MB).
     pub max_queue_bytes: Option<u64>,
+    /// Load balance strategy: "do_not_load_balance" (default), "round_robin",
+    /// "partition_by_attribute", or "single_node".
+    #[serde(default)]
+    pub load_balance_strategy: Option<String>,
+    /// Attribute name for `partition_by_attribute` strategy.
+    #[serde(default)]
+    pub load_balance_partition_attribute: Option<String>,
+    /// Whether to compress FlowFile content during inter-node transfer.
+    #[serde(default)]
+    pub load_balance_compression: Option<bool>,
 }
 
 /// Response for a created or retrieved connection.
@@ -422,6 +442,15 @@ pub struct ConnectionDetailResponse {
     pub queued_count: usize,
     pub queued_bytes: u64,
     pub back_pressured: bool,
+    /// Load balance strategy in effect for this connection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub load_balance_strategy: Option<String>,
+    /// Partition attribute for `partition_by_attribute` strategy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub load_balance_partition_attribute: Option<String>,
+    /// Whether compression is enabled for cross-node transfer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub load_balance_compression: Option<bool>,
 }
 
 // ── Controller service DTOs ────────────────────────────────────────────

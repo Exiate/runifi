@@ -85,6 +85,9 @@ pub struct PersistedConnection {
     /// Attribute name for PriorityAttribute priority mode.
     #[serde(default)]
     pub priority_attribute: Option<String>,
+    /// Load balance configuration for cluster distribution.
+    #[serde(default)]
+    pub load_balancing: Option<crate::cluster::load_balance::LoadBalanceConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,6 +235,7 @@ impl PersistedFlowState {
                     } else {
                         (None, None, None)
                     };
+                let load_balancing = c.connection.load_balance_config().cloned();
                 PersistedConnection {
                     source: c.source_name.clone(),
                     relationship: c.relationship.clone(),
@@ -243,6 +247,7 @@ impl PersistedFlowState {
                     expiration,
                     priority,
                     priority_attribute,
+                    load_balancing,
                 }
             })
             .collect();
@@ -649,6 +654,7 @@ mod tests {
                 expiration: None,
                 priority: None,
                 priority_attribute: None,
+                load_balancing: None,
             }],
             positions: HashMap::from([(
                 "gen".to_string(),

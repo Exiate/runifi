@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use super::back_pressure::BackPressureConfig;
 use super::flow_connection::{FlowConnection, FlowFileSnapshot};
+use crate::cluster::load_balance::LoadBalanceConfig;
 
 /// Trait for querying metadata and state of a connection between processors.
 ///
@@ -41,6 +42,11 @@ pub trait ConnectionQuery: Send + Sync {
     fn remove_flowfile(&self, flowfile_id: u64) -> bool;
     /// Clear all FlowFiles from the queue. Returns the number removed.
     fn clear_queue(&self) -> usize;
+
+    /// Return the load balance configuration for this connection, if any.
+    fn load_balance_config(&self) -> Option<&LoadBalanceConfig> {
+        None
+    }
 
     /// Access the underlying FlowConnection (for persistence of expiration/priority).
     /// Returns `None` if the implementation does not use a FlowConnection.
@@ -129,6 +135,10 @@ impl ConnectionQuery for FlowConnectionQuery {
 
     fn clear_queue(&self) -> usize {
         self.connection.clear_queue()
+    }
+
+    fn load_balance_config(&self) -> Option<&LoadBalanceConfig> {
+        self.connection.load_balance_config()
     }
 
     fn flow_connection(&self) -> Option<&FlowConnection> {

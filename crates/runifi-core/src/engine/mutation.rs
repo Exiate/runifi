@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use tokio::sync::oneshot;
 
+use crate::cluster::load_balance::LoadBalanceConfig;
 use crate::connection::back_pressure::BackPressureConfig;
 
 /// A runtime mutation command sent to the engine via the command channel.
@@ -34,6 +35,7 @@ pub enum MutationCommand {
         relationship: String,
         dest_name: String,
         config: BackPressureConfig,
+        load_balance: Option<LoadBalanceConfig>,
         reply: oneshot::Sender<Result<String, MutationError>>,
     },
 

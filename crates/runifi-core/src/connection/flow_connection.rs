@@ -10,6 +10,7 @@ use tokio::sync::Notify;
 use tracing::warn;
 
 use super::back_pressure::BackPressureConfig;
+use crate::cluster::load_balance::LoadBalanceConfig;
 
 /// Lightweight snapshot of a FlowFile for queue inspection.
 ///
@@ -74,6 +75,10 @@ pub struct FlowConnection {
     expiration: Option<Duration>,
     /// Queue priority strategy.
     priority: QueuePriority,
+    /// Load balance configuration for distributing FlowFiles across
+    /// multiple connections on the same relationship. `None` means
+    /// no load balancing (default behavior).
+    load_balance: Option<LoadBalanceConfig>,
 }
 
 impl FlowConnection {
@@ -90,6 +95,7 @@ impl FlowConnection {
             shadow: Mutex::new(VecDeque::new()),
             expiration: None,
             priority: QueuePriority::Fifo,
+            load_balance: None,
         }
     }
 
@@ -112,6 +118,29 @@ impl FlowConnection {
             shadow: Mutex::new(VecDeque::new()),
             expiration,
             priority,
+            load_balance: None,
+        }
+    }
+
+    /// Create a new connection with load balance configuration.
+    pub fn with_load_balance(
+        id: impl Into<String>,
+        config: BackPressureConfig,
+        load_balance: LoadBalanceConfig,
+    ) -> Self {
+        let (sender, receiver) = channel::bounded(config.max_count);
+        Self {
+            id: id.into(),
+            sender,
+            receiver,
+            config,
+            count: AtomicUsize::new(0),
+            bytes: AtomicU64::new(0),
+            notify: Arc::new(Notify::new()),
+            shadow: Mutex::new(VecDeque::new()),
+            expiration: None,
+            priority: QueuePriority::Fifo,
+            load_balance: Some(load_balance),
         }
     }
 
@@ -305,6 +334,11 @@ impl FlowConnection {
     /// Get the queue priority strategy.
     pub fn queue_priority(&self) -> &QueuePriority {
         &self.priority
+    }
+
+    /// Get the load balance configuration, if any.
+    pub fn load_balance_config(&self) -> Option<&LoadBalanceConfig> {
+        self.load_balance.as_ref()
     }
 
     // ── Expiration ────────────────────────────────────────────────

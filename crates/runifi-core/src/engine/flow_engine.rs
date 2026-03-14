@@ -90,6 +90,7 @@ struct ConnBuilder {
     config: BackPressureConfig,
     expiration: Option<Duration>,
     priority: QueuePriority,
+    load_balance: Option<crate::cluster::load_balance::LoadBalanceConfig>,
 }
 
 impl FlowEngine {
@@ -211,6 +212,34 @@ impl FlowEngine {
             config,
             expiration,
             priority,
+            load_balance: None,
+        });
+        id
+    }
+
+    /// Connect two processors with load balance configuration.
+    #[allow(clippy::too_many_arguments)]
+    pub fn connect_with_load_balance(
+        &mut self,
+        source_id: NodeId,
+        relationship: &'static str,
+        dest_id: NodeId,
+        config: BackPressureConfig,
+        expiration: Option<Duration>,
+        priority: QueuePriority,
+        load_balance: Option<crate::cluster::load_balance::LoadBalanceConfig>,
+    ) -> ConnId {
+        let id = self.next_conn_id;
+        self.next_conn_id += 1;
+        self.connections.push(ConnBuilder {
+            _id: id,
+            source_node: source_id,
+            relationship,
+            dest_node: dest_id,
+            config,
+            expiration,
+            priority,
+            load_balance,
         });
         id
     }
@@ -240,12 +269,20 @@ impl FlowEngine {
         let mut flow_connections: Vec<(usize, &'static str, usize, Arc<FlowConnection>)> =
             Vec::new();
         for (idx, conn) in self.connections.iter().enumerate() {
-            let fc = Arc::new(FlowConnection::with_options(
-                format!("conn-{}", idx),
-                conn.config,
-                conn.expiration,
-                conn.priority.clone(),
-            ));
+            let fc = if let Some(ref lb_config) = conn.load_balance {
+                Arc::new(FlowConnection::with_load_balance(
+                    format!("conn-{}", idx),
+                    conn.config,
+                    lb_config.clone(),
+                ))
+            } else {
+                Arc::new(FlowConnection::with_options(
+                    format!("conn-{}", idx),
+                    conn.config,
+                    conn.expiration,
+                    conn.priority.clone(),
+                ))
+            };
             flow_connections.push((conn.source_node, conn.relationship, conn.dest_node, fc));
         }
 
@@ -812,12 +849,12 @@ async fn run_mutation_handler(
                     }
 
                     MutationCommand::AddConnection {
-                        source_name, relationship, dest_name, config, reply,
+                        source_name, relationship, dest_name, config, load_balance, reply,
                     } => {
                         handler.runtime_conn_id += 1;
                         let conn_id = format!("runtime-conn-{}", handler.runtime_conn_id);
                         let result = handler.handle_add_connection(
-                            conn_id, &source_name, &relationship, &dest_name, config,
+                            conn_id, &source_name, &relationship, &dest_name, config, load_balance,
                         );
                         let _ = reply.send(result);
                     }
