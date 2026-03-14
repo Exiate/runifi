@@ -53,6 +53,18 @@ pub struct PersistedProcessor {
     pub type_name: String,
     pub scheduling: PersistedScheduling,
     pub properties: HashMap<String, String>,
+    #[serde(default)]
+    pub penalty_duration_ms: Option<u64>,
+    #[serde(default)]
+    pub yield_duration_ms: Option<u64>,
+    #[serde(default)]
+    pub bulletin_level: Option<String>,
+    #[serde(default)]
+    pub concurrent_tasks: Option<u64>,
+    #[serde(default)]
+    pub auto_terminated_relationships: Option<Vec<String>>,
+    #[serde(default)]
+    pub comments: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -193,11 +205,25 @@ impl PersistedFlowState {
             .processors
             .read()
             .iter()
-            .map(|p| PersistedProcessor {
-                name: p.name.clone(),
-                type_name: p.type_name.clone(),
-                scheduling: scheduling_display_to_persisted(&p.scheduling_display),
-                properties: p.properties.read().clone(),
+            .map(|p| {
+                let penalty = p.penalty_duration_ms.load(std::sync::atomic::Ordering::Relaxed);
+                let yield_ms = p.yield_duration_ms.load(std::sync::atomic::Ordering::Relaxed);
+                let concurrent = p.concurrent_tasks.load(std::sync::atomic::Ordering::Relaxed);
+                let bulletin = p.bulletin_level.read().clone();
+                let comments = p.comments.read().clone();
+                let auto_term = p.auto_terminated_relationships.read().clone();
+                PersistedProcessor {
+                    name: p.name.clone(),
+                    type_name: p.type_name.clone(),
+                    scheduling: scheduling_display_to_persisted(&p.scheduling_display),
+                    properties: p.properties.read().clone(),
+                    penalty_duration_ms: if penalty != 30_000 { Some(penalty) } else { None },
+                    yield_duration_ms: if yield_ms != 1_000 { Some(yield_ms) } else { None },
+                    bulletin_level: if bulletin != "WARN" { Some(bulletin) } else { None },
+                    concurrent_tasks: if concurrent != 1 { Some(concurrent) } else { None },
+                    auto_terminated_relationships: if auto_term.is_empty() { None } else { Some(auto_term) },
+                    comments: if comments.is_empty() { None } else { Some(comments) },
+                }
             })
             .collect();
 
@@ -607,6 +633,12 @@ mod tests {
                     expression: None,
                 },
                 properties: HashMap::new(),
+                penalty_duration_ms: None,
+                yield_duration_ms: None,
+                bulletin_level: None,
+                concurrent_tasks: None,
+                auto_terminated_relationships: None,
+                comments: None,
             }],
             connections: vec![],
             positions: HashMap::new(),
@@ -631,6 +663,12 @@ mod tests {
                         expression: None,
                     },
                     properties: HashMap::from([("File Size".to_string(), "5120".to_string())]),
+                    penalty_duration_ms: None,
+                    yield_duration_ms: None,
+                    bulletin_level: None,
+                    concurrent_tasks: None,
+                    auto_terminated_relationships: None,
+                    comments: None,
                 },
                 PersistedProcessor {
                     name: "log".to_string(),
@@ -641,6 +679,12 @@ mod tests {
                         expression: None,
                     },
                     properties: HashMap::new(),
+                    penalty_duration_ms: None,
+                    yield_duration_ms: None,
+                    bulletin_level: None,
+                    concurrent_tasks: None,
+                    auto_terminated_relationships: None,
+                    comments: None,
                 },
             ],
             connections: vec![PersistedConnection {

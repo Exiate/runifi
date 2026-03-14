@@ -403,6 +403,36 @@ async fn main() -> Result<()> {
             }
         }
 
+        // Restore per-processor config fields (penalty, yield, bulletin, comments, etc.).
+        {
+            let procs = handle.processors.read();
+            for proc_state in &state.processors {
+                if let Some(info) = procs.iter().find(|p| p.name == proc_state.name) {
+                    if let Some(penalty) = proc_state.penalty_duration_ms {
+                        info.penalty_duration_ms
+                            .store(penalty, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    if let Some(yield_ms) = proc_state.yield_duration_ms {
+                        info.yield_duration_ms
+                            .store(yield_ms, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    if let Some(ref bulletin) = proc_state.bulletin_level {
+                        *info.bulletin_level.write() = bulletin.clone();
+                    }
+                    if let Some(concurrent) = proc_state.concurrent_tasks {
+                        info.concurrent_tasks
+                            .store(concurrent, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    if let Some(ref comments) = proc_state.comments {
+                        *info.comments.write() = comments.clone();
+                    }
+                    if let Some(ref auto_term) = proc_state.auto_terminated_relationships {
+                        *info.auto_terminated_relationships.write() = auto_term.clone();
+                    }
+                }
+            }
+        }
+
         // Restore process groups from persisted state.
         restore_process_groups(handle, &state.process_groups);
     }

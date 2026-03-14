@@ -112,6 +112,7 @@ mod tests {
             default_value: None,
             sensitive: false,
             allowed_values: None,
+            expression_language_supported: false,
         };
         let ctx = TestContext::new(vec![]);
         let errors = validate_processor(&[desc], &ctx, None);
@@ -128,6 +129,7 @@ mod tests {
             default_value: Some("/tmp".to_string()),
             sensitive: false,
             allowed_values: None,
+            expression_language_supported: false,
         };
         let ctx = TestContext::new(vec![]);
         let errors = validate_processor(&[desc], &ctx, None);
@@ -143,6 +145,7 @@ mod tests {
             default_value: None,
             sensitive: false,
             allowed_values: Some(vec!["fast".to_string(), "slow".to_string()]),
+            expression_language_supported: false,
         };
         let ctx = TestContext::new(vec![("mode", "invalid")]);
         let errors = validate_processor(&[desc], &ctx, None);
@@ -159,6 +162,7 @@ mod tests {
             default_value: None,
             sensitive: false,
             allowed_values: Some(vec!["fast".to_string(), "slow".to_string()]),
+            expression_language_supported: false,
         };
         let ctx = TestContext::new(vec![("mode", "fast")]);
         let errors = validate_processor(&[desc], &ctx, None);
@@ -174,6 +178,7 @@ mod tests {
             default_value: None,
             sensitive: false,
             allowed_values: None,
+            expression_language_supported: false,
         };
         let ctx = TestContext::new(vec![("path", "/data")]);
         let errors = validate_processor(&[desc], &ctx, None);

@@ -260,6 +260,12 @@ pub struct ProcessorConfigResponse {
     pub property_descriptors: Vec<PropertyDescriptorResponse>,
     pub scheduling: SchedulingResponse,
     pub relationships: Vec<RelationshipResponse>,
+    pub penalty_duration_ms: u64,
+    pub yield_duration_ms: u64,
+    pub bulletin_level: String,
+    pub concurrent_tasks: u64,
+    pub comments: String,
+    pub auto_terminated_relationships: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -270,12 +276,14 @@ pub struct PropertyDescriptorResponse {
     pub default_value: Option<String>,
     pub sensitive: bool,
     pub allowed_values: Option<Vec<String>>,
+    pub expression_language_supported: bool,
 }
 
 #[derive(Serialize)]
 pub struct SchedulingResponse {
     pub strategy: String,
     pub interval_ms: Option<u64>,
+    pub concurrent_tasks: u64,
 }
 
 #[derive(Serialize)]
@@ -287,20 +295,39 @@ pub struct RelationshipResponse {
 
 /// Request body for `PUT /api/v1/processors/{name}/config`.
 #[derive(Deserialize)]
+#[allow(dead_code)]
 pub struct ProcessorConfigUpdateRequest {
     #[serde(default)]
     pub properties: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub scheduling_strategy: Option<String>,
+    #[serde(default)]
+    pub scheduling_interval_ms: Option<u64>,
+    #[serde(default)]
+    pub concurrent_tasks: Option<u64>,
+    #[serde(default)]
+    pub penalty_duration_ms: Option<u64>,
+    #[serde(default)]
+    pub yield_duration_ms: Option<u64>,
+    #[serde(default)]
+    pub bulletin_level: Option<String>,
+    #[serde(default)]
+    pub auto_terminated_relationships: Option<Vec<String>>,
+    #[serde(default)]
+    pub comments: Option<String>,
 }
 
 impl ProcessorConfigResponse {
     pub fn from_info(info: &ProcessorInfo) -> Self {
         // Parse the display string to extract strategy/interval for the config response.
-        // Format is "timer-driven (Nms)" or "event-driven".
+        // Format is "timer-driven (Nms)", "cron-driven (expr)", or "event-driven".
         let (strategy, interval_ms) =
             if let Some(rest) = info.scheduling_display.strip_prefix("timer-driven (") {
                 let ms_str = rest.trim_end_matches("ms)");
                 let interval = ms_str.parse::<u64>().unwrap_or(1000);
                 ("timer".to_string(), Some(interval))
+            } else if info.scheduling_display.starts_with("cron-driven") {
+                ("cron".to_string(), None)
             } else {
                 ("event".to_string(), None)
             };
@@ -337,16 +364,23 @@ impl ProcessorConfigResponse {
                 default_value: pd.default_value.clone(),
                 sensitive: pd.sensitive,
                 allowed_values: pd.allowed_values.clone(),
+                expression_language_supported: pd.expression_language_supported,
             })
             .collect();
 
+        // Merge auto-terminated state: use runtime config as source of truth.
+        let auto_term = info.auto_terminated_relationships.read().clone();
         let relationships = info
             .relationships
             .iter()
-            .map(|r| RelationshipResponse {
-                name: r.name.clone(),
-                description: r.description.clone(),
-                auto_terminated: r.auto_terminated,
+            .map(|r| {
+                let is_auto_terminated =
+                    r.auto_terminated || auto_term.contains(&r.name);
+                RelationshipResponse {
+                    name: r.name.clone(),
+                    description: r.description.clone(),
+                    auto_terminated: is_auto_terminated,
+                }
             })
             .collect();
 
@@ -358,8 +392,23 @@ impl ProcessorConfigResponse {
             scheduling: SchedulingResponse {
                 strategy,
                 interval_ms,
+                concurrent_tasks: info
+                    .concurrent_tasks
+                    .load(std::sync::atomic::Ordering::Relaxed),
             },
             relationships,
+            penalty_duration_ms: info
+                .penalty_duration_ms
+                .load(std::sync::atomic::Ordering::Relaxed),
+            yield_duration_ms: info
+                .yield_duration_ms
+                .load(std::sync::atomic::Ordering::Relaxed),
+            bulletin_level: info.bulletin_level.read().clone(),
+            concurrent_tasks: info
+                .concurrent_tasks
+                .load(std::sync::atomic::Ordering::Relaxed),
+            comments: info.comments.read().clone(),
+            auto_terminated_relationships: auto_term,
         }
     }
 }
