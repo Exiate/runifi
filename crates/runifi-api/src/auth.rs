@@ -23,6 +23,8 @@ use axum::response::{IntoResponse, Response};
 use rand::Rng;
 use subtle::ConstantTimeEq;
 
+use runifi_core::auth::provider::{AuthCredentials, AuthResult};
+
 use crate::rbac::Role;
 use crate::state::ApiState;
 
@@ -46,8 +48,14 @@ const CSRF_TOKEN_HEX_LEN: usize = 64; // 32 bytes -> 64 hex chars
 ///   - `/` (dashboard index)
 ///   - `/assets/*` (dashboard static assets)
 ///   - `/api/v1/auth/login` (login endpoint)
+///   - `/api/v1/auth/oidc/login` (OIDC login redirect)
+///   - `/api/v1/auth/oidc/callback` (OIDC callback from IdP)
 pub fn is_exempt_path(path: &str) -> bool {
-    path == "/" || path.starts_with("/assets/") || path == "/api/v1/auth/login"
+    path == "/"
+        || path.starts_with("/assets/")
+        || path == "/api/v1/auth/login"
+        || path == "/api/v1/auth/oidc/login"
+        || path == "/api/v1/auth/oidc/callback"
 }
 
 /// Generate a cryptographically random CSRF token (hex-encoded).
@@ -78,12 +86,43 @@ pub async fn auth_middleware(
 ) -> Response {
     let path = req.uri().path().to_string();
 
-    // Dashboard static assets and auth login are always exempt.
+    // Dashboard static assets and auth endpoints are always exempt.
     if is_exempt_path(&path) {
         return next.run(req).await;
     }
 
-    // --- JWT user auth ---
+    // --- Provider chain auth (enterprise providers) ---
+    if let Some(ref chain) = state.auth_chain {
+        let credentials = extract_credentials(&req);
+        match chain.authenticate(&credentials).await {
+            AuthResult::Authenticated(identity) => {
+                // Map identity to RBAC role.
+                let role_str = state.identity_mapper.resolve_role(&identity);
+                let role = Role::parse(role_str).unwrap_or(Role::Viewer);
+                req.extensions_mut().insert(role);
+                req.extensions_mut().insert(identity);
+                // Also try to extract JWT claims for backward compat.
+                if let Some(token) = extract_bearer_token(&req)
+                    && let Some(jwt_config) = &state.jwt_config
+                    && let Ok(claims) = jwt_config.validate_token(&token)
+                {
+                    req.extensions_mut().insert(claims);
+                }
+                return next.run(req).await;
+            }
+            AuthResult::Failed(err) => {
+                tracing::debug!(path = %path, error = %err, "Auth chain rejected request");
+                let body = serde_json::json!({ "error": err.to_string() });
+                return (StatusCode::UNAUTHORIZED, axum::Json(body)).into_response();
+            }
+            AuthResult::Unsupported => {
+                // No provider recognized the credentials.
+                // Fall through to legacy auth below.
+            }
+        }
+    }
+
+    // --- JWT user auth (legacy path, used when no provider chain is configured) ---
     if state.user_auth_enabled()
         && let Some(jwt_config) = &state.jwt_config
     {
@@ -96,7 +135,6 @@ pub async fn auth_middleware(
                         return (StatusCode::UNAUTHORIZED, axum::Json(body)).into_response();
                     }
                     // JWT-authenticated users get Admin role for now.
-                    // Phase 2 will add per-user role resolution.
                     req.extensions_mut().insert(Role::Admin);
                     // Store claims for downstream use (e.g., /auth/me).
                     req.extensions_mut().insert(claims);
@@ -140,6 +178,35 @@ pub async fn auth_middleware(
             (StatusCode::UNAUTHORIZED, axum::Json(body)).into_response()
         }
     }
+}
+
+/// Extract credentials from the request for provider chain authentication.
+fn extract_credentials(req: &Request) -> AuthCredentials {
+    // Check for Bearer token first (JWT or OIDC access token).
+    if let Some(token) = extract_bearer_token(req) {
+        return AuthCredentials::BearerToken(token);
+    }
+
+    // Check for API key in query params.
+    if let Some(query) = req.uri().query() {
+        for pair in query.split('&') {
+            if let Some((key, value)) = pair.split_once('=')
+                && key == "api_key"
+            {
+                let decoded = urlencoding::decode(value).unwrap_or_default();
+                let decoded = decoded.trim();
+                if !decoded.is_empty() {
+                    return AuthCredentials::ApiKey(decoded.to_string());
+                }
+            }
+        }
+    }
+
+    // No credentials found. Return an empty BearerToken so the chain
+    // attempts validation and returns Failed — rejecting the unauthenticated
+    // request. The legacy auth path below is only reached when no provider
+    // chain is configured.
+    AuthCredentials::BearerToken(String::new())
 }
 
 // ---------------------------------------------------------------------------
@@ -338,6 +405,8 @@ mod tests {
         assert!(is_exempt_path("/assets/main.js"));
         assert!(is_exempt_path("/assets/css/style.css"));
         assert!(is_exempt_path("/api/v1/auth/login"));
+        assert!(is_exempt_path("/api/v1/auth/oidc/login"));
+        assert!(is_exempt_path("/api/v1/auth/oidc/callback"));
         assert!(!is_exempt_path("/api/v1/processors"));
         assert!(!is_exempt_path("/api/v1/events"));
         assert!(!is_exempt_path("/api/v1/auth/me"));

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use serde::Deserialize;
@@ -779,14 +779,16 @@ fn default_audit_log_to_tracing() -> bool {
 
 /// Configuration for user management and JWT authentication.
 ///
+/// Supports pluggable authentication providers: `"local"` (default, password+JWT),
+/// `"oidc"` (OpenID Connect), `"ldap"` (LDAP/LDAPS), `"mtls"` (client certificates),
+/// and `"chain"` (ordered list of providers).
+///
 /// ```toml
 /// [auth]
 /// enabled = true
-/// single_user_mode = true
+/// provider = "local"
 /// jwt_secret = "${RUNIFI_JWT_SECRET}"
 /// jwt_expiry_secs = 3600
-/// default_admin_username = "admin"
-/// default_admin_password = "admin"
 /// ```
 #[derive(Debug, Deserialize, Clone)]
 pub struct AuthConfig {
@@ -794,6 +796,10 @@ pub struct AuthConfig {
     /// When disabled, all requests bypass user auth (existing API key auth still applies).
     #[serde(default)]
     pub enabled: bool,
+    /// Authentication provider type: `"local"` (default), `"oidc"`, `"ldap"`,
+    /// `"mtls"`, or `"chain"` (ordered list).
+    #[serde(default = "default_auth_provider")]
+    pub provider: String,
     /// Single-user mode: auto-create a default admin account on first boot
     /// if no users exist. Intended for development and testing.
     #[serde(default = "default_single_user_mode")]
@@ -812,19 +818,58 @@ pub struct AuthConfig {
     /// **Change this in production.**
     #[serde(default = "default_admin_password")]
     pub default_admin_password: String,
+    /// OIDC provider configuration (used when `provider = "oidc"` or in chain).
+    #[serde(default)]
+    pub oidc: Option<crate::auth::oidc_provider::OidcConfig>,
+    /// LDAP provider configuration (used when `provider = "ldap"` or in chain).
+    #[serde(default)]
+    pub ldap: Option<crate::auth::ldap_provider::LdapConfig>,
+    /// mTLS provider configuration (used when `provider = "mtls"` or in chain).
+    #[serde(default)]
+    pub mtls: Option<crate::auth::mtls_provider::MtlsConfig>,
+    /// Provider chain order (used when `provider = "chain"`).
+    /// Example: `["mtls", "oidc", "local"]`.
+    #[serde(default)]
+    pub chain_order: Vec<String>,
+    /// Group-to-role mapping for external providers.
+    /// Maps identity provider group names to RuniFi roles.
+    #[serde(default)]
+    pub group_mapping: BTreeMap<String, String>,
+    /// Default role when no group mapping matches.
+    #[serde(default = "default_role")]
+    pub default_role: String,
+    /// Maximum concurrent sessions per user. `None` = unlimited.
+    #[serde(default)]
+    pub max_sessions_per_user: Option<usize>,
 }
 
 impl Default for AuthConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            provider: default_auth_provider(),
             single_user_mode: default_single_user_mode(),
             jwt_secret: default_jwt_secret(),
             jwt_expiry_secs: default_jwt_expiry(),
             default_admin_username: default_admin_username(),
             default_admin_password: default_admin_password(),
+            oidc: None,
+            ldap: None,
+            mtls: None,
+            chain_order: Vec::new(),
+            group_mapping: BTreeMap::new(),
+            default_role: default_role(),
+            max_sessions_per_user: None,
         }
     }
+}
+
+fn default_auth_provider() -> String {
+    "local".to_string()
+}
+
+fn default_role() -> String {
+    "viewer".to_string()
 }
 
 fn default_single_user_mode() -> bool {

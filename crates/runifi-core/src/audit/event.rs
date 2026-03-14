@@ -116,6 +116,12 @@ pub enum AuditAction {
     // System
     EngineStarted,
     EngineShutdown,
+    // Authentication
+    AuthLoginSuccess,
+    AuthLoginFailed,
+    AuthLogout,
+    AuthTokenRefreshed,
+    AuthSessionExpired,
 }
 
 /// The resource targeted by an audit action.
@@ -167,6 +173,13 @@ impl AuditTarget {
         Self {
             resource_type: "system".to_string(),
             resource_id: "engine".to_string(),
+        }
+    }
+
+    pub fn auth(identity: impl Into<String>) -> Self {
+        Self {
+            resource_type: "auth".to_string(),
+            resource_id: identity.into(),
         }
     }
 }

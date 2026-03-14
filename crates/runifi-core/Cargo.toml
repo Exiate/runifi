@@ -36,6 +36,8 @@ jsonwebtoken = { workspace = true }
 uuid = { workspace = true }
 rand = { workspace = true }
 git2 = { workspace = true }
+async-trait = { workspace = true }
+x509-parser = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

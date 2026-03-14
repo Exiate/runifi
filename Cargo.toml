@@ -72,6 +72,7 @@ argon2 = "0.5"               # Password hashing
 jsonwebtoken = "9"           # JWT token generation/validation
 jsonschema = "0.45"          # JSON Schema validation
 git2 = "0.20"                # Git operations for flow versioning
+x509-parser = "0.16"         # X.509 certificate parsing for mTLS
 
 # CLI
 clap = { version = "4", features = ["derive"] }
