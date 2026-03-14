@@ -577,6 +577,16 @@ body {
   border: 1px dashed rgba(79, 143, 247, 0.4) !important;
 }
 
+/* Selected node blue glow (NiFi parity) — uses outline to avoid layout shift */
+.react-flow__node.selected .processor-node,
+.react-flow__node.selected .funnel-node,
+.react-flow__node.selected .label-node {
+  border-color: #0066cc !important;
+  box-shadow: 0 0 12px rgba(0, 102, 204, 0.45), 0 0 4px rgba(0, 102, 204, 0.25) !important;
+  outline: 1px solid #0066cc;
+  outline-offset: -1px;
+}
+
 /* ── Processor node ─────────────────────────────────────────── */
 
 .processor-node {
@@ -3061,4 +3071,154 @@ body {
   .operate-palette {
     display: none;
   }
+}
+
+/* ── Canvas Search ─────────────────────────────────────────── */
+
+.canvas-top-panel {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.canvas-search {
+  position: relative;
+  width: 240px;
+}
+
+.canvas-search-input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.canvas-search-icon {
+  position: absolute;
+  left: 0.6rem;
+  color: var(--text-dim);
+  pointer-events: none;
+}
+
+.canvas-search-input {
+  width: 100%;
+  padding: 0.4rem 2rem 0.4rem 2rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font: 0.8rem var(--font);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.canvas-search-input:focus {
+  border-color: var(--accent);
+}
+
+.canvas-search-input::placeholder {
+  color: var(--text-dim);
+}
+
+.canvas-search-clear {
+  position: absolute;
+  right: 0.3rem;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 1.1rem;
+  padding: 0 0.3rem;
+  line-height: 1;
+}
+
+.canvas-search-clear:hover {
+  color: var(--text);
+}
+
+.canvas-search-results {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin-top: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  max-height: 260px;
+  overflow-y: auto;
+  z-index: 600;
+}
+
+.canvas-search-result {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: 0.45rem 0.7rem;
+  background: none;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  font: 0.8rem var(--font);
+  gap: 0.5rem;
+}
+
+.canvas-search-result:hover,
+.canvas-search-result-active {
+  background: var(--surface-hover);
+}
+
+.canvas-search-result-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.canvas-search-result-type {
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  flex-shrink: 0;
+}
+
+.canvas-search-empty {
+  padding: 0.6rem 0.7rem;
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+/* ── Fit-to-screen button ──────────────────────────────────── */
+
+.canvas-fit-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.canvas-fit-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* ── Context menu alignment subheader ──────────────────────── */
+
+.context-menu-subheader {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  padding: 0.35rem 0.85rem 0.15rem;
+  margin-top: 0.1rem;
 }
