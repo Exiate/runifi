@@ -30,7 +30,7 @@ fn bench_session_create_transfer_commit(c: &mut Criterion) {
     c.bench_function("session_create_transfer_commit", |b| {
         b.iter(|| {
             let mut session =
-                CoreProcessSession::new(content_repo.clone(), id_gen.clone(), vec![], 1000);
+                CoreProcessSession::new(content_repo.clone(), id_gen.clone(), vec![], 1000, 30_000);
             let ff = session.create();
             session.transfer(ff, &REL_SUCCESS);
             session.commit();
@@ -47,7 +47,7 @@ fn bench_session_write_content_5kb(c: &mut Criterion) {
     c.bench_function("session_write_content_5KB", |b| {
         b.iter(|| {
             let mut session =
-                CoreProcessSession::new(content_repo.clone(), id_gen.clone(), vec![], 1000);
+                CoreProcessSession::new(content_repo.clone(), id_gen.clone(), vec![], 1000, 30_000);
             let ff = session.create();
             let ff = session.write_content(ff, data.clone()).unwrap();
             session.transfer(ff, &REL_SUCCESS);
@@ -69,7 +69,7 @@ fn bench_end_to_end_pipeline_step(c: &mut Criterion) {
             // 3. Transfer to success
             // 4. Commit
             let mut session =
-                CoreProcessSession::new(content_repo.clone(), id_gen.clone(), vec![], 1000);
+                CoreProcessSession::new(content_repo.clone(), id_gen.clone(), vec![], 1000, 30_000);
             let ff = session.create();
             let ff = session.write_content(ff, data.clone()).unwrap();
             let _ = session.read_content(&ff).unwrap();
@@ -116,7 +116,7 @@ fn bench_batch_processing(c: &mut Criterion) {
     c.bench_function("batch_create_100_flowfiles", |b| {
         b.iter(|| {
             let mut session =
-                CoreProcessSession::new(content_repo.clone(), id_gen.clone(), vec![], 1000);
+                CoreProcessSession::new(content_repo.clone(), id_gen.clone(), vec![], 1000, 30_000);
             for _ in 0..100 {
                 let ff = session.create();
                 session.transfer(ff, &REL_SUCCESS);
@@ -135,7 +135,7 @@ fn bench_session_rollback(c: &mut Criterion) {
     c.bench_function("session_rollback_with_content", |b| {
         b.iter(|| {
             let mut session =
-                CoreProcessSession::new(content_repo.clone(), id_gen.clone(), vec![], 1000);
+                CoreProcessSession::new(content_repo.clone(), id_gen.clone(), vec![], 1000, 30_000);
             let ff = session.create();
             let _ff = session.write_content(ff, data.clone()).unwrap();
             session.rollback();

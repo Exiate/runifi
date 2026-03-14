@@ -23,6 +23,7 @@ pub struct FlowFileSnapshot {
     pub content_claim: Option<ContentClaim>,
     pub size: u64,
     pub created_at_nanos: u64,
+    pub penalized_until_nanos: u64,
 }
 
 impl FlowFileSnapshot {
@@ -33,6 +34,7 @@ impl FlowFileSnapshot {
             content_claim: ff.content_claim.clone(),
             size: ff.size,
             created_at_nanos: ff.created_at_nanos,
+            penalized_until_nanos: ff.penalized_until_nanos,
         }
     }
 }
@@ -395,6 +397,15 @@ impl FlowConnection {
     pub fn peek_oldest_timestamp(&self) -> Option<u64> {
         let shadow = self.shadow.lock();
         shadow.front().map(|s| s.created_at_nanos)
+    }
+
+    /// Check if the front FlowFile in this connection is penalized at the given time.
+    ///
+    /// Returns `None` if the queue is empty. Returns `Some(true)` if the front
+    /// FlowFile is penalized, `Some(false)` otherwise.
+    pub fn is_front_penalized(&self, now_nanos: u64) -> Option<bool> {
+        let shadow = self.shadow.lock();
+        shadow.front().map(|s| s.penalized_until_nanos > now_nanos)
     }
 
     // ── Queue inspection API ─────────────────────────────────────

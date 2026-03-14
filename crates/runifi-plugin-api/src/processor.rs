@@ -4,6 +4,7 @@ use crate::relationship::Relationship;
 use crate::result::ProcessResult;
 use crate::session::ProcessSession;
 use crate::state::StatefulSpec;
+use crate::validation::ValidationResult;
 
 /// The core processor trait. Processors are synchronous — the engine wraps
 /// them in `spawn_blocking` + `catch_unwind` for fault isolation.
@@ -38,6 +39,18 @@ pub trait Processor: Send + Sync + 'static {
 
     /// The properties this processor accepts.
     fn property_descriptors(&self) -> Vec<PropertyDescriptor> {
+        Vec::new()
+    }
+
+    /// Validate the processor's configuration. Returns a list of validation errors.
+    ///
+    /// An empty list means the processor is valid and can be started. The engine
+    /// calls this automatically on configuration changes and before starting.
+    /// The default implementation performs no custom validation (always valid).
+    ///
+    /// Built-in validation (required properties, allowed values) is handled by
+    /// the engine and does not need to be reimplemented here.
+    fn validate(&self, _context: &dyn ProcessContext) -> Vec<ValidationResult> {
         Vec::new()
     }
 

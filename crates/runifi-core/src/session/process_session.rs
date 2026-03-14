@@ -19,6 +19,9 @@ struct PendingTransfer {
     relationship_name: &'static str,
 }
 
+/// Default penalty duration in milliseconds (30 seconds).
+pub const DEFAULT_PENALTY_DURATION_MS: u64 = 30_000;
+
 /// The engine's implementation of `ProcessSession`.
 ///
 /// Mediates between processors and the content repository.
@@ -35,7 +38,10 @@ pub struct CoreProcessSession {
     acquired_flowfiles: Vec<FlowFile>,
     created_content_claims: Vec<u64>,
     committed: bool,
+    #[allow(dead_code)]
     yield_duration_ms: u64,
+    /// Penalty duration in milliseconds (default 30s).
+    penalty_duration_ms: u64,
     /// IDs of FlowFiles removed during `commit()`, for WAL DELETE ops.
     committed_remove_ids: Vec<u64>,
 
@@ -58,6 +64,7 @@ impl CoreProcessSession {
         id_gen: Arc<IdGenerator>,
         input_connections: Vec<Arc<FlowConnection>>,
         yield_duration_ms: u64,
+        penalty_duration_ms: u64,
     ) -> Self {
         Self {
             content_repo,
@@ -69,6 +76,7 @@ impl CoreProcessSession {
             created_content_claims: Vec::new(),
             committed: false,
             yield_duration_ms,
+            penalty_duration_ms,
             committed_remove_ids: Vec::new(),
             provenance_repo: Arc::new(crate::repository::provenance_repo::NullProvenanceRepository),
             processor_name: String::new(),
@@ -155,13 +163,23 @@ impl ProcessSession for CoreProcessSession {
             return None;
         }
 
+        let now_nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
         // FIFO: pick the connection whose front FlowFile has the smallest
-        // created_at_nanos (oldest first). This matches NiFi's semantics
-        // where all input queues are merged by arrival time.
+        // created_at_nanos (oldest first), skipping connections whose front
+        // FlowFile is penalized. This matches NiFi's semantics where penalized
+        // FlowFiles are skipped until their penalty expires.
         let oldest_idx = self
             .input_connections
             .iter()
             .enumerate()
+            .filter(|(_, conn)| {
+                // Skip connections whose front FlowFile is penalized.
+                conn.is_front_penalized(now_nanos) != Some(true)
+            })
             .filter_map(|(i, conn)| conn.peek_oldest_timestamp().map(|ts| (i, ts)))
             .min_by_key(|(_, ts)| *ts)
             .map(|(i, _)| i);
@@ -169,6 +187,13 @@ impl ProcessSession for CoreProcessSession {
         if let Some(idx) = oldest_idx {
             let conn = &self.input_connections[idx];
             if let Some(ff) = conn.try_recv() {
+                // Double-check penalization after receive (race condition guard).
+                if ff.is_penalized(now_nanos) {
+                    // Put it back — it's still penalized.
+                    let _ = conn.try_send(ff);
+                    return None;
+                }
+
                 let mut event = self.make_provenance_event(&ff, ProvenanceEventType::Receive);
                 event.details = format!("Received from connection '{}'", conn.id);
                 self.pending_provenance.push(event);
@@ -185,16 +210,23 @@ impl ProcessSession for CoreProcessSession {
             return Vec::new();
         }
 
+        let now_nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
         let mut batch = Vec::with_capacity(max);
 
         // FIFO across all inputs: repeatedly pick the connection whose front
         // FlowFile has the smallest created_at_nanos, pull one item, repeat
         // until the batch is full or all inputs are empty.
+        // Skip connections whose front FlowFile is penalized.
         while batch.len() < max {
             let oldest_idx = self
                 .input_connections
                 .iter()
                 .enumerate()
+                .filter(|(_, conn)| conn.is_front_penalized(now_nanos) != Some(true))
                 .filter_map(|(i, conn)| conn.peek_oldest_timestamp().map(|ts| (i, ts)))
                 .min_by_key(|(_, ts)| *ts)
                 .map(|(i, _)| i);
@@ -203,6 +235,12 @@ impl ProcessSession for CoreProcessSession {
                 Some(idx) => {
                     let conn = &self.input_connections[idx];
                     if let Some(ff) = conn.try_recv() {
+                        // Double-check penalization after receive (race condition guard).
+                        if ff.is_penalized(now_nanos) {
+                            let _ = conn.try_send(ff);
+                            continue;
+                        }
+
                         let mut event =
                             self.make_provenance_event(&ff, ProvenanceEventType::Receive);
                         event.details = format!("Received from connection '{}'", conn.id);
@@ -214,7 +252,7 @@ impl ProcessSession for CoreProcessSession {
                         continue;
                     }
                 }
-                None => break, // All inputs are empty.
+                None => break, // All inputs are empty or all penalized.
             }
         }
 
@@ -326,7 +364,7 @@ impl ProcessSession for CoreProcessSession {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos() as u64;
-        let penalty_nanos = self.yield_duration_ms * 1_000_000;
+        let penalty_nanos = self.penalty_duration_ms * 1_000_000;
         flowfile.penalized_until_nanos = now + penalty_nanos;
         flowfile
     }
@@ -395,7 +433,13 @@ mod tests {
     fn make_session(input_connections: Vec<Arc<FlowConnection>>) -> CoreProcessSession {
         let content_repo = Arc::new(InMemoryContentRepository::new());
         let id_gen = Arc::new(IdGenerator::new());
-        CoreProcessSession::new(content_repo, id_gen, input_connections, 1000)
+        CoreProcessSession::new(
+            content_repo,
+            id_gen,
+            input_connections,
+            1000,
+            DEFAULT_PENALTY_DURATION_MS,
+        )
     }
 
     fn make_session_with_provenance(
@@ -404,7 +448,13 @@ mod tests {
         let content_repo = Arc::new(InMemoryContentRepository::new());
         let id_gen = Arc::new(IdGenerator::new());
         let provenance_repo = Arc::new(InMemoryProvenanceRepository::new());
-        let mut session = CoreProcessSession::new(content_repo, id_gen, input_connections, 1000);
+        let mut session = CoreProcessSession::new(
+            content_repo,
+            id_gen,
+            input_connections,
+            1000,
+            DEFAULT_PENALTY_DURATION_MS,
+        );
         session.set_provenance(
             provenance_repo.clone(),
             "test-processor".to_string(),
@@ -545,7 +595,13 @@ mod tests {
     fn remove_decrements_ref_on_commit() {
         let content_repo = Arc::new(InMemoryContentRepository::new());
         let id_gen = Arc::new(IdGenerator::new());
-        let mut session = CoreProcessSession::new(content_repo.clone(), id_gen, vec![], 1000);
+        let mut session = CoreProcessSession::new(
+            content_repo.clone(),
+            id_gen,
+            vec![],
+            1000,
+            DEFAULT_PENALTY_DURATION_MS,
+        );
 
         let ff = session.create();
         let data = Bytes::from_static(b"to be removed");
@@ -581,7 +637,13 @@ mod tests {
     fn rollback_cleans_up_created_content() {
         let content_repo = Arc::new(InMemoryContentRepository::new());
         let id_gen = Arc::new(IdGenerator::new());
-        let mut session = CoreProcessSession::new(content_repo.clone(), id_gen, vec![], 1000);
+        let mut session = CoreProcessSession::new(
+            content_repo.clone(),
+            id_gen,
+            vec![],
+            1000,
+            DEFAULT_PENALTY_DURATION_MS,
+        );
 
         let ff = session.create();
         let data = Bytes::from_static(b"will be rolled back");
@@ -755,7 +817,13 @@ mod tests {
         {
             let content_repo = Arc::new(InMemoryContentRepository::new());
             let id_gen = Arc::new(IdGenerator::new());
-            let mut session = CoreProcessSession::new(content_repo, id_gen, vec![], 1000);
+            let mut session = CoreProcessSession::new(
+                content_repo,
+                id_gen,
+                vec![],
+                1000,
+                DEFAULT_PENALTY_DURATION_MS,
+            );
             session.set_provenance(
                 prov_repo.clone(),
                 "test-processor".to_string(),

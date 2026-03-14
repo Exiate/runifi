@@ -277,6 +277,28 @@ impl EngineHandle {
     pub fn start_processor(&self, name: &str) -> Result<(), ConfigUpdateError> {
         for info in self.processors.read().iter() {
             if info.name == name {
+                // Reject if processor is administratively disabled.
+                if info
+                    .metrics
+                    .disabled
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    return Err(ConfigUpdateError::StateConflict(format!(
+                        "Cannot start processor '{}': processor is disabled",
+                        name
+                    )));
+                }
+
+                // Reject if processor has validation errors.
+                let validation_errors = info.metrics.validation_errors();
+                if !validation_errors.is_empty() {
+                    return Err(ConfigUpdateError::ValidationError(format!(
+                        "Cannot start processor '{}': validation errors: {}",
+                        name,
+                        validation_errors.join("; ")
+                    )));
+                }
+
                 let props = info.properties.read();
 
                 // Validate required properties before starting.
@@ -346,6 +368,42 @@ impl EngineHandle {
             }
         }
         false
+    }
+
+    /// Disable a processor by name (set disabled=true, enabled=false).
+    /// Returns `Ok(())` if the processor was found.
+    pub fn disable_processor(&self, name: &str) -> Result<(), String> {
+        for info in self.processors.read().iter() {
+            if info.name == name {
+                info.metrics.enabled.store(false, Ordering::Relaxed);
+                info.metrics.disabled.store(true, Ordering::Relaxed);
+                return Ok(());
+            }
+        }
+        Err(format!("Processor '{}' not found", name))
+    }
+
+    /// Enable a processor by name (clear disabled flag).
+    /// Note: this only clears the disabled flag; the processor must still be
+    /// started separately.
+    pub fn enable_processor(&self, name: &str) -> Result<(), String> {
+        for info in self.processors.read().iter() {
+            if info.name == name {
+                info.metrics.disabled.store(false, Ordering::Relaxed);
+                return Ok(());
+            }
+        }
+        Err(format!("Processor '{}' not found", name))
+    }
+
+    /// Get the current validation errors for a processor by name.
+    pub fn get_validation_errors(&self, name: &str) -> Result<Vec<String>, String> {
+        for info in self.processors.read().iter() {
+            if info.name == name {
+                return Ok(info.metrics.validation_errors());
+            }
+        }
+        Err(format!("Processor '{}' not found", name))
     }
 
     // ── Reads ────────────────────────────────────────────────────────────────

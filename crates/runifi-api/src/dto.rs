@@ -22,6 +22,8 @@ pub struct ProcessorResponse {
     pub scheduling: String,
     pub state: String,
     pub metrics: MetricsResponse,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub validation_errors: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -76,12 +78,14 @@ impl ProcessorResponse {
     pub fn from_info(info: &ProcessorInfo) -> Self {
         let snapshot = info.metrics.snapshot();
         let state = snapshot.state.as_str().to_string();
+        let validation_errors = snapshot.validation_errors.clone();
         Self {
             name: info.name.clone(),
             type_name: info.type_name.clone(),
             scheduling: info.scheduling_display.clone(),
             state,
             metrics: snapshot.into(),
+            validation_errors,
         }
     }
 }

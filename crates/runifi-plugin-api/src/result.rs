@@ -17,6 +17,9 @@ pub enum PluginError {
 
     #[error("session closed")]
     SessionClosed,
+
+    #[error("processor yielded")]
+    Yield,
 }
 
 /// Result type for plugin operations.

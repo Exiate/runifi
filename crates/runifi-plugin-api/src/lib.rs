@@ -10,6 +10,7 @@ pub mod session;
 pub mod sink;
 pub mod source;
 pub mod state;
+pub mod validation;
 
 // Re-export key types at crate root for convenience.
 pub use context::ProcessContext;
@@ -26,3 +27,4 @@ pub use session::ProcessSession;
 pub use sink::{Sink, SinkDescriptor};
 pub use source::{Source, SourceDescriptor};
 pub use state::{StateManager, StateMap, StateScope, StatefulSpec};
+pub use validation::ValidationResult;

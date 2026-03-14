@@ -174,6 +174,10 @@ pub struct ProcessorMetrics {
     pub enabled: AtomicBool,
     /// When true, the processor skips invocation and sleeps (per-processor pause).
     pub paused: AtomicBool,
+    /// When true, the processor is administratively disabled (distinct from stopped).
+    pub disabled: AtomicBool,
+    /// Validation errors that prevent the processor from starting.
+    validation_errors: Mutex<Vec<String>>,
     /// 5-minute rolling window — guarded by a lightweight mutex (only held during tick).
     rolling: Mutex<RollingWindow>,
 }
@@ -194,8 +198,25 @@ impl ProcessorMetrics {
             reset_requested: AtomicBool::new(false),
             enabled: AtomicBool::new(true),
             paused: AtomicBool::new(false),
+            disabled: AtomicBool::new(false),
+            validation_errors: Mutex::new(Vec::new()),
             rolling: Mutex::new(RollingWindow::new()),
         }
+    }
+
+    /// Set the validation errors for this processor.
+    pub fn set_validation_errors(&self, errors: Vec<String>) {
+        *self.validation_errors.lock() = errors;
+    }
+
+    /// Get the current validation errors.
+    pub fn validation_errors(&self) -> Vec<String> {
+        self.validation_errors.lock().clone()
+    }
+
+    /// Check if the processor has validation errors.
+    pub fn has_validation_errors(&self) -> bool {
+        !self.validation_errors.lock().is_empty()
     }
 
     /// Push supervisor state to shared atomics after each invocation.
@@ -244,8 +265,15 @@ impl ProcessorMetrics {
         let enabled = self.enabled.load(Ordering::Relaxed);
         let paused = self.paused.load(Ordering::Relaxed);
         let active = self.active.load(Ordering::Relaxed);
+        let disabled = self.disabled.load(Ordering::Relaxed);
+        let has_errors = self.has_validation_errors();
+        let validation_errors = self.validation_errors();
 
-        let state = if !enabled {
+        let state = if disabled {
+            ProcessorState::Disabled
+        } else if has_errors {
+            ProcessorState::Invalid
+        } else if !enabled {
             ProcessorState::Stopped
         } else if paused {
             ProcessorState::Paused
@@ -270,6 +298,7 @@ impl ProcessorMetrics {
             active,
             state,
             rolling,
+            validation_errors,
         }
     }
 }
@@ -286,6 +315,10 @@ pub enum ProcessorState {
     Running,
     Paused,
     Stopped,
+    /// Processor configuration is invalid and cannot be started.
+    Invalid,
+    /// Processor is administratively disabled.
+    Disabled,
 }
 
 impl ProcessorState {
@@ -294,12 +327,14 @@ impl ProcessorState {
             Self::Running => "running",
             Self::Paused => "paused",
             Self::Stopped => "stopped",
+            Self::Invalid => "invalid",
+            Self::Disabled => "disabled",
         }
     }
 }
 
-/// Copyable point-in-time snapshot of processor metrics.
-#[derive(Debug, Clone, Copy)]
+/// Point-in-time snapshot of processor metrics.
+#[derive(Debug, Clone)]
 pub struct MetricsSnapshot {
     pub total_invocations: u64,
     pub total_failures: u64,
@@ -313,6 +348,8 @@ pub struct MetricsSnapshot {
     pub active: bool,
     pub state: ProcessorState,
     pub rolling: RollingSnapshot,
+    /// Validation errors preventing the processor from starting.
+    pub validation_errors: Vec<String>,
 }
 
 #[cfg(test)]

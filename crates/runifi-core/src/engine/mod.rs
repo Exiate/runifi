@@ -8,3 +8,4 @@ pub mod persistence;
 pub mod process_group;
 pub mod processor_node;
 pub mod supervisor;
+pub mod validation;

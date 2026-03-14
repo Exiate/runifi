@@ -125,6 +125,8 @@ pub struct ProcessorNode {
     provenance_repo: SharedProvenanceRepository,
     /// Local state provider for processor state persistence.
     state_provider: Option<SharedLocalStateProvider>,
+    /// Penalty duration in milliseconds for penalized FlowFiles (default 30s).
+    penalty_duration_ms: u64,
     /// Lazily initialized load balancer for distributing FlowFiles across
     /// multiple output connections on the same relationship.
     load_balancer: OnceLock<LoadBalancer>,
@@ -164,6 +166,7 @@ impl ProcessorNode {
             service_registry: None,
             provenance_repo: Arc::new(crate::repository::provenance_repo::NullProvenanceRepository),
             state_provider: None,
+            penalty_duration_ms: crate::session::process_session::DEFAULT_PENALTY_DURATION_MS,
             load_balancer: OnceLock::new(),
         }
     }
@@ -287,8 +290,13 @@ impl ProcessorNode {
                 service_lookup: make_service_lookup(),
                 state_manager: make_state_manager(),
             };
-            // Wait until the processor is enabled (or cancelled).
-            while !self.metrics.enabled.load(Ordering::Relaxed) {
+            // Wait until the processor is enabled and not disabled (or cancelled).
+            loop {
+                let enabled = self.metrics.enabled.load(Ordering::Relaxed);
+                let disabled = self.metrics.disabled.load(Ordering::Relaxed);
+                if enabled && !disabled {
+                    break;
+                }
                 tokio::select! {
                     _ = self.cancel_token.cancelled() => {
                         tracing::info!(processor = %self.name, "Processor exiting (cancelled while stopped)");
@@ -315,6 +323,12 @@ impl ProcessorNode {
             loop {
                 // Check per-processor enabled flag — break cleanly on stop.
                 if !self.metrics.enabled.load(Ordering::Relaxed) {
+                    tracing::info!(processor = %self.name, "Processor stopping (stopped)");
+                    break;
+                }
+
+                // Check disabled flag — break cleanly on disable.
+                if self.metrics.disabled.load(Ordering::Relaxed) {
                     tracing::info!(processor = %self.name, "Processor stopping (disabled)");
                     break;
                 }
@@ -340,9 +354,11 @@ impl ProcessorNode {
                     _ = self.wait_for_trigger() => {}
                 }
 
-                // Re-check enabled after waking from trigger wait.
-                if !self.metrics.enabled.load(Ordering::Relaxed) {
-                    tracing::info!(processor = %self.name, "Processor stopping (disabled)");
+                // Re-check enabled/disabled after waking from trigger wait.
+                if !self.metrics.enabled.load(Ordering::Relaxed)
+                    || self.metrics.disabled.load(Ordering::Relaxed)
+                {
+                    tracing::info!(processor = %self.name, "Processor stopping (stopped/disabled)");
                     break;
                 }
 
@@ -393,6 +409,7 @@ impl ProcessorNode {
                     self.id_gen.clone(),
                     input_conns_snapshot,
                     ctx.yield_duration_ms,
+                    self.penalty_duration_ms,
                 );
                 session.set_provenance(
                     self.provenance_repo.clone(),
@@ -459,6 +476,47 @@ impl ProcessorNode {
                                 }
                             }
                         }
+                    }
+                    InvocationResult::Yield => {
+                        // Yield is not an error — commit the session and sleep
+                        // for the configured yield duration before re-triggering.
+                        if session.is_committed() {
+                            let (ff_out, bytes_out, routed) = self.route_transfers(&mut session);
+                            self.metrics
+                                .flowfiles_out
+                                .fetch_add(ff_out, Ordering::Relaxed);
+                            self.metrics
+                                .bytes_out
+                                .fetch_add(bytes_out, Ordering::Relaxed);
+
+                            let remove_ids = session.take_committed_remove_ids();
+                            if !routed.is_empty() || !remove_ids.is_empty() {
+                                let mut ops: Vec<FlowFileOp<'_>> = Vec::new();
+                                for (ff, conn_id) in &routed {
+                                    ops.push(FlowFileOp::Upsert {
+                                        flowfile: ff,
+                                        queue_id: conn_id,
+                                    });
+                                }
+                                for id in &remove_ids {
+                                    ops.push(FlowFileOp::Delete { id: *id });
+                                }
+                                if let Err(e) = self.flowfile_repo.commit_batch(&ops) {
+                                    tracing::error!(
+                                        processor = %self.name,
+                                        error = %e,
+                                        "WAL commit_batch failed"
+                                    );
+                                }
+                            }
+                        }
+                        tracing::debug!(
+                            processor = %self.name,
+                            yield_ms = ctx.yield_duration_ms,
+                            "Processor yielded, sleeping"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(ctx.yield_duration_ms))
+                            .await;
                     }
                     InvocationResult::Failed(e) => {
                         tracing::warn!(
