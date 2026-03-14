@@ -992,6 +992,7 @@ function FlowCanvasInner({
 
   // --- Clipboard ---
   const clipboardRef = useRef<ClipboardEntry | null>(null);
+  const pasteCountRef = useRef(0);
 
   const handleCopy = useCallback((silent = false) => {
     const selectedNodes = nodes.filter((n) => n.selected);
@@ -1009,6 +1010,7 @@ function FlowCanvasInner({
       })),
       edges: internalEdges.map((e) => ({ ...e })),
     };
+    pasteCountRef.current = 0;
     if (!silent) onToast('info', `Copied ${selectedNodes.length} component(s).`);
   }, [nodes, edges, onToast]);
 
@@ -1016,6 +1018,10 @@ function FlowCanvasInner({
     (offsetX = 40, offsetY = 40) => {
       const clip = clipboardRef.current;
       if (!clip || clip.nodes.length === 0) return;
+
+      pasteCountRef.current += 1;
+      const totalOffsetX = offsetX * pasteCountRef.current;
+      const totalOffsetY = offsetY * pasteCountRef.current;
 
       const existingIds = new Set(nodes.map((n) => n.id));
       const idMap = new Map<string, string>();
@@ -1040,7 +1046,7 @@ function FlowCanvasInner({
 
       for (const cn of clip.nodes) {
         const newId = idMap.get(cn.id)!;
-        const position = { x: cn.position.x + offsetX, y: cn.position.y + offsetY };
+        const position = { x: cn.position.x + totalOffsetX, y: cn.position.y + totalOffsetY };
 
         if (cn.type === 'labelNode') {
           const labelData = cn.data as LabelNodeData;
@@ -1145,12 +1151,13 @@ function FlowCanvasInner({
           const newTarget = idMap.get(ce.target);
           if (!newSource || !newTarget || !ce.data) continue;
 
+          const relationship = ce.data.relationship;
           fetch('/api/v1/connections', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               source: newSource,
-              relationship: ce.data.relationship,
+              relationship,
               destination: newTarget,
             }),
           })
@@ -1159,7 +1166,7 @@ function FlowCanvasInner({
               return res.json() as Promise<{ id: string }>;
             })
             .then((data) => {
-              const edgeId = `${newSource}--${ce.data!.relationship}--${newTarget}--${Date.now()}`;
+              const edgeId = `${newSource}--${relationship}--${newTarget}--${Date.now()}`;
               const newEdge: ConnEdge = {
                 id: edgeId,
                 source: newSource,
@@ -1168,7 +1175,7 @@ function FlowCanvasInner({
                 targetHandle: ce.targetHandle,
                 type: 'connectionEdge' as const,
                 data: {
-                  relationship: ce.data!.relationship,
+                  relationship,
                   queuedCount: 0,
                   queuedBytes: 0,
                   backPressured: false,
@@ -1180,11 +1187,14 @@ function FlowCanvasInner({
               };
               setEdges((prev) => addEdge(newEdge, prev));
             })
-            .catch(() => {});
+            .catch((err: unknown) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              onToast('error', `Failed to recreate connection: ${msg}`);
+            });
         }
       });
 
-      onToast('success', `Pasted ${clip.nodes.length} component(s).`);
+      onToast('info', `Pasting ${clip.nodes.length} component(s)...`);
     },
     [nodes, setNodes, setEdges, onToast, handleQueueClick],
   );
@@ -1284,6 +1294,7 @@ function FlowCanvasInner({
         setPendingConnectionContext(null);
         setDeleteTarget(null);
         setColorPickerTarget(null);
+        setQueueInspectTarget(null);
         // Deselect all nodes
         if (!modalOpen) {
           setNodes((prev) => prev.map((n) => ({ ...n, selected: false })));
