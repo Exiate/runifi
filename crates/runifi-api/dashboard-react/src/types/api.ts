@@ -1,6 +1,6 @@
 // API response types matching the Rust DTOs in runifi-api/src/dto.rs
 
-export type ProcessorState = 'running' | 'paused' | 'stopped' | 'circuit-open';
+export type ProcessorState = 'running' | 'paused' | 'stopped' | 'circuit-open' | 'invalid' | 'disabled';
 
 export type SseStatus = 'connecting' | 'connected' | 'disconnected';
 
@@ -30,8 +30,9 @@ export interface ProcessorResponse {
   name: string;
   type_name: string;
   scheduling: string;
-  state: string;
+  state: ProcessorState;
   metrics: MetricsResponse;
+  validation_errors?: string[];
 }
 
 export interface ConnectionResponse {

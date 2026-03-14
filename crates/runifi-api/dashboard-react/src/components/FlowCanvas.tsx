@@ -88,6 +88,9 @@ export interface FlowCanvasProps {
   draggedPlugin: PluginDescriptor | null;
   addPluginAtCenter?: PluginDescriptor | null;
   onAddPluginHandled?: () => void;
+  onSelectionChange?: (nodeIds: string[]) => void;
+  colorRequestNodeIds?: string[] | null;
+  onColorRequestHandled?: () => void;
 }
 
 function loadSavedColors(): Record<string, string> {
@@ -181,6 +184,9 @@ function FlowCanvasInner({
   draggedPlugin,
   addPluginAtCenter,
   onAddPluginHandled,
+  onSelectionChange,
+  colorRequestNodeIds,
+  onColorRequestHandled,
 }: FlowCanvasProps) {
   const { screenToFlowPosition, getViewport } = useReactFlow();
 
@@ -259,6 +265,18 @@ function FlowCanvasInner({
   } | null>(null);
   const [configTarget, setConfigTarget] = useState<{ name: string; state: string } | null>(null);
   const [colorPickerTarget, setColorPickerTarget] = useState<ColorPickerTarget | null>(null);
+  const batchColorNodeIdsRef = useRef<string[] | null>(null);
+
+  // Handle batch color requests from OperatePalette
+  useEffect(() => {
+    if (colorRequestNodeIds && colorRequestNodeIds.length > 0) {
+      batchColorNodeIdsRef.current = colorRequestNodeIds;
+      const firstNode = nodes.find((n) => n.id === colorRequestNodeIds[0]);
+      const currentColor = firstNode?.data ? (firstNode.data as ProcessorNodeData).customColor || '' : '';
+      setColorPickerTarget({ nodeId: colorRequestNodeIds[0], currentColor });
+      onColorRequestHandled?.();
+    }
+  }, [colorRequestNodeIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const topologyKey = useRef(topology.name);
 
@@ -575,7 +593,7 @@ function FlowCanvasInner({
             })
             .then((created) => {
               setNodes((prev) =>
-                prev.map((n) =>
+                prev.map((n): AnyNode =>
                   n.id === newLabel.id
                     ? {
                         ...n,
@@ -585,7 +603,7 @@ function FlowCanvasInner({
                           labelId: created.id,
                           pending: false,
                         },
-                      }
+                      } as AnyNode
                     : n,
                 ),
               );
@@ -595,6 +613,12 @@ function FlowCanvasInner({
               const msg = err instanceof Error ? err.message : String(err);
               onToast('error', `Failed to create label: ${msg}`);
             });
+          return;
+        }
+
+        if (componentType === 'input-port' || componentType === 'output-port') {
+          const portLabel = componentType === 'input-port' ? 'Input' : 'Output';
+          onToast('info', `${portLabel} ports require process groups (not yet implemented).`);
           return;
         }
 
@@ -652,8 +676,8 @@ function FlowCanvasInner({
         .then((res) => {
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           setNodes((prev) =>
-            prev.map((n) =>
-              n.id === name ? { ...n, data: { ...n.data, pending: false } } : n,
+            prev.map((n): AnyNode =>
+              n.id === name ? { ...n, data: { ...n.data, pending: false } } as AnyNode : n,
             ),
           );
           onToast('success', `Processor "${name}" added.`);
@@ -1091,21 +1115,25 @@ function FlowCanvasInner({
   const handleColorSelect = useCallback(
     (color: string) => {
       if (!colorPickerTarget) return;
-      const { nodeId } = colorPickerTarget;
+      const targetIds = batchColorNodeIdsRef.current ?? [colorPickerTarget.nodeId];
       setColorPickerTarget(null);
+      batchColorNodeIdsRef.current = null;
+      const targetSet = new Set(targetIds);
       setNodes((prev) =>
-        prev.map((n) =>
-          n.id === nodeId
-            ? { ...n, data: { ...n.data, customColor: color } }
+        prev.map((n): AnyNode =>
+          targetSet.has(n.id)
+            ? { ...n, data: { ...n.data, customColor: color } } as AnyNode
             : n,
         ),
       );
       // Persist to localStorage
       const colors = loadSavedColors();
-      if (color) {
-        colors[nodeId] = color;
-      } else {
-        delete colors[nodeId];
+      for (const id of targetIds) {
+        if (color) {
+          colors[id] = color;
+        } else {
+          delete colors[id];
+        }
       }
       saveColors(colors);
       savedColorsRef.current = colors;
@@ -1160,6 +1188,10 @@ function FlowCanvasInner({
         edgeTypes={edgeTypes}
         connectOnClick={false}
         selectionOnDrag
+        onSelectionChange={(params) => {
+          const nodeIds = (params.nodes ?? []).map((n: { id: string }) => n.id);
+          onSelectionChange?.(nodeIds);
+        }}
         fitView
         fitViewOptions={{ padding: 0.15 }}
         minZoom={0.3}

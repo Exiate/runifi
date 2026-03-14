@@ -30,7 +30,10 @@ export function stateColor(state: string): string {
     case 'paused':
       return 'var(--warning)';
     case 'circuit-open':
+    case 'invalid':
       return 'var(--danger)';
+    case 'disabled':
+      return 'var(--text-dim)';
     default:
       return 'var(--border)';
   }
