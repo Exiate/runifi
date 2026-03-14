@@ -434,6 +434,18 @@ impl FlowEngine {
             pn.set_service_registry(self.service_registry.clone());
             pn.set_provenance_repo(self.provenance_repo.clone());
             pn.set_type_name(node_builder.type_name.clone());
+
+            // Set sensitive property names for bulletin redaction.
+            if let Some((descriptors, _)) = static_meta_by_node.get(&node_builder.id) {
+                let sensitive_names: Vec<String> = descriptors
+                    .iter()
+                    .filter(|d| d.sensitive)
+                    .map(|d| d.name.clone())
+                    .collect();
+                if !sensitive_names.is_empty() {
+                    pn.set_sensitive_property_names(sensitive_names);
+                }
+            }
             if let Some(ref provider) = self.state_provider {
                 pn.set_state_provider(provider.clone());
             }

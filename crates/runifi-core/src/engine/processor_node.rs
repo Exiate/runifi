@@ -125,6 +125,9 @@ pub struct ProcessorNode {
     provenance_repo: SharedProvenanceRepository,
     /// Local state provider for processor state persistence.
     state_provider: Option<SharedLocalStateProvider>,
+    /// Names of properties that are marked sensitive. Used to redact their
+    /// values from error messages and bulletins.
+    sensitive_property_names: Vec<String>,
     /// Penalty duration in milliseconds for penalized FlowFiles (default 30s).
     penalty_duration_ms: u64,
     /// Lazily initialized load balancer for distributing FlowFiles across
@@ -166,6 +169,7 @@ impl ProcessorNode {
             service_registry: None,
             provenance_repo: Arc::new(crate::repository::provenance_repo::NullProvenanceRepository),
             state_provider: None,
+            sensitive_property_names: Vec::new(),
             penalty_duration_ms: crate::session::process_session::DEFAULT_PENALTY_DURATION_MS,
             load_balancer: OnceLock::new(),
         }
@@ -184,6 +188,26 @@ impl ProcessorNode {
     /// Set the processor type name for provenance events.
     pub fn set_type_name(&mut self, type_name: String) {
         self.type_name = type_name;
+    }
+
+    /// Set the names of sensitive properties for bulletin redaction.
+    pub fn set_sensitive_property_names(&mut self, names: Vec<String>) {
+        self.sensitive_property_names = names;
+    }
+
+    /// Redact sensitive property values from a message string.
+    fn redact_message(&self, message: &str) -> String {
+        if self.sensitive_property_names.is_empty() {
+            return message.to_string();
+        }
+        let props = self.properties.read();
+        let sensitive_values: Vec<&str> = self
+            .sensitive_property_names
+            .iter()
+            .filter_map(|name| props.get(name).map(|v| v.as_str()))
+            .filter(|v| !v.is_empty())
+            .collect();
+        crate::config::sensitive::redact_sensitive_values(message, &sensitive_values)
     }
 
     /// Set the local state provider for processor state persistence.
@@ -519,9 +543,10 @@ impl ProcessorNode {
                             .await;
                     }
                     InvocationResult::Failed(e) => {
+                        let redacted_err = self.redact_message(&e.to_string());
                         tracing::warn!(
                             processor = %self.name,
-                            error = %e,
+                            error = %redacted_err,
                             consecutive = self.supervisor.consecutive_failures(),
                             "Processor failed"
                         );
@@ -531,7 +556,7 @@ impl ProcessorNode {
                             format!(
                                 "Processor failed (consecutive: {}): {}",
                                 self.supervisor.consecutive_failures(),
-                                e
+                                redacted_err
                             ),
                         );
                         session.rollback();
@@ -541,9 +566,10 @@ impl ProcessorNode {
                         }
                     }
                     InvocationResult::Panic(msg) => {
+                        let redacted_msg = self.redact_message(msg);
                         tracing::error!(
                             processor = %self.name,
-                            panic = %msg,
+                            panic = %redacted_msg,
                             consecutive = self.supervisor.consecutive_failures(),
                             "Processor panicked"
                         );
@@ -553,7 +579,7 @@ impl ProcessorNode {
                             format!(
                                 "Processor panicked (consecutive: {}): {}",
                                 self.supervisor.consecutive_failures(),
-                                msg
+                                redacted_msg
                             ),
                         );
                         // Session is automatically rolled back on drop.

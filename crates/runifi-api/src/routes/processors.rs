@@ -290,7 +290,24 @@ async fn create_processor(
         })
         .collect();
 
-    let properties = info.properties.read().clone();
+    // Mask sensitive properties in the response.
+    let raw_properties = info.properties.read().clone();
+    let sensitive_names: std::collections::HashSet<&str> = info
+        .property_descriptors
+        .iter()
+        .filter(|pd| pd.sensitive)
+        .map(|pd| pd.name.as_str())
+        .collect();
+    let properties: std::collections::HashMap<String, String> = raw_properties
+        .into_iter()
+        .map(|(k, v)| {
+            if sensitive_names.contains(k.as_str()) && !v.is_empty() {
+                (k, "********".to_string())
+            } else {
+                (k, v)
+            }
+        })
+        .collect();
 
     let detail = ProcessorDetailResponse {
         name: info.name.clone(),

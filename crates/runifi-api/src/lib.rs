@@ -102,6 +102,7 @@ pub fn create_router_with_registry(
         .merge(routes::events::routes())
         .merge(routes::bulletins::routes())
         .merge(routes::services::routes())
+        .merge(routes::secrets::routes())
         .merge(routes::auth_routes::routes())
         .merge(routes::users::routes())
         .merge(routes::user_groups::routes())

@@ -245,6 +245,7 @@ mod tests {
                         expression: None,
                     },
                     properties: HashMap::new(),
+                    sensitive_properties: vec![],
                     penalty_duration_ms: None,
                     yield_duration_ms: None,
                     bulletin_level: None,
