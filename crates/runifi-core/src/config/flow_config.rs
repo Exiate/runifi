@@ -438,6 +438,18 @@ pub struct EngineConfig {
     pub content_repository: ContentRepositoryConfig,
     #[serde(default)]
     pub flowfile_repository: FlowFileRepositoryConfig,
+    /// Provenance repository configuration.
+    ///
+    /// ```toml
+    /// [engine.provenance]
+    /// repo_type = "file"
+    /// directory = "./data/provenance"
+    /// retention_days = 7
+    /// max_storage_gb = 5
+    /// segment_size_mb = 100
+    /// ```
+    #[serde(default)]
+    pub provenance: ProvenanceRepositoryConfig,
     /// Repository encryption at rest configuration.
     ///
     /// When enabled, encrypts both the content repository and the FlowFile
@@ -453,6 +465,72 @@ pub struct EngineConfig {
     /// ```
     #[serde(default)]
     pub encryption: Option<RepositoryEncryptionConfig>,
+}
+
+/// Provenance repository type selection and configuration.
+///
+/// ```toml
+/// [engine.provenance]
+/// repo_type = "file"
+/// directory = "./data/provenance"
+/// retention_days = 7
+/// max_storage_gb = 5
+/// max_events = 1000000
+/// segment_size_mb = 100
+/// ```
+#[derive(Debug, Deserialize)]
+pub struct ProvenanceRepositoryConfig {
+    /// "memory" (default) or "file".
+    #[serde(default = "default_repo_type")]
+    pub repo_type: String,
+    /// Directory for provenance segment files (when repo_type = "file").
+    #[serde(default = "default_provenance_dir")]
+    pub directory: PathBuf,
+    /// Retention period in days. Default: 1.
+    #[serde(default = "default_provenance_retention_days")]
+    pub retention_days: u32,
+    /// Max total storage in GB. Default: 1.
+    #[serde(default = "default_provenance_max_storage_gb")]
+    pub max_storage_gb: u64,
+    /// Max events in memory (for memory repo). Default: 1,000,000.
+    #[serde(default = "default_provenance_max_events")]
+    pub max_events: usize,
+    /// Segment size in MB (for file repo). Default: 100.
+    #[serde(default = "default_provenance_segment_size_mb")]
+    pub segment_size_mb: u64,
+}
+
+impl Default for ProvenanceRepositoryConfig {
+    fn default() -> Self {
+        Self {
+            repo_type: default_repo_type(),
+            directory: default_provenance_dir(),
+            retention_days: default_provenance_retention_days(),
+            max_storage_gb: default_provenance_max_storage_gb(),
+            max_events: default_provenance_max_events(),
+            segment_size_mb: default_provenance_segment_size_mb(),
+        }
+    }
+}
+
+fn default_provenance_dir() -> PathBuf {
+    PathBuf::from("./data/provenance")
+}
+
+fn default_provenance_retention_days() -> u32 {
+    1
+}
+
+fn default_provenance_max_storage_gb() -> u64 {
+    1
+}
+
+fn default_provenance_max_events() -> usize {
+    1_000_000
+}
+
+fn default_provenance_segment_size_mb() -> u64 {
+    100
 }
 
 /// Configuration for encrypted repositories (content + FlowFile WAL).
