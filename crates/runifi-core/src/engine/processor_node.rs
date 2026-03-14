@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::Ordering;
 
 use parking_lot::RwLock;
@@ -16,6 +17,7 @@ use runifi_plugin_api::{FlowFile, Processor};
 use super::bulletin::{BulletinBoard, BulletinSeverity};
 use super::metrics::ProcessorMetrics;
 use super::supervisor::{InvocationResult, ProcessorSupervisor};
+use crate::cluster::load_balance::{LoadBalanceStrategy, LoadBalancer};
 use crate::connection::flow_connection::FlowConnection;
 use crate::id::IdGenerator;
 use crate::registry::service_registry::{RegistryServiceLookup, SharedServiceRegistry};
@@ -123,6 +125,9 @@ pub struct ProcessorNode {
     provenance_repo: SharedProvenanceRepository,
     /// Local state provider for processor state persistence.
     state_provider: Option<SharedLocalStateProvider>,
+    /// Lazily initialized load balancer for distributing FlowFiles across
+    /// multiple output connections on the same relationship.
+    load_balancer: OnceLock<LoadBalancer>,
 }
 
 impl ProcessorNode {
@@ -159,6 +164,7 @@ impl ProcessorNode {
             service_registry: None,
             provenance_repo: Arc::new(crate::repository::provenance_repo::NullProvenanceRepository),
             state_provider: None,
+            load_balancer: OnceLock::new(),
         }
     }
 
@@ -579,6 +585,13 @@ impl ProcessorNode {
     ///
     /// The third element contains `(FlowFile, connection_id)` for each
     /// successfully routed FlowFile, used by the WAL.
+    ///
+    /// When multiple connections exist for the same relationship, uses the
+    /// load balance strategy (configured per-connection) to select the target:
+    /// - `DoNotLoadBalance`: sends to the first matching connection (default)
+    /// - `RoundRobin`: distributes evenly across all connections for the relationship
+    /// - `PartitionByAttribute`: routes based on a hash of the specified attribute
+    /// - `SingleNode`: sends all FlowFiles to the first connection
     fn route_transfers(
         &self,
         session: &mut CoreProcessSession,
@@ -591,34 +604,15 @@ impl ProcessorNode {
             self.output_connections.read().clone();
         for (flowfile, rel_name) in session.take_transfers() {
             let size = flowfile.size;
-            let mut routed = false;
-            for (rel, conn) in &output_connections {
-                if rel.name == rel_name {
-                    let conn_id = conn.id.clone();
-                    if let Err(_ff) = conn.try_send(flowfile.clone()) {
-                        tracing::warn!(
-                            processor = %self.name,
-                            relationship = rel_name,
-                            "Failed to route FlowFile — connection full"
-                        );
-                        self.bulletin_board.add(
-                            &self.name,
-                            BulletinSeverity::Warn,
-                            format!(
-                                "Failed to route FlowFile on relationship '{}' — connection full",
-                                rel_name
-                            ),
-                        );
-                    } else {
-                        ff_out += 1;
-                        bytes_out += size;
-                        routed_list.push((flowfile, conn_id));
-                    }
-                    routed = true;
-                    break;
-                }
-            }
-            if !routed {
+
+            // Collect all connections for this relationship.
+            let matching_conns: Vec<&Arc<FlowConnection>> = output_connections
+                .iter()
+                .filter(|(rel, _)| rel.name == rel_name)
+                .map(|(_, conn)| conn)
+                .collect();
+
+            if matching_conns.is_empty() {
                 // Check if the relationship is auto-terminated.
                 let is_auto_term = output_connections
                     .iter()
@@ -630,8 +624,101 @@ impl ProcessorNode {
                         "No connection for relationship (auto-terminated or unconnected)"
                     );
                 }
+                continue;
+            }
+
+            // Select target connection using load balance strategy.
+            let target_idx = if matching_conns.len() == 1 {
+                0
+            } else {
+                self.select_load_balanced_connection(&matching_conns, &flowfile)
+            };
+
+            let conn = matching_conns[target_idx];
+            let conn_id = conn.id.clone();
+            if let Err(_ff) = conn.try_send(flowfile.clone()) {
+                tracing::warn!(
+                    processor = %self.name,
+                    relationship = rel_name,
+                    connection_id = %conn_id,
+                    "Failed to route FlowFile -- connection full"
+                );
+                self.bulletin_board.add(
+                    &self.name,
+                    BulletinSeverity::Warn,
+                    format!(
+                        "Failed to route FlowFile on relationship '{}' -- connection full",
+                        rel_name
+                    ),
+                );
+            } else {
+                ff_out += 1;
+                bytes_out += size;
+                routed_list.push((flowfile, conn_id));
             }
         }
         (ff_out, bytes_out, routed_list)
+    }
+
+    /// Select a target connection index using the load balance strategy
+    /// configured on the connections.
+    ///
+    /// If any connection has a load balance config, its strategy is used.
+    /// Otherwise, defaults to the first connection (DoNotLoadBalance behavior).
+    fn select_load_balanced_connection(
+        &self,
+        connections: &[&Arc<FlowConnection>],
+        flowfile: &FlowFile,
+    ) -> usize {
+        // Find the first connection with a load balance config to determine strategy.
+        let lb_config = connections
+            .iter()
+            .find_map(|conn| conn.load_balance_config());
+
+        let Some(config) = lb_config else {
+            return 0; // No load balancing configured — use first connection.
+        };
+
+        match &config.strategy {
+            LoadBalanceStrategy::DoNotLoadBalance => 0,
+
+            LoadBalanceStrategy::RoundRobin => {
+                // Use the shared load balancer for round-robin distribution.
+                let lb = self
+                    .load_balancer
+                    .get_or_init(|| LoadBalancer::new(LoadBalanceStrategy::RoundRobin));
+                let nodes: Vec<String> = connections.iter().map(|c| c.id.clone()).collect();
+                let local = nodes[0].clone();
+                if let Some(target_id) = lb.select_node(&local, &nodes, None) {
+                    nodes.iter().position(|n| *n == target_id).unwrap_or(0)
+                } else {
+                    0
+                }
+            }
+
+            LoadBalanceStrategy::PartitionByAttribute { attribute } => {
+                // Hash the attribute value to select a consistent target.
+                let attr_value = flowfile
+                    .attributes
+                    .iter()
+                    .find(|(k, _)| k.as_ref() == attribute.as_str())
+                    .map(|(_, v)| v.as_ref() as &str);
+
+                let lb = self.load_balancer.get_or_init(|| {
+                    LoadBalancer::new(LoadBalanceStrategy::PartitionByAttribute {
+                        attribute: attribute.clone(),
+                    })
+                });
+                let nodes: Vec<String> = connections.iter().map(|c| c.id.clone()).collect();
+                let local = nodes[0].clone();
+                if let Some(target_id) = lb.select_node(&local, &nodes, attr_value) {
+                    nodes.iter().position(|n| *n == target_id).unwrap_or(0)
+                } else {
+                    0
+                }
+            }
+
+            LoadBalanceStrategy::SingleNode { .. } => 0,
+        }
     }
 }

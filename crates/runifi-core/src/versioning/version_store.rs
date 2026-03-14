@@ -351,6 +351,7 @@ mod tests {
                 expiration: None,
                 priority: None,
                 priority_attribute: None,
+                load_balancing: None,
             }],
             positions: HashMap::new(),
             services: vec![],

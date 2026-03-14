@@ -54,14 +54,53 @@ async fn sse_events(
             .connections
             .read()
             .iter()
-            .map(|info| ConnectionResponse {
-                id: info.id.clone(),
-                source_name: info.source_name.clone(),
-                relationship: info.relationship.clone(),
-                dest_name: info.dest_name.clone(),
-                queued_count: info.connection.queue_count(),
-                queued_bytes: info.connection.queue_size_bytes(),
-                back_pressured: info.connection.is_back_pressured(),
+            .map(|info| {
+                // Extract load balance display fields.
+                let (lb_strategy, lb_partition_attr, lb_compression) = {
+                    match info.connection.load_balance_config() {
+                        Some(config) => {
+                            use runifi_core::cluster::load_balance::LoadBalanceStrategy;
+                            let strategy_str = match &config.strategy {
+                                LoadBalanceStrategy::DoNotLoadBalance => None,
+                                LoadBalanceStrategy::RoundRobin => Some("round_robin".to_string()),
+                                LoadBalanceStrategy::PartitionByAttribute { attribute } => {
+                                    return ConnectionResponse {
+                                        id: info.id.clone(),
+                                        source_name: info.source_name.clone(),
+                                        relationship: info.relationship.clone(),
+                                        dest_name: info.dest_name.clone(),
+                                        queued_count: info.connection.queue_count(),
+                                        queued_bytes: info.connection.queue_size_bytes(),
+                                        back_pressured: info.connection.is_back_pressured(),
+                                        load_balance_strategy: Some(
+                                            "partition_by_attribute".to_string(),
+                                        ),
+                                        load_balance_partition_attribute: Some(attribute.clone()),
+                                        load_balance_compression: Some(config.compression),
+                                    };
+                                }
+                                LoadBalanceStrategy::SingleNode { .. } => {
+                                    Some("single_node".to_string())
+                                }
+                            };
+                            let compression = if config.compression { Some(true) } else { None };
+                            (strategy_str, None, compression)
+                        }
+                        None => (None, None, None),
+                    }
+                };
+                ConnectionResponse {
+                    id: info.id.clone(),
+                    source_name: info.source_name.clone(),
+                    relationship: info.relationship.clone(),
+                    dest_name: info.dest_name.clone(),
+                    queued_count: info.connection.queue_count(),
+                    queued_bytes: info.connection.queue_size_bytes(),
+                    back_pressured: info.connection.is_back_pressured(),
+                    load_balance_strategy: lb_strategy,
+                    load_balance_partition_attribute: lb_partition_attr,
+                    load_balance_compression: lb_compression,
+                }
             })
             .collect();
 

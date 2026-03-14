@@ -266,6 +266,7 @@ async fn hot_add_connection_appears_in_handle() {
             "success".to_string(),
             "dst".to_string(),
             BackPressureConfig::default(),
+            None,
         )
         .await
         .expect("add_connection failed");
@@ -312,6 +313,7 @@ async fn hot_add_connection_invalid_relationship_returns_error() {
             "nonexistent-rel".to_string(),
             "dst".to_string(),
             BackPressureConfig::default(),
+            None,
         )
         .await;
 
@@ -344,6 +346,7 @@ async fn hot_add_connection_missing_destination_returns_error() {
             "success".to_string(),
             "missing-dst".to_string(),
             BackPressureConfig::default(),
+            None,
         )
         .await;
 
@@ -387,6 +390,7 @@ async fn duplicate_connection_returns_error() {
             "success".to_string(),
             "dst".to_string(),
             bp,
+            None,
         )
         .await
         .expect("first add");
@@ -397,6 +401,7 @@ async fn duplicate_connection_returns_error() {
             "success".to_string(),
             "dst".to_string(),
             bp,
+            None,
         )
         .await;
     assert!(result.is_err());
@@ -438,6 +443,7 @@ async fn hot_remove_connection_succeeds() {
             "success".to_string(),
             "dst".to_string(),
             BackPressureConfig::default(),
+            None,
         )
         .await
         .expect("add connection");
@@ -482,6 +488,7 @@ async fn hot_remove_processor_blocked_by_connection() {
             "success".to_string(),
             "dst".to_string(),
             BackPressureConfig::default(),
+            None,
         )
         .await
         .expect("add conn");

@@ -785,8 +785,14 @@ fn load_from_persisted_state(
         );
 
         let rel_name: &'static str = Box::leak(conn_state.relationship.clone().into_boxed_str());
-        engine.connect_with_options(
-            source_id, rel_name, dest_id, bp_config, expiration, priority,
+        engine.connect_with_load_balance(
+            source_id,
+            rel_name,
+            dest_id,
+            bp_config,
+            expiration,
+            priority,
+            conn_state.load_balancing.clone(),
         );
 
         tracing::info!(
@@ -938,8 +944,14 @@ fn load_from_seed_config(
         );
 
         let rel_name: &'static str = Box::leak(conn_config.relationship.clone().into_boxed_str());
-        engine.connect_with_options(
-            source_id, rel_name, dest_id, bp_config, expiration, priority,
+        engine.connect_with_load_balance(
+            source_id,
+            rel_name,
+            dest_id,
+            bp_config,
+            expiration,
+            priority,
+            conn_config.load_balancing.clone(),
         );
 
         tracing::info!(

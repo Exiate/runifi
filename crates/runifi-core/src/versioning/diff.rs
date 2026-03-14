@@ -257,6 +257,7 @@ mod tests {
                     expiration: None,
                     priority: None,
                     priority_attribute: None,
+                    load_balancing: None,
                 })
                 .collect(),
             positions: HashMap::new(),

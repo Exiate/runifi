@@ -517,6 +517,7 @@ impl EngineHandle {
         relationship: String,
         dest_name: String,
         config: BackPressureConfig,
+        load_balance: Option<crate::cluster::load_balance::LoadBalanceConfig>,
     ) -> Result<String, MutationError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.mutation_tx
@@ -525,6 +526,7 @@ impl EngineHandle {
                 relationship,
                 dest_name,
                 config,
+                load_balance,
                 reply: reply_tx,
             })
             .await
@@ -801,6 +803,7 @@ impl EngineHandle {
                     expiration,
                     priority,
                     priority_attribute,
+                    load_balancing: c.connection.load_balance_config().cloned(),
                 }
             })
             .collect();

@@ -13,6 +13,7 @@ use super::metrics::ProcessorMetrics;
 use super::mutation::MutationError;
 use super::processor_node::{ProcessorNode, SchedulingStrategy};
 use crate::audit::{AuditAction, AuditEvent, AuditLogger, AuditTarget};
+use crate::cluster::load_balance::LoadBalanceConfig;
 use crate::connection::back_pressure::BackPressureConfig;
 use crate::connection::flow_connection::FlowConnection;
 use crate::connection::query::FlowConnectionQuery;
@@ -231,6 +232,7 @@ impl DefaultMutationHandler {
         relationship: &str,
         dest_name: &str,
         config: BackPressureConfig,
+        load_balance: Option<LoadBalanceConfig>,
     ) -> std::result::Result<String, MutationError> {
         let (src_output_h, src_rel, dst_input_h, dst_notifiers_h) = {
             let procs = self.live_procs.read();
@@ -285,7 +287,15 @@ impl DefaultMutationHandler {
             }
         }
 
-        let fc = Arc::new(FlowConnection::new(conn_id.clone(), config));
+        let fc = if let Some(lb_config) = load_balance {
+            Arc::new(FlowConnection::with_load_balance(
+                conn_id.clone(),
+                config,
+                lb_config,
+            ))
+        } else {
+            Arc::new(FlowConnection::new(conn_id.clone(), config))
+        };
 
         let notifier = fc.notifier();
         dst_input_h.write().push(Arc::clone(&fc));
