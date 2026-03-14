@@ -260,7 +260,7 @@ mod tests {
             identity_regex: Some(r"^([^@]+)".into()),
             ..test_config()
         };
-        let provider = MtlsAuthProvider::new(config);
+        let _provider = MtlsAuthProvider::new(config);
 
         // Since we don't have a real cert, test the regex logic directly:
         // The extract_identity() method relies on parsing a real DER cert first,
