@@ -1,8 +1,11 @@
-use axum::extract::{Path, State};
+use std::collections::HashMap;
+
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{delete as delete_method, get, post, put};
 use axum::{Json, Router, middleware};
+use serde::{Deserialize, Serialize};
 
 use crate::dto::{
     CreateProcessorRequest, ProcessorConfigResponse, ProcessorConfigUpdateRequest,
@@ -21,6 +24,7 @@ pub fn routes() -> Router<ApiState> {
             "/api/v1/processors/{name}/config",
             get(get_processor_config),
         )
+        .route("/api/v1/processors/{name}/state", get(get_processor_state))
         .layer(middleware::from_fn(rbac::require_view_flow));
 
     // POST lifecycle endpoints — OperateProcessors (Operator+)
@@ -33,6 +37,10 @@ pub fn routes() -> Router<ApiState> {
         .route("/api/v1/processors/{name}/start", post(start_processor))
         .route("/api/v1/processors/{name}/pause", post(pause_processor))
         .route("/api/v1/processors/{name}/resume", post(resume_processor))
+        .route(
+            "/api/v1/processors/{name}/state",
+            delete_method(clear_processor_state),
+        )
         .layer(middleware::from_fn(rbac::require_operate_processors));
 
     // Flow mutation endpoints — ModifyFlow (Admin only)
@@ -406,4 +414,111 @@ async fn resume_processor(
     } else {
         Err(ApiError::ProcessorNotFound(name))
     }
+}
+
+// ── Processor State Endpoints ─────────────────────────────────────────────────
+
+/// Query parameters for state endpoints.
+#[derive(Debug, Deserialize)]
+struct StateQuery {
+    /// State scope: "local" (default) or "cluster".
+    scope: Option<String>,
+}
+
+/// Response DTO for processor state.
+#[derive(Debug, Serialize)]
+struct ProcessorStateResponse {
+    processor: String,
+    scope: String,
+    version: i64,
+    state: HashMap<String, String>,
+}
+
+/// Parse the scope query parameter, defaulting to "local".
+fn parse_scope(query: &StateQuery) -> Result<&str, ApiError> {
+    let scope = query.scope.as_deref().unwrap_or("local");
+    match scope {
+        "local" | "cluster" => Ok(scope),
+        other => Err(ApiError::BadRequest(format!(
+            "Invalid scope '{}'. Must be 'local' or 'cluster'.",
+            other
+        ))),
+    }
+}
+
+/// GET /api/v1/processors/{name}/state?scope=local
+///
+/// Returns the current state (key-value map + version) for the processor.
+async fn get_processor_state(
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+    Query(query): Query<StateQuery>,
+) -> Result<Json<ProcessorStateResponse>, ApiError> {
+    // Verify processor exists.
+    let _info = state
+        .handle
+        .get_processor_info(&name)
+        .ok_or(ApiError::ProcessorNotFound(name.clone()))?;
+
+    let scope_str = parse_scope(&query)?;
+
+    let provider =
+        state.handle.state_provider.as_ref().ok_or_else(|| {
+            ApiError::BadRequest("State management is not configured".to_string())
+        })?;
+
+    if scope_str == "cluster" {
+        return Err(ApiError::BadRequest(
+            "Cluster state scope is not yet implemented".to_string(),
+        ));
+    }
+
+    let state_map = provider
+        .get_state(&name)
+        .map_err(|e| ApiError::BadRequest(format!("Failed to read processor state: {}", e)))?;
+
+    Ok(Json(ProcessorStateResponse {
+        processor: name,
+        scope: scope_str.to_string(),
+        version: state_map.version(),
+        state: state_map.into_entries(),
+    }))
+}
+
+/// DELETE /api/v1/processors/{name}/state?scope=local
+///
+/// Clears all state for the processor in the given scope.
+async fn clear_processor_state(
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+    Query(query): Query<StateQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    // Verify processor exists.
+    let _info = state
+        .handle
+        .get_processor_info(&name)
+        .ok_or(ApiError::ProcessorNotFound(name.clone()))?;
+
+    let scope_str = parse_scope(&query)?;
+
+    let provider =
+        state.handle.state_provider.as_ref().ok_or_else(|| {
+            ApiError::BadRequest("State management is not configured".to_string())
+        })?;
+
+    if scope_str == "cluster" {
+        return Err(ApiError::BadRequest(
+            "Cluster state scope is not yet implemented".to_string(),
+        ));
+    }
+
+    provider
+        .clear(&name)
+        .map_err(|e| ApiError::BadRequest(format!("Failed to clear processor state: {}", e)))?;
+
+    Ok(Json(serde_json::json!({
+        "status": "cleared",
+        "processor": name,
+        "scope": scope_str,
+    })))
 }

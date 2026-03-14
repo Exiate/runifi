@@ -36,6 +36,7 @@ use crate::repository::flowfile_repo::FlowFileRepository;
 use crate::repository::provenance_repo::{
     InMemoryProvenanceRepository, SharedProvenanceRepository,
 };
+use crate::repository::state_provider::SharedLocalStateProvider;
 
 /// A unique identifier for a processor node in the engine.
 pub type NodeId = usize;
@@ -60,6 +61,7 @@ pub struct FlowEngine {
     audit_logger: Arc<dyn AuditLogger>,
     service_registry: SharedServiceRegistry,
     provenance_repo: SharedProvenanceRepository,
+    state_provider: Option<SharedLocalStateProvider>,
 
     nodes: Vec<NodeBuilder>,
     connections: Vec<ConnBuilder>,
@@ -108,6 +110,7 @@ impl FlowEngine {
             audit_logger: Arc::new(NullAuditLogger),
             service_registry: SharedServiceRegistry::new(),
             provenance_repo: Arc::new(InMemoryProvenanceRepository::new()),
+            state_provider: None,
             nodes: Vec::new(),
             connections: Vec::new(),
             next_node_id: 0,
@@ -136,6 +139,11 @@ impl FlowEngine {
     /// Set the provenance repository for FlowFile lineage tracking.
     pub fn set_provenance_repo(&mut self, repo: SharedProvenanceRepository) {
         self.provenance_repo = repo;
+    }
+
+    /// Set the local state provider for processor state persistence.
+    pub fn set_state_provider(&mut self, provider: SharedLocalStateProvider) {
+        self.state_provider = Some(provider);
     }
 
     /// Get a reference to the provenance repository.
@@ -387,6 +395,9 @@ impl FlowEngine {
             pn.set_service_registry(self.service_registry.clone());
             pn.set_provenance_repo(self.provenance_repo.clone());
             pn.set_type_name(node_builder.type_name.clone());
+            if let Some(ref provider) = self.state_provider {
+                pn.set_state_provider(provider.clone());
+            }
 
             for (src, rel, dst, fc) in &flow_connections {
                 if *src == node_builder.id {
@@ -477,6 +488,7 @@ impl FlowEngine {
             mutation_tx,
             persistence: self.persistence.clone(),
             provenance_repo: self.provenance_repo.clone(),
+            state_provider: self.state_provider.clone(),
         };
 
         // Wire persistence: pass only the data collections it needs for

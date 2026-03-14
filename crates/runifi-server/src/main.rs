@@ -345,8 +345,16 @@ async fn main() -> Result<()> {
     engine.set_registry(registry.clone());
 
     // Set up flow persistence.
-    let persistence_layer = FlowPersistence::new(conf_dir);
+    let persistence_layer = FlowPersistence::new(conf_dir.clone());
     engine.set_persistence(persistence_layer);
+
+    // Set up processor state provider (file-backed, stored under conf_dir/state/local/).
+    let state_dir = conf_dir.join("state").join("local");
+    let state_provider = Arc::new(
+        runifi_core::repository::state_provider::LocalStateProvider::new(&state_dir)
+            .context("Failed to initialize local state provider")?,
+    );
+    engine.set_state_provider(state_provider);
 
     // Populate the engine from either runtime state or seed config.
     if let Some(ref state) = runtime_flow {
