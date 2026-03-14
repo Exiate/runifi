@@ -52,10 +52,13 @@ import type { ProcessorNodeData, ConnectionEdgeData, LabelNodeData, ProcessGroup
 import type { ToastKind } from '../hooks/useToast';
 
 // Concrete node and edge types
+type ProcNode = Node<ProcessorNodeData, 'processorNode'>;
+type FunnelFlowNode = Node<ProcessorNodeData, 'funnelNode'>;
 type LabelFlowNode = Node<LabelNodeData, 'labelNode'>;
 type GroupFlowNode = Node<ProcessGroupNodeData, 'processGroupNode'>;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyNode = Node<any, string>;
+type InputPortFlowNode = Node<PortNodeData, 'inputPortNode'>;
+type OutputPortFlowNode = Node<PortNodeData, 'outputPortNode'>;
+type AnyNode = ProcNode | FunnelFlowNode | LabelFlowNode | GroupFlowNode | InputPortFlowNode | OutputPortFlowNode;
 type ConnEdge = Edge<ConnectionEdgeData, 'connectionEdge'>;
 
 const nodeTypes = {
@@ -301,7 +304,7 @@ function FlowCanvasInner({
       if (currentGroupId) {
         (inputPorts ?? []).forEach((p, idx) => {
           portNodes.push({
-            id: `port-${p.id}`,
+            id: `input-port-${p.id}`,
             type: 'inputPortNode' as const,
             position: { x: 50, y: 100 + idx * 80 },
             data: {
@@ -317,7 +320,7 @@ function FlowCanvasInner({
         });
         (outputPorts ?? []).forEach((p, idx) => {
           portNodes.push({
-            id: `port-${p.id}`,
+            id: `output-port-${p.id}`,
             type: 'outputPortNode' as const,
             position: { x: 800, y: 100 + idx * 80 },
             data: {
@@ -773,6 +776,7 @@ function FlowCanvasInner({
           name,
           position,
           properties: {},
+          ...(currentGroupId ? { process_group_id: currentGroupId } : {}),
         }),
       })
         .then((res) => {
@@ -792,7 +796,7 @@ function FlowCanvasInner({
           );
         });
     },
-    [pendingDrop, setNodes, onToast],
+    [pendingDrop, setNodes, onToast, currentGroupId],
   );
 
   const handleConnect: OnConnect = useCallback(

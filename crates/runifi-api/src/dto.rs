@@ -466,6 +466,9 @@ pub struct CreateProcessorRequest {
     /// Scheduling interval in milliseconds (for "timer" strategy).
     #[serde(default = "default_interval_ms")]
     pub interval_ms: u64,
+    /// Optional process group ID — if set, the processor is placed inside this group.
+    #[serde(default)]
+    pub process_group_id: Option<String>,
 }
 
 fn default_scheduling_strategy() -> String {

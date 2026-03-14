@@ -35,7 +35,6 @@ export interface ProcessGroupNodeData extends Record<string, unknown> {
   inputPortCount: number;
   outputPortCount: number;
   pending: boolean;
-  onEnterGroup?: (groupId: string) => void;
 }
 
 export interface PortNodeData extends Record<string, unknown> {

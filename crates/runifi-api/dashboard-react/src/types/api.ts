@@ -90,14 +90,8 @@ export interface FlowResponse {
 
 // ── Process group scoped flow ──────────────────────────────────────
 
-export interface ProcessGroupSummary {
-  id: string;
-  name: string;
-  processor_count: number;
-  input_port_count: number;
-  output_port_count: number;
-  position?: { x: number; y: number };
-}
+/** Alias: same shape as FlowProcessGroupResponse. */
+export type ProcessGroupSummary = FlowProcessGroupResponse;
 
 export interface BreadcrumbSegment {
   id: string;

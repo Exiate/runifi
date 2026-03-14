@@ -1,18 +1,13 @@
-import { memo, useCallback } from 'react';
+import { memo } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import type { ProcessGroupNodeData } from '../types/flow';
 
 function ProcessGroupNodeInner({ data }: NodeProps) {
   const d = data as ProcessGroupNodeData;
 
-  const handleDoubleClick = useCallback(() => {
-    d.onEnterGroup?.(d.groupId);
-  }, [d]);
-
   return (
     <div
       className={`process-group-node ${d.pending ? 'node-pending' : ''}`}
-      onDoubleClick={handleDoubleClick}
     >
       {/* Target handles */}
       <Handle type="target" position={Position.Top} id="target--top" className="node-handle" />
