@@ -9,11 +9,13 @@ interface ComponentToolbarProps {
 }
 
 const COMPONENT_TYPES = [
-  { id: 'processor', label: 'Processor', icon: '\u25C6' },
-  { id: 'input-port', label: 'Input Port', icon: '\u25B6' },
-  { id: 'output-port', label: 'Output Port', icon: '\u25C0' },
-  { id: 'funnel', label: 'Funnel', icon: '\u25BD' },
-  { id: 'label', label: 'Label', icon: '\u25A1' },
+  { id: 'processor', label: 'Processor', icon: '\u25C6', enabled: true, tooltip: 'Click to add a processor to the canvas' },
+  { id: 'input-port', label: 'Input Port', icon: '\u25B6', enabled: true, tooltip: 'Drag to add an input port' },
+  { id: 'output-port', label: 'Output Port', icon: '\u25C0', enabled: true, tooltip: 'Drag to add an output port' },
+  { id: 'process-group', label: 'Process Group', icon: '\uD83D\uDCC1', enabled: false, tooltip: 'Process groups (not yet implemented)' },
+  { id: 'remote-process-group', label: 'Remote PG', icon: '\u2601', enabled: false, tooltip: 'Remote process groups (not yet implemented)' },
+  { id: 'funnel', label: 'Funnel', icon: '\u25BD', enabled: true, tooltip: 'Click to add a funnel to the canvas' },
+  { id: 'label', label: 'Label', icon: '\u25A1', enabled: true, tooltip: 'Drag to add a text label' },
 ] as const;
 
 // Fallback category map used when backend does not provide tags.
@@ -139,28 +141,23 @@ function ComponentToolbarInner({ plugins, loading, onDragStart, onAddProcessor }
         {COMPONENT_TYPES.map((ct) => (
           <button
             key={ct.id}
-            className="toolbar-item"
-            draggable={ct.id !== 'processor' && ct.id !== 'funnel'}
-            onDragStart={(e) => handleToolbarDrag(e, ct.id)}
+            className={`toolbar-item${ct.enabled ? '' : ' toolbar-item-disabled'}`}
+            draggable={ct.enabled && ct.id !== 'processor' && ct.id !== 'funnel'}
+            disabled={!ct.enabled}
+            onDragStart={(e) => ct.enabled ? handleToolbarDrag(e, ct.id) : e.preventDefault()}
             onClick={
-              ct.id === 'processor'
-                ? () => setShowAddDialog(!showAddDialog)
-                : ct.id === 'funnel'
-                  ? () => {
-                      const fp = plugins.find((p) => p.type_name === 'Funnel');
-                      if (fp) onAddProcessor?.(fp);
-                    }
-                  : undefined
+              !ct.enabled
+                ? undefined
+                : ct.id === 'processor'
+                  ? () => setShowAddDialog(!showAddDialog)
+                  : ct.id === 'funnel'
+                    ? () => {
+                        const fp = plugins.find((p) => p.type_name === 'Funnel');
+                        if (fp) onAddProcessor?.(fp);
+                      }
+                    : undefined
             }
-            title={
-              ct.id === 'processor'
-                ? 'Click to add a processor'
-                : ct.id === 'funnel'
-                  ? 'Click to add a funnel'
-                  : ct.id === 'label'
-                    ? 'Drag to add a label'
-                    : `Drag to add ${ct.label}`
-            }
+            title={ct.tooltip}
             aria-label={ct.label}
           >
             <span className="toolbar-item-icon" aria-hidden="true">

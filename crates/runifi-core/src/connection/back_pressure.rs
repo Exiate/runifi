@@ -9,7 +9,7 @@ pub struct BackPressureConfig {
 
 impl BackPressureConfig {
     pub const DEFAULT_MAX_COUNT: usize = 10_000;
-    pub const DEFAULT_MAX_BYTES: u64 = 100 * 1024 * 1024; // 100 MB
+    pub const DEFAULT_MAX_BYTES: u64 = 1_073_741_824; // 1 GB (matches NiFi default)
 
     pub const fn new(max_count: usize, max_bytes: u64) -> Self {
         Self {

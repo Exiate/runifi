@@ -245,6 +245,12 @@ mod tests {
                         expression: None,
                     },
                     properties: HashMap::new(),
+                    penalty_duration_ms: None,
+                    yield_duration_ms: None,
+                    bulletin_level: None,
+                    concurrent_tasks: None,
+                    auto_terminated_relationships: None,
+                    comments: None,
                 })
                 .collect(),
             connections: conns

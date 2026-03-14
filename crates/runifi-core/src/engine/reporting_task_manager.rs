@@ -456,6 +456,7 @@ fn descriptor_to_info(pd: &PropertyDescriptor) -> PropertyDescriptorInfo {
         allowed_values: pd
             .allowed_values
             .map(|vs| vs.iter().map(|v| v.to_string()).collect()),
+        expression_language_supported: pd.expression_language_supported,
     }
 }
 

@@ -30,7 +30,10 @@ export function stateColor(state: string): string {
     case 'paused':
       return 'var(--warning)';
     case 'circuit-open':
+    case 'invalid':
       return 'var(--danger)';
+    case 'disabled':
+      return 'var(--text-dim)';
     default:
       return 'var(--border)';
   }
@@ -40,6 +43,13 @@ export function backPressureColor(pct: number): string {
   if (pct >= 1.0) return 'var(--danger)';
   if (pct >= 0.75) return 'var(--warning)';
   return 'var(--accent)';
+}
+
+/** NiFi-style edge stroke color based on queue fill percentage. */
+export function backPressureEdgeColor(fillPct: number): string {
+  if (fillPct > 0.85) return '#dd0000';
+  if (fillPct > 0.60) return '#ffaa00';
+  return '#666666';
 }
 
 export function formatAge(ms: number): string {

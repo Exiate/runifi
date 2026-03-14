@@ -1,6 +1,6 @@
 // API response types matching the Rust DTOs in runifi-api/src/dto.rs
 
-export type ProcessorState = 'running' | 'paused' | 'stopped' | 'circuit-open';
+export type ProcessorState = 'running' | 'paused' | 'stopped' | 'circuit-open' | 'invalid' | 'disabled';
 
 export type SseStatus = 'connecting' | 'connected' | 'disconnected';
 
@@ -30,8 +30,9 @@ export interface ProcessorResponse {
   name: string;
   type_name: string;
   scheduling: string;
-  state: string;
+  state: ProcessorState;
   metrics: MetricsResponse;
+  validation_errors?: string[];
 }
 
 export interface ConnectionResponse {
@@ -42,6 +43,9 @@ export interface ConnectionResponse {
   queued_count: number;
   queued_bytes: number;
   back_pressured: boolean;
+  back_pressure_object_threshold: number;
+  back_pressure_bytes_threshold: number;
+  fill_percentage: number;
 }
 
 export interface FlowNodeResponse {
@@ -149,7 +153,9 @@ export interface PropertyDescriptorFull {
   description: string;
   default_value: string | null;
   required: boolean;
+  sensitive: boolean;
   allowed_values: string[] | null;
+  expression_language_supported: boolean;
 }
 
 export interface RelationshipDescriptor {
@@ -161,6 +167,7 @@ export interface RelationshipDescriptor {
 export interface SchedulingConfig {
   strategy: string;
   interval_ms: number | null;
+  concurrent_tasks: number;
 }
 
 export interface ProcessorConfigResponse {
@@ -170,6 +177,12 @@ export interface ProcessorConfigResponse {
   property_descriptors: PropertyDescriptorFull[];
   scheduling: SchedulingConfig;
   relationships: RelationshipDescriptor[];
+  penalty_duration_ms: number;
+  yield_duration_ms: number;
+  bulletin_level: string;
+  concurrent_tasks: number;
+  comments: string;
+  auto_terminated_relationships: string[];
 }
 
 // ── Queue inspection ───────────────────────────────────────────────

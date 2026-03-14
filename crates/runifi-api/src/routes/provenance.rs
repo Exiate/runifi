@@ -8,18 +8,23 @@ use runifi_core::repository::provenance_repo::{ProvenanceEventType, ProvenanceQu
 
 use crate::dto::{
     ProvenanceEventResponse, ProvenanceLineageResponse, ProvenanceReplayResponse,
-    ProvenanceSearchParams, ProvenanceSearchResponse,
+    ProvenanceSearchParams, ProvenanceSearchResponse, ProvenanceStatsResponse,
 };
 use crate::error::ApiError;
 use crate::rbac;
 use crate::state::ApiState;
 
 pub fn routes() -> Router<ApiState> {
-    // Search and lineage endpoints — ViewFlow (Viewer+)
+    // Search, stats, lineage, and content endpoints — ViewFlow (Viewer+)
     let view_routes = Router::new()
         .route("/api/v1/provenance/search", get(search_provenance))
+        .route("/api/v1/provenance/stats", get(get_stats))
         .route("/api/v1/provenance/{flowfile_id}/lineage", get(get_lineage))
         .route("/api/v1/provenance/events/{event_id}", get(get_event))
+        .route(
+            "/api/v1/provenance/events/{event_id}/content",
+            get(download_content),
+        )
         .layer(middleware::from_fn(rbac::require_view_flow));
 
     // Replay endpoint — OperateProcessors (Operator+)
@@ -51,7 +56,8 @@ async fn search_provenance(
         let et = ProvenanceEventType::parse(et_str).ok_or_else(|| {
             ApiError::BadRequest(format!(
                 "Invalid event type '{}'. Valid types: CREATE, RECEIVE, SEND, CLONE, \
-                 CONTENT_MODIFIED, ATTRIBUTES_MODIFIED, ROUTE, DROP",
+                 CONTENT_MODIFIED, ATTRIBUTES_MODIFIED, ROUTE, DROP, FORK, JOIN, \
+                 FETCH, EXPIRE, REPLAY, DOWNLOAD, ADDINFO",
                 et_str
             ))
         })?;
@@ -72,6 +78,9 @@ async fn search_provenance(
         end_time_nanos: params.end_time.map(|ms| ms * 1_000_000),
         max_results,
         offset,
+        processor_type: params.processor_type,
+        min_size: params.min_size,
+        max_size: params.max_size,
     };
 
     let result = state.handle.provenance_repo.search(&query);
@@ -136,12 +145,61 @@ async fn get_event(
     Ok(Json(ProvenanceEventResponse::from_event(&event)))
 }
 
+/// Get provenance repository statistics.
+async fn get_stats(
+    State(state): State<ApiState>,
+) -> Result<Json<ProvenanceStatsResponse>, ApiError> {
+    let stats = state.handle.provenance_repo.stats();
+    Ok(Json(ProvenanceStatsResponse {
+        event_count: stats.event_count,
+        oldest_timestamp_ms: stats.oldest_timestamp_nanos.map(|ns| ns / 1_000_000),
+        newest_timestamp_ms: stats.newest_timestamp_nanos.map(|ns| ns / 1_000_000),
+    }))
+}
+
+/// Download the content of a FlowFile at the time of a provenance event.
+/// Returns 410 Gone if the content has been garbage collected.
+async fn download_content(
+    State(state): State<ApiState>,
+    Path(event_id): Path<u64>,
+) -> Result<impl IntoResponse, ApiError> {
+    let event = state
+        .handle
+        .provenance_repo
+        .get_event(event_id)
+        .ok_or(ApiError::ProvenanceEventNotFound(event_id))?;
+
+    let claim_id = event
+        .content_claim_id
+        .ok_or(ApiError::ContentGone(event_id))?;
+
+    let claim = runifi_plugin_api::ContentClaim {
+        resource_id: claim_id,
+        offset: 0,
+        length: event.content_size,
+    };
+
+    let content = state
+        .handle
+        .content_repo
+        .read(&claim)
+        .map_err(|_| ApiError::ContentGone(event_id))?;
+
+    let headers = [
+        (axum::http::header::CONTENT_TYPE, "application/octet-stream"),
+        (
+            axum::http::header::CONTENT_DISPOSITION,
+            "attachment; filename=\"provenance-content.bin\"",
+        ),
+    ];
+
+    Ok((StatusCode::OK, headers, content.to_vec()))
+}
+
 /// Replay a FlowFile from a specific provenance event.
 ///
-/// This re-creates the FlowFile as it existed at the time of the provenance
-/// event and re-injects it into the processor that produced the event.
-/// The replayed FlowFile will have the same attributes as the original
-/// but a new unique ID.
+/// Re-creates the FlowFile as it existed at the time of the provenance event
+/// and re-injects it into the processor. Records a REPLAY provenance event.
 async fn replay_flowfile(
     State(state): State<ApiState>,
     Path(event_id): Path<u64>,
@@ -170,9 +228,25 @@ async fn replay_flowfile(
         )));
     }
 
+    // Restore content claim if available.
+    let content_claim = if let Some(claim_id) = event.content_claim_id {
+        let probe = runifi_plugin_api::ContentClaim {
+            resource_id: claim_id,
+            offset: 0,
+            length: event.content_size,
+        };
+        if state.handle.content_repo.read(&probe).is_ok() {
+            Some(probe)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     // Re-create the FlowFile with attributes from the provenance event.
     let mut replay_ff = runifi_plugin_api::FlowFile {
-        id: 0, // Will be set after injection.
+        id: 0,
         attributes: event
             .attributes
             .iter()
@@ -183,7 +257,7 @@ async fn replay_flowfile(
                 )
             })
             .collect(),
-        content_claim: None,
+        content_claim,
         size: event.content_size,
         created_at_nanos: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -202,10 +276,7 @@ async fn replay_flowfile(
         )));
     }
 
-    // Use the FlowFile ID from the connection for uniqueness.
-    // We set a temporary ID; the processor will give it a new one on get().
     replay_ff.id = event.flowfile_id;
-
     let injected = input_conns[0].try_send(replay_ff).is_ok();
 
     if !injected {
@@ -214,6 +285,32 @@ async fn replay_flowfile(
             event.processor_name
         )));
     }
+
+    // Record a REPLAY provenance event.
+    let now_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    let replay_event = runifi_core::repository::provenance_repo::ProvenanceEvent {
+        event_id: 0,
+        flowfile_id: event.flowfile_id,
+        event_type: ProvenanceEventType::Replay,
+        processor_name: event.processor_name.clone(),
+        processor_type: event.processor_type.clone(),
+        timestamp_nanos: now_nanos,
+        attributes: event.attributes.clone(),
+        content_size: event.content_size,
+        lineage_start_id: event.lineage_start_id,
+        relationship: None,
+        source_flowfile_id: None,
+        details: format!("Replayed from provenance event {event_id}"),
+        parent_flowfile_ids: Vec::new(),
+        child_flowfile_ids: Vec::new(),
+        transit_uri: None,
+        content_claim_id: event.content_claim_id,
+        previous_attributes: Vec::new(),
+    };
+    state.handle.provenance_repo.record(replay_event);
 
     Ok((
         StatusCode::ACCEPTED,

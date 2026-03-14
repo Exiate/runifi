@@ -48,6 +48,9 @@ pub enum ApiError {
 
     #[error("Reporting task not found: {0}")]
     ReportingTaskNotFound(String),
+
+    #[error("Content no longer available for event {0} (expired or garbage collected)")]
+    ContentGone(u64),
 }
 
 impl ApiError {
@@ -67,6 +70,7 @@ impl ApiError {
             ApiError::Forbidden => StatusCode::FORBIDDEN,
             ApiError::ProvenanceEventNotFound(_) => StatusCode::NOT_FOUND,
             ApiError::ReportingTaskNotFound(_) => StatusCode::NOT_FOUND,
+            ApiError::ContentGone(_) => StatusCode::GONE,
         }
     }
 
@@ -87,6 +91,7 @@ impl ApiError {
             ApiError::Forbidden => "Forbidden",
             ApiError::ProvenanceEventNotFound(_) => "Provenance event not found",
             ApiError::ReportingTaskNotFound(_) => "Resource not found",
+            ApiError::ContentGone(_) => "Content no longer available",
         }
     }
 

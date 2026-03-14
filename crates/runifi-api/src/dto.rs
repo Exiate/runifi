@@ -99,6 +99,9 @@ pub struct ConnectionResponse {
     pub queued_count: usize,
     pub queued_bytes: u64,
     pub back_pressured: bool,
+    pub back_pressure_object_threshold: usize,
+    pub back_pressure_bytes_threshold: u64,
+    pub fill_percentage: f64,
     /// Load balance strategy in effect for this connection.
     /// Omitted from JSON when `None` (no load balancing).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -109,6 +112,21 @@ pub struct ConnectionResponse {
     /// Whether compression is enabled for cross-node transfer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub load_balance_compression: Option<bool>,
+}
+
+/// Compute fill percentage as `max(count/max_count, bytes/max_bytes)` clamped to `[0.0, 1.0]`.
+pub fn compute_fill_percentage(count: usize, max_count: usize, bytes: u64, max_bytes: u64) -> f64 {
+    let count_pct = if max_count > 0 {
+        count as f64 / max_count as f64
+    } else {
+        0.0
+    };
+    let bytes_pct = if max_bytes > 0 {
+        bytes as f64 / max_bytes as f64
+    } else {
+        0.0
+    };
+    count_pct.max(bytes_pct).clamp(0.0, 1.0)
 }
 
 // ── Canvas position ────────────────────────────────────────────────────
@@ -261,6 +279,12 @@ pub struct ProcessorConfigResponse {
     pub property_descriptors: Vec<PropertyDescriptorResponse>,
     pub scheduling: SchedulingResponse,
     pub relationships: Vec<RelationshipResponse>,
+    pub penalty_duration_ms: u64,
+    pub yield_duration_ms: u64,
+    pub bulletin_level: String,
+    pub concurrent_tasks: u64,
+    pub comments: String,
+    pub auto_terminated_relationships: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -271,12 +295,14 @@ pub struct PropertyDescriptorResponse {
     pub default_value: Option<String>,
     pub sensitive: bool,
     pub allowed_values: Option<Vec<String>>,
+    pub expression_language_supported: bool,
 }
 
 #[derive(Serialize)]
 pub struct SchedulingResponse {
     pub strategy: String,
     pub interval_ms: Option<u64>,
+    pub concurrent_tasks: u64,
 }
 
 #[derive(Serialize)]
@@ -288,20 +314,39 @@ pub struct RelationshipResponse {
 
 /// Request body for `PUT /api/v1/processors/{name}/config`.
 #[derive(Deserialize)]
+#[allow(dead_code)]
 pub struct ProcessorConfigUpdateRequest {
     #[serde(default)]
     pub properties: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub scheduling_strategy: Option<String>,
+    #[serde(default)]
+    pub scheduling_interval_ms: Option<u64>,
+    #[serde(default)]
+    pub concurrent_tasks: Option<u64>,
+    #[serde(default)]
+    pub penalty_duration_ms: Option<u64>,
+    #[serde(default)]
+    pub yield_duration_ms: Option<u64>,
+    #[serde(default)]
+    pub bulletin_level: Option<String>,
+    #[serde(default)]
+    pub auto_terminated_relationships: Option<Vec<String>>,
+    #[serde(default)]
+    pub comments: Option<String>,
 }
 
 impl ProcessorConfigResponse {
     pub fn from_info(info: &ProcessorInfo) -> Self {
         // Parse the display string to extract strategy/interval for the config response.
-        // Format is "timer-driven (Nms)" or "event-driven".
+        // Format is "timer-driven (Nms)", "cron-driven (expr)", or "event-driven".
         let (strategy, interval_ms) =
             if let Some(rest) = info.scheduling_display.strip_prefix("timer-driven (") {
                 let ms_str = rest.trim_end_matches("ms)");
                 let interval = ms_str.parse::<u64>().unwrap_or(1000);
                 ("timer".to_string(), Some(interval))
+            } else if info.scheduling_display.starts_with("cron-driven") {
+                ("cron".to_string(), None)
             } else {
                 ("event".to_string(), None)
             };
@@ -338,16 +383,22 @@ impl ProcessorConfigResponse {
                 default_value: pd.default_value.clone(),
                 sensitive: pd.sensitive,
                 allowed_values: pd.allowed_values.clone(),
+                expression_language_supported: pd.expression_language_supported,
             })
             .collect();
 
+        // Merge auto-terminated state: use runtime config as source of truth.
+        let auto_term = info.auto_terminated_relationships.read().clone();
         let relationships = info
             .relationships
             .iter()
-            .map(|r| RelationshipResponse {
-                name: r.name.clone(),
-                description: r.description.clone(),
-                auto_terminated: r.auto_terminated,
+            .map(|r| {
+                let is_auto_terminated = r.auto_terminated || auto_term.contains(&r.name);
+                RelationshipResponse {
+                    name: r.name.clone(),
+                    description: r.description.clone(),
+                    auto_terminated: is_auto_terminated,
+                }
             })
             .collect();
 
@@ -359,8 +410,23 @@ impl ProcessorConfigResponse {
             scheduling: SchedulingResponse {
                 strategy,
                 interval_ms,
+                concurrent_tasks: info
+                    .concurrent_tasks
+                    .load(std::sync::atomic::Ordering::Relaxed),
             },
             relationships,
+            penalty_duration_ms: info
+                .penalty_duration_ms
+                .load(std::sync::atomic::Ordering::Relaxed),
+            yield_duration_ms: info
+                .yield_duration_ms
+                .load(std::sync::atomic::Ordering::Relaxed),
+            bulletin_level: info.bulletin_level.read().clone(),
+            concurrent_tasks: info
+                .concurrent_tasks
+                .load(std::sync::atomic::Ordering::Relaxed),
+            comments: info.comments.read().clone(),
+            auto_terminated_relationships: auto_term,
         }
     }
 }
@@ -447,6 +513,9 @@ pub struct ConnectionDetailResponse {
     pub queued_count: usize,
     pub queued_bytes: u64,
     pub back_pressured: bool,
+    pub back_pressure_object_threshold: usize,
+    pub back_pressure_bytes_threshold: u64,
+    pub fill_percentage: f64,
     /// Load balance strategy in effect for this connection.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub load_balance_strategy: Option<String>,
@@ -456,6 +525,13 @@ pub struct ConnectionDetailResponse {
     /// Whether compression is enabled for cross-node transfer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub load_balance_compression: Option<bool>,
+}
+
+/// Request body for `PUT /api/v1/connections/{id}/config`.
+#[derive(Deserialize)]
+pub struct UpdateConnectionConfigRequest {
+    pub back_pressure_object_threshold: Option<usize>,
+    pub back_pressure_bytes_threshold: Option<u64>,
 }
 
 // ── Controller service DTOs ────────────────────────────────────────────
@@ -586,6 +662,16 @@ pub struct ProvenanceEventResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_flowfile_id: Option<u64>,
     pub details: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub parent_flowfile_ids: Vec<u64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub child_flowfile_ids: Vec<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transit_uri: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_claim_id: Option<u64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub previous_attributes: Vec<ProvenanceAttributeResponse>,
 }
 
 /// Attribute snapshot in a provenance event.
@@ -629,6 +715,12 @@ pub struct ProvenanceSearchParams {
     pub max_results: Option<usize>,
     /// Pagination offset (default 0).
     pub offset: Option<usize>,
+    /// Filter by processor type.
+    pub processor_type: Option<String>,
+    /// Filter by minimum content size.
+    pub min_size: Option<u64>,
+    /// Filter by maximum content size.
+    pub max_size: Option<u64>,
 }
 
 /// Response for provenance replay.
@@ -639,6 +731,16 @@ pub struct ProvenanceReplayResponse {
     pub flowfile_id: u64,
     pub processor_name: String,
     pub message: String,
+}
+
+/// Summary statistics for the provenance repository.
+#[derive(Serialize)]
+pub struct ProvenanceStatsResponse {
+    pub event_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oldest_timestamp_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub newest_timestamp_ms: Option<u64>,
 }
 
 impl ProvenanceEventResponse {
@@ -664,6 +766,18 @@ impl ProvenanceEventResponse {
             relationship: event.relationship.clone(),
             source_flowfile_id: event.source_flowfile_id,
             details: event.details.clone(),
+            parent_flowfile_ids: event.parent_flowfile_ids.clone(),
+            child_flowfile_ids: event.child_flowfile_ids.clone(),
+            transit_uri: event.transit_uri.clone(),
+            content_claim_id: event.content_claim_id,
+            previous_attributes: event
+                .previous_attributes
+                .iter()
+                .map(|(k, v)| ProvenanceAttributeResponse {
+                    key: k.clone(),
+                    value: v.clone(),
+                })
+                .collect(),
         }
     }
 }
@@ -785,4 +899,45 @@ pub struct RevertResponse {
     pub reverted_to: String,
     pub comment: String,
     pub message: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fill_percentage_empty_queue() {
+        assert_eq!(compute_fill_percentage(0, 10_000, 0, 1_073_741_824), 0.0);
+    }
+
+    #[test]
+    fn fill_percentage_by_count() {
+        let pct = compute_fill_percentage(5_000, 10_000, 0, 1_073_741_824);
+        assert!((pct - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn fill_percentage_by_bytes() {
+        let pct = compute_fill_percentage(0, 10_000, 536_870_912, 1_073_741_824);
+        assert!((pct - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn fill_percentage_takes_max() {
+        // count at 80%, bytes at 50% — should return 80%
+        let pct = compute_fill_percentage(8_000, 10_000, 536_870_912, 1_073_741_824);
+        assert!((pct - 0.8).abs() < 0.001);
+    }
+
+    #[test]
+    fn fill_percentage_clamped_to_1() {
+        // Over threshold
+        let pct = compute_fill_percentage(20_000, 10_000, 0, 1_073_741_824);
+        assert_eq!(pct, 1.0);
+    }
+
+    #[test]
+    fn fill_percentage_zero_thresholds() {
+        assert_eq!(compute_fill_percentage(100, 0, 100, 0), 0.0);
+    }
 }

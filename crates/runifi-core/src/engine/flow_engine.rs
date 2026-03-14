@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
@@ -342,6 +343,7 @@ impl FlowEngine {
                         allowed_values: pd
                             .allowed_values
                             .map(|av| av.iter().map(|v| v.to_string()).collect()),
+                        expression_language_supported: pd.expression_language_supported,
                     })
                     .collect();
                 let rs = proc
@@ -489,6 +491,12 @@ impl FlowEngine {
                 input_connections: input_h,
                 output_connections: output_h,
                 input_notifiers: notifiers_h,
+                penalty_duration_ms: Arc::new(AtomicU64::new(30_000)),
+                yield_duration_ms: Arc::new(AtomicU64::new(1_000)),
+                bulletin_level: Arc::new(RwLock::new("WARN".to_string())),
+                concurrent_tasks: Arc::new(AtomicU64::new(1)),
+                comments: Arc::new(RwLock::new(String::new())),
+                auto_terminated_relationships: Arc::new(RwLock::new(Vec::new())),
             });
         }
 

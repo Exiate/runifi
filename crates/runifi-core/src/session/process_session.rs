@@ -153,6 +153,11 @@ impl CoreProcessSession {
             relationship: None,
             source_flowfile_id: None,
             details: String::new(),
+            parent_flowfile_ids: Vec::new(),
+            child_flowfile_ids: Vec::new(),
+            transit_uri: None,
+            content_claim_id: ff.content_claim.as_ref().map(|c| c.resource_id),
+            previous_attributes: Vec::new(),
         }
     }
 }

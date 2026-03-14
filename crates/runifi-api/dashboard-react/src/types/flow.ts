@@ -33,11 +33,16 @@ export interface ConnectionEdgeData extends Record<string, unknown> {
   queuedCount: number;
   queuedBytes: number;
   backPressured: boolean;
+  fillPercentage: number;
+  backPressureObjectThreshold: number;
+  backPressureBytesThreshold: number;
   connectionId: string;
   // True when created optimistically before the backend confirms
   pending: boolean;
   // Optional callback injected from FlowCanvas to open the queue inspector
   onQueueClick?: (connectionId: string, label: string) => void;
+  // Optional callback for opening the connection config dialog
+  onConfigureConnection?: (connectionId: string) => void;
   // Smart routing: dynamic handle positions based on node geometry
   smartSourcePosition?: Position;
   smartTargetPosition?: Position;
