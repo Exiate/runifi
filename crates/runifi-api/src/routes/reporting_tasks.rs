@@ -182,16 +182,14 @@ async fn create_reporting_task(
             interval_ms: body.interval_ms,
         },
         "cron" => {
-            let expr = body.cron_expression.ok_or_else(|| {
-                ApiError::BadRequest(
-                    "cron_expression is required for cron scheduling strategy".to_string(),
-                )
-            })?;
-            ReportingTaskSchedule::Cron { expression: expr }
+            return Err(ApiError::BadRequest(
+                "Cron scheduling is not yet supported. Use 'timer' strategy with interval_ms."
+                    .to_string(),
+            ));
         }
         other => {
             return Err(ApiError::BadRequest(format!(
-                "Invalid scheduling strategy '{}'; must be 'timer' or 'cron'",
+                "Invalid scheduling strategy '{}'; must be 'timer'",
                 other
             )));
         }

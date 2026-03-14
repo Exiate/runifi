@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -19,32 +18,17 @@ use super::supervisor::InvocationResult;
 use crate::repository::state_provider::{CoreStateManager, SharedLocalStateProvider};
 
 /// Error type for reporting task operations.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ReportingTaskError {
+    #[error("Reporting task not found: {0}")]
     NotFound(String),
+    #[error("Reporting task already exists: {0}")]
     DuplicateName(String),
+    #[error("Reporting task '{name}': {message}")]
     InvalidState { name: String, message: String },
+    #[error("Unknown reporting task type: {0}")]
     UnknownType(String),
 }
-
-impl fmt::Display for ReportingTaskError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ReportingTaskError::NotFound(n) => write!(f, "Reporting task not found: {}", n),
-            ReportingTaskError::DuplicateName(n) => {
-                write!(f, "Reporting task already exists: {}", n)
-            }
-            ReportingTaskError::InvalidState { name, message } => {
-                write!(f, "Reporting task '{}': {}", name, message)
-            }
-            ReportingTaskError::UnknownType(t) => {
-                write!(f, "Unknown reporting task type: {}", t)
-            }
-        }
-    }
-}
-
-impl std::error::Error for ReportingTaskError {}
 
 /// Lifecycle state of a reporting task instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -712,36 +696,25 @@ async fn run_reporting_task(
         }
     }
 
-    // Call on_stopped.
-    let mut sup = supervisor.lock();
-    sup.on_stopped(context.as_ref());
+    // Call on_stopped then recover the task instance for potential restart.
+    {
+        let mut sup = supervisor.lock();
+        sup.on_stopped(context.as_ref());
+    }
 
-    // Extract the task back from the supervisor — not possible with current API.
-    // Return a placeholder; the supervisor consumes the task.
-    // To fix this properly, we'd need to refactor supervisor to return the task.
-    // For now, the task is consumed and the manager handles this by not being able
-    // to restart a stopped task without re-creating it.
-    //
-    // Actually, let's return the inner task. We need to add a method to the supervisor.
-    // Since we can't easily extract it, let's restructure.
-    drop(sup);
-
-    // The task has been consumed by the supervisor. Return a dummy that panics.
-    // This is handled by the manager which checks task availability.
-    //
-    // Better approach: we Arc<Mutex<>> the supervisor, and after the loop we can
-    // get the task back by destructuring. But the supervisor owns the task.
-    //
-    // Simplest fix: have stop_task not try to recover the task. The task is consumed
-    // when started and cannot be restarted. To restart, remove and re-add.
-    // This matches NiFi behavior where reporting tasks are persistent configs.
-
-    // Since we can't extract the task, we'll handle this at the manager level
-    // by accepting that stopped tasks need to be re-created to restart.
-    // The JoinHandle returns nothing useful for task recovery.
-
-    // Return a no-op placeholder. The manager will handle re-creation.
-    Box::new(NoOpReportingTask)
+    // Extract the task from the supervisor so it can be re-started.
+    match Arc::try_unwrap(supervisor) {
+        Ok(mutex) => mutex.into_inner().into_inner(),
+        Err(_arc) => {
+            tracing::error!(
+                task = %name,
+                "Could not recover reporting task — Arc still has references"
+            );
+            // Fallback: create a no-op placeholder. The task cannot be restarted
+            // without being removed and re-created.
+            Box::new(NoOpReportingTask)
+        }
+    }
 }
 
 struct NoOpReportingTask;

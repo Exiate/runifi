@@ -52,10 +52,11 @@ impl ReportingTask for PrometheusReportingTask {
             "counter",
         );
         for s in &statuses {
+            let name = escape_label_value(&s.name);
             let _ = writeln!(
                 output,
                 "{}_processor_invocations_total{{processor=\"{}\"}} {}",
-                prefix, s.name, s.total_invocations
+                prefix, name, s.total_invocations
             );
         }
 
@@ -67,10 +68,11 @@ impl ReportingTask for PrometheusReportingTask {
             "counter",
         );
         for s in &statuses {
+            let name = escape_label_value(&s.name);
             let _ = writeln!(
                 output,
                 "{}_processor_failures_total{{processor=\"{}\"}} {}",
-                prefix, s.name, s.total_failures
+                prefix, name, s.total_failures
             );
         }
 
@@ -82,10 +84,11 @@ impl ReportingTask for PrometheusReportingTask {
             "counter",
         );
         for s in &statuses {
+            let name = escape_label_value(&s.name);
             let _ = writeln!(
                 output,
                 "{}_processor_flowfiles_in_total{{processor=\"{}\"}} {}",
-                prefix, s.name, s.flowfiles_in
+                prefix, name, s.flowfiles_in
             );
         }
 
@@ -97,10 +100,11 @@ impl ReportingTask for PrometheusReportingTask {
             "counter",
         );
         for s in &statuses {
+            let name = escape_label_value(&s.name);
             let _ = writeln!(
                 output,
                 "{}_processor_flowfiles_out_total{{processor=\"{}\"}} {}",
-                prefix, s.name, s.flowfiles_out
+                prefix, name, s.flowfiles_out
             );
         }
 
@@ -112,10 +116,11 @@ impl ReportingTask for PrometheusReportingTask {
             "counter",
         );
         for s in &statuses {
+            let name = escape_label_value(&s.name);
             let _ = writeln!(
                 output,
                 "{}_processor_bytes_in_total{{processor=\"{}\"}} {}",
-                prefix, s.name, s.bytes_in
+                prefix, name, s.bytes_in
             );
         }
 
@@ -127,10 +132,11 @@ impl ReportingTask for PrometheusReportingTask {
             "counter",
         );
         for s in &statuses {
+            let name = escape_label_value(&s.name);
             let _ = writeln!(
                 output,
                 "{}_processor_bytes_out_total{{processor=\"{}\"}} {}",
-                prefix, s.name, s.bytes_out
+                prefix, name, s.bytes_out
             );
         }
 
@@ -145,10 +151,12 @@ impl ReportingTask for PrometheusReportingTask {
             "gauge",
         );
         for c in &connections {
+            let src = escape_label_value(&c.source_name);
+            let dst = escape_label_value(&c.destination_name);
             let _ = writeln!(
                 output,
                 "{}_connection_queued_count{{source=\"{}\",destination=\"{}\"}} {}",
-                prefix, c.source_name, c.destination_name, c.queued_count
+                prefix, src, dst, c.queued_count
             );
         }
 
@@ -160,10 +168,12 @@ impl ReportingTask for PrometheusReportingTask {
             "gauge",
         );
         for c in &connections {
+            let src = escape_label_value(&c.source_name);
+            let dst = escape_label_value(&c.destination_name);
             let _ = writeln!(
                 output,
                 "{}_connection_queued_bytes{{source=\"{}\",destination=\"{}\"}} {}",
-                prefix, c.source_name, c.destination_name, c.queued_bytes
+                prefix, src, dst, c.queued_bytes
             );
         }
 
@@ -175,12 +185,14 @@ impl ReportingTask for PrometheusReportingTask {
             "gauge",
         );
         for c in &connections {
+            let src = escape_label_value(&c.source_name);
+            let dst = escape_label_value(&c.destination_name);
             let _ = writeln!(
                 output,
                 "{}_connection_back_pressured{{source=\"{}\",destination=\"{}\"}} {}",
                 prefix,
-                c.source_name,
-                c.destination_name,
+                src,
+                dst,
                 if c.back_pressured { 1 } else { 0 }
             );
         }
@@ -207,6 +219,21 @@ fn write_metric_help_type(
 ) {
     let _ = writeln!(output, "# HELP {}_{} {}", prefix, name, help);
     let _ = writeln!(output, "# TYPE {}_{} {}", prefix, name, metric_type);
+}
+
+/// Escape a string for use as a Prometheus label value.
+/// Per the exposition format, backslash, double-quote, and newline must be escaped.
+fn escape_label_value(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 inventory::submit! {
@@ -296,5 +323,13 @@ mod tests {
         let descriptors = task.property_descriptors();
         assert_eq!(descriptors.len(), 1);
         assert_eq!(descriptors[0].name, "Metrics Prefix");
+    }
+
+    #[test]
+    fn escape_label_value_handles_special_chars() {
+        assert_eq!(escape_label_value("simple"), "simple");
+        assert_eq!(escape_label_value(r#"has"quotes"#), r#"has\"quotes"#);
+        assert_eq!(escape_label_value("has\\backslash"), "has\\\\backslash");
+        assert_eq!(escape_label_value("has\nnewline"), "has\\nnewline");
     }
 }

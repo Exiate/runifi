@@ -120,6 +120,11 @@ impl ReportingTaskSupervisor {
         self.task.property_descriptors()
     }
 
+    /// Consume the supervisor and return the inner reporting task.
+    pub fn into_inner(self) -> Box<dyn ReportingTask> {
+        self.task
+    }
+
     fn record_failure(&mut self) {
         self.consecutive_failures += 1;
         self.total_failures += 1;

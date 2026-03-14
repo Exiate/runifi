@@ -550,8 +550,9 @@ pub struct CreateReportingTaskRequest {
     /// Interval in ms for timer-driven scheduling. Default: 30000.
     #[serde(default = "default_reporting_interval")]
     pub interval_ms: u64,
-    /// CRON expression for cron-driven scheduling.
+    /// CRON expression for cron-driven scheduling (reserved for future use).
     #[serde(default)]
+    #[allow(dead_code)]
     pub cron_expression: Option<String>,
 }
 

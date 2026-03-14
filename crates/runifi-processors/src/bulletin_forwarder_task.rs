@@ -3,7 +3,7 @@ use runifi_plugin_api::reporting::{ReportingContext, ReportingTask, ReportingTas
 use runifi_plugin_api::result::ProcessResult;
 use runifi_plugin_api::state::StatefulSpec;
 
-/// Forwards new bulletins since last trigger to the application log.
+/// Logs new bulletins since last trigger to the application log.
 ///
 /// Tracks the last seen bulletin ID to avoid duplicate reporting.
 pub struct BulletinForwarderTask {
@@ -72,7 +72,7 @@ impl ReportingTask for BulletinForwarderTask {
 inventory::submit! {
     ReportingTaskDescriptor {
         type_name: "BulletinForwarderTask",
-        description: "Forwards new bulletins to the application log",
+        description: "Logs new bulletins to the application log with severity filtering",
         factory: || Box::new(BulletinForwarderTask::new()),
         tags: &["Monitoring", "Bulletins"],
     }
