@@ -25,14 +25,30 @@ use tokio_util::sync::CancellationToken;
 
 use super::config::ClusterConfig;
 use super::election::{ElectionRole, ElectionState, RaftState};
+use super::gossip::{GossipEvent, GossipState};
 use super::heartbeat::{HeartbeatEvent, HeartbeatManager};
 use super::load_balance::{LoadBalanceStrategy, LoadBalancer};
 use super::node::{ClusterNodeId, ClusterRole, ClusterStatus, NodeInfo, NodeState, NodeSummary};
 use super::protocol::{
     ClusterMessage, ElectionWonData, FlowSyncResponseData, FlowUpdateData, HeartbeatAckData,
-    HeartbeatData, JoinResponseData, MessagePayload, VoteRequestData, VoteResponseData,
+    HeartbeatData, JoinResponseData, MessagePayload, NodeMetricsSummary, PingAckData,
+    VoteRequestData, VoteResponseData,
 };
+use super::quorum::QuorumState;
 use super::replication::FlowReplicator;
+
+/// Cluster error type.
+#[derive(Debug, thiserror::Error)]
+pub enum ClusterError {
+    #[error("Node not found: {0}")]
+    NodeNotFound(String),
+    #[error("Invalid state transition: {0} -> {1}")]
+    InvalidTransition(String, String),
+    #[error("Cluster not enabled")]
+    NotEnabled,
+    #[error("Cannot operate on self")]
+    CannotOperateOnSelf,
+}
 
 /// The cluster coordinator manages all cluster operations for this node.
 pub struct ClusterCoordinator {
@@ -56,6 +72,12 @@ pub struct ClusterCoordinator {
 
     /// Flow replicator.
     flow_replicator: Arc<FlowReplicator>,
+
+    /// SWIM gossip membership state.
+    gossip: Arc<GossipState>,
+
+    /// Split-brain quorum tracker.
+    quorum: Option<Arc<QuorumState>>,
 
     /// Monotonic message sequence counter.
     seq_counter: AtomicU64,
@@ -100,6 +122,28 @@ impl ClusterCoordinator {
             Arc::new(ElectionState::new(ElectionRole::PrimaryNode, cluster_size));
         let flow_replicator = Arc::new(FlowReplicator::new(nodes.clone()));
 
+        // Initialize gossip state.
+        let gossip = Arc::new(GossipState::new(
+            self_id.clone(),
+            config.bind_address.clone(),
+            config.gossip_interval_ms,
+            config.gossip_fanout,
+            config.indirect_probe_count,
+            config.suspicion_timeout_ms,
+        ));
+        gossip.add_seed_nodes(&effective_nodes);
+
+        // Initialize quorum if enabled.
+        let quorum = if config.quorum_enabled {
+            let seed_ids: Vec<String> = effective_nodes
+                .iter()
+                .map(|addr| extract_node_id(addr))
+                .collect();
+            Some(Arc::new(QuorumState::new(seed_ids)))
+        } else {
+            None
+        };
+
         Self {
             config,
             self_id,
@@ -108,6 +152,8 @@ impl ClusterCoordinator {
             coordinator_election,
             primary_election,
             flow_replicator,
+            gossip,
+            quorum,
             seq_counter: AtomicU64::new(0),
             cancel_token: CancellationToken::new(),
             task_handles: Vec::new(),
@@ -223,6 +269,8 @@ impl ClusterCoordinator {
         let event_self_id = self.self_id.clone();
         let event_hb_mgr = self.heartbeat_manager.clone();
         let event_nodes = self.nodes.clone();
+        let event_coord_election = self.coordinator_election.clone();
+        let event_primary_election = self.primary_election.clone();
 
         let event_handle = tokio::spawn(async move {
             run_event_handler(
@@ -231,10 +279,63 @@ impl ClusterCoordinator {
                 event_self_id,
                 event_hb_mgr,
                 event_nodes,
+                event_coord_election,
+                event_primary_election,
             )
             .await;
         });
         self.task_handles.push(event_handle);
+
+        // 6. Gossip loop.
+        let gossip_cancel = self.cancel_token.child_token();
+        let gossip_state = self.gossip.clone();
+        let (gossip_event_tx, gossip_event_rx) = mpsc::channel::<GossipEvent>(64);
+
+        let gossip_handle = tokio::spawn(async move {
+            gossip_state
+                .run_gossip_loop(gossip_event_tx, gossip_cancel)
+                .await;
+        });
+        self.task_handles.push(gossip_handle);
+
+        // 7. Gossip event handler — updates node map from gossip membership changes.
+        let gossip_evt_cancel = self.cancel_token.child_token();
+        let gossip_evt_nodes = self.nodes.clone();
+        let gossip_evt_coord = self.coordinator_election.clone();
+        let gossip_evt_primary = self.primary_election.clone();
+
+        let gossip_evt_handle = tokio::spawn(async move {
+            run_gossip_event_handler(
+                gossip_event_rx,
+                gossip_evt_cancel,
+                gossip_evt_nodes,
+                gossip_evt_coord,
+                gossip_evt_primary,
+            )
+            .await;
+        });
+        self.task_handles.push(gossip_evt_handle);
+
+        // 8. Quorum check loop.
+        if let Some(quorum) = &self.quorum {
+            let quorum_cancel = self.cancel_token.child_token();
+            let quorum_state = quorum.clone();
+            let quorum_gossip = self.gossip.clone();
+            let quorum_self_id = self.self_id.clone();
+            let quorum_interval = Duration::from_millis(self.config.heartbeat_interval_ms);
+
+            let quorum_handle = tokio::spawn(async move {
+                run_quorum_check_loop(
+                    quorum_cancel,
+                    quorum_state,
+                    quorum_gossip,
+                    quorum_self_id,
+                    quorum_interval,
+                )
+                .await;
+            });
+            self.task_handles.push(quorum_handle);
+        }
 
         tracing::info!(
             node_id = %self.self_id,
@@ -252,6 +353,9 @@ impl ClusterCoordinator {
         }
 
         tracing::info!(node_id = %self.self_id, "Stopping cluster coordinator");
+
+        // Announce graceful leave via gossip.
+        self.gossip.announce_leave();
 
         // Broadcast disconnect notice to peers.
         let _ = self.broadcast_disconnect().await;
@@ -334,6 +438,225 @@ impl ClusterCoordinator {
             .filter(|(_, n)| n.state == NodeState::Connected)
             .map(|(id, _)| id.clone())
             .collect()
+    }
+
+    /// Returns whether this node has quorum (split-brain protection).
+    /// If quorum is not enabled, always returns `true`.
+    pub fn has_quorum(&self) -> bool {
+        self.quorum.as_ref().is_none_or(|q| q.has_quorum())
+    }
+
+    /// Get a reference to the gossip state.
+    pub fn gossip(&self) -> &Arc<GossipState> {
+        &self.gossip
+    }
+
+    /// Get a reference to the quorum state.
+    pub fn quorum_state(&self) -> Option<&Arc<QuorumState>> {
+        self.quorum.as_ref()
+    }
+
+    /// Get total node count (all known nodes).
+    pub fn total_node_count(&self) -> usize {
+        self.nodes.read().len()
+    }
+
+    /// Get connected node count.
+    pub fn connected_node_count(&self) -> usize {
+        self.nodes
+            .read()
+            .values()
+            .filter(|n| n.state == NodeState::Connected)
+            .count()
+    }
+
+    /// Get detailed info for all nodes.
+    pub fn all_node_summaries(&self) -> Vec<NodeSummary> {
+        self.nodes.read().values().map(NodeSummary::from).collect()
+    }
+
+    /// Get info for a specific node.
+    pub fn node_info(&self, node_id: &str) -> Option<NodeSummary> {
+        self.nodes.read().get(node_id).map(NodeSummary::from)
+    }
+
+    /// Get the self node ID.
+    pub fn self_id(&self) -> &str {
+        &self.self_id
+    }
+
+    /// Disconnect a node (administratively).
+    pub async fn disconnect_node(&self, node_id: &ClusterNodeId) -> Result<(), ClusterError> {
+        if node_id == &self.self_id {
+            return Err(ClusterError::CannotOperateOnSelf);
+        }
+
+        let addr = {
+            let mut nodes = self.nodes.write();
+            let node = nodes
+                .get_mut(node_id)
+                .ok_or_else(|| ClusterError::NodeNotFound(node_id.clone()))?;
+
+            let old_state = node.state.to_string();
+            if !node.transition_to(NodeState::Disconnecting) {
+                return Err(ClusterError::InvalidTransition(
+                    old_state,
+                    "DISCONNECTING".into(),
+                ));
+            }
+            let _ = node.transition_to(NodeState::Disconnected);
+            node.address.clone()
+        };
+
+        // Notify the target node.
+        let msg = ClusterMessage {
+            sender_id: self.self_id.clone(),
+            seq: self.next_seq(),
+            payload: MessagePayload::DisconnectNotice,
+        };
+        let _ = send_message(&addr, &msg).await;
+
+        tracing::info!(node = %node_id, "Node disconnected administratively");
+        Ok(())
+    }
+
+    /// Reconnect a previously disconnected node.
+    pub async fn connect_node(&self, node_id: &ClusterNodeId) -> Result<(), ClusterError> {
+        if node_id == &self.self_id {
+            return Err(ClusterError::CannotOperateOnSelf);
+        }
+
+        let addr = {
+            let mut nodes = self.nodes.write();
+            let node = nodes
+                .get_mut(node_id)
+                .ok_or_else(|| ClusterError::NodeNotFound(node_id.clone()))?;
+
+            let old_state = node.state.to_string();
+            if !node.transition_to(NodeState::Connecting) {
+                return Err(ClusterError::InvalidTransition(
+                    old_state,
+                    "CONNECTING".into(),
+                ));
+            }
+            node.address.clone()
+        };
+
+        // Send a join request to trigger reconnection.
+        let msg = ClusterMessage {
+            sender_id: self.self_id.clone(),
+            seq: self.next_seq(),
+            payload: MessagePayload::FlowSyncRequest,
+        };
+        let _ = send_message(&addr, &msg).await;
+
+        tracing::info!(node = %node_id, "Node reconnection initiated");
+        Ok(())
+    }
+
+    /// Begin graceful decommission of a node.
+    pub async fn decommission_node(&self, node_id: &ClusterNodeId) -> Result<(), ClusterError> {
+        if node_id == &self.self_id {
+            return Err(ClusterError::CannotOperateOnSelf);
+        }
+
+        let addr = {
+            let mut nodes = self.nodes.write();
+            let node = nodes
+                .get_mut(node_id)
+                .ok_or_else(|| ClusterError::NodeNotFound(node_id.clone()))?;
+
+            let old_state = node.state.to_string();
+            if !node.transition_to(NodeState::Decommissioning) {
+                return Err(ClusterError::InvalidTransition(
+                    old_state,
+                    "DECOMMISSIONING".into(),
+                ));
+            }
+            node.address.clone()
+        };
+
+        // Notify the target node to begin decommission.
+        let msg = ClusterMessage {
+            sender_id: self.self_id.clone(),
+            seq: self.next_seq(),
+            payload: MessagePayload::DecommissionNotice,
+        };
+        let _ = send_message(&addr, &msg).await;
+
+        tracing::info!(node = %node_id, "Node decommission initiated");
+        Ok(())
+    }
+
+    /// Force-remove a node from the membership map.
+    pub fn force_remove_node(&self, node_id: &ClusterNodeId) -> Result<(), ClusterError> {
+        if node_id == &self.self_id {
+            return Err(ClusterError::CannotOperateOnSelf);
+        }
+
+        let mut nodes = self.nodes.write();
+        if nodes.remove(node_id).is_none() {
+            return Err(ClusterError::NodeNotFound(node_id.clone()));
+        }
+
+        // Update election cluster size.
+        let new_size = nodes.len();
+        self.coordinator_election.set_cluster_size(new_size);
+        self.primary_election.set_cluster_size(new_size);
+
+        tracing::info!(node = %node_id, "Node force-removed from cluster");
+        Ok(())
+    }
+
+    /// Manually designate a node as the primary node (skipping election).
+    pub async fn designate_primary(&self, node_id: &ClusterNodeId) -> Result<(), ClusterError> {
+        {
+            let mut nodes = self.nodes.write();
+            if !nodes.contains_key(node_id) {
+                return Err(ClusterError::NodeNotFound(node_id.clone()));
+            }
+
+            // Remove primary role from all, add to target.
+            for node in nodes.values_mut() {
+                node.remove_role(ClusterRole::PrimaryNode);
+            }
+            if let Some(target) = nodes.get_mut(node_id) {
+                target.add_role(ClusterRole::PrimaryNode);
+            }
+        }
+
+        // If this node is the new primary, become leader in election state.
+        if node_id == &self.self_id {
+            self.primary_election.become_leader(&self.self_id);
+        }
+
+        // Broadcast the designation as an ElectionWon.
+        let msg = ClusterMessage {
+            sender_id: self.self_id.clone(),
+            seq: self.next_seq(),
+            payload: MessagePayload::ElectionWon(ElectionWonData {
+                term: self.primary_election.term(),
+                role: ElectionRole::PrimaryNode,
+                winner_id: node_id.clone(),
+            }),
+        };
+        let peers = self.config.peer_addresses();
+        for peer_addr in peers {
+            let _ = send_message(&peer_addr, &msg).await;
+        }
+
+        tracing::info!(node = %node_id, "Primary node designated manually");
+        Ok(())
+    }
+
+    /// Get the current primary node ID.
+    pub fn primary_node_id(&self) -> Option<ClusterNodeId> {
+        self.primary_election.leader_id()
+    }
+
+    /// Get the current coordinator node ID.
+    pub fn coordinator_node_id(&self) -> Option<ClusterNodeId> {
+        self.coordinator_election.leader_id()
     }
 
     // ── Internal helpers ─────────────────────────────────────────────────
@@ -592,7 +915,54 @@ fn process_message(
             None
         }
 
-        _ => None,
+        MessagePayload::Ping(_data) => {
+            // Respond with PingAck.
+            let response = ClusterMessage {
+                sender_id: self_id.clone(),
+                seq: 0,
+                payload: MessagePayload::PingAck(PingAckData {
+                    incarnation: 0,
+                    updates: vec![],
+                }),
+            };
+            Some(response)
+        }
+
+        MessagePayload::PingAck(_data) => None,
+
+        MessagePayload::PingReq(_data) => None,
+
+        MessagePayload::GossipMembership(_data) => None,
+
+        MessagePayload::DecommissionNotice => {
+            tracing::info!("Received decommission notice — this node should begin draining");
+            // In a full implementation, this would trigger queue draining.
+            // For now, acknowledge receipt.
+            None
+        }
+
+        MessagePayload::DecommissionComplete => {
+            tracing::info!(
+                node = %msg.sender_id,
+                "Node decommission complete — removing from cluster"
+            );
+            heartbeat_mgr.disconnect_node(&msg.sender_id);
+            None
+        }
+
+        MessagePayload::BulletinForward(_data) => {
+            // Coordinator receives bulletins from remote nodes.
+            // Actual processing is done by the bulletin board integration.
+            None
+        }
+
+        MessagePayload::FlowSyncResponse(_)
+        | MessagePayload::JoinResponse(_)
+        | MessagePayload::HeartbeatAck(_)
+        | MessagePayload::VoteResponse(_) => {
+            // These are responses to our requests — not expected as inbound.
+            None
+        }
     }
 }
 
@@ -629,6 +999,12 @@ async fn run_heartbeat_sender(
                     roles.push(ClusterRole::PrimaryNode);
                 }
 
+                let metrics = Some(NodeMetricsSummary {
+                    total_flowfiles: 0,     // Populated when engine handle is available
+                    active_processors: 0,   // Populated when engine handle is available
+                    system_load: read_system_load(),
+                });
+
                 let msg = ClusterMessage {
                     sender_id: self_id.clone(),
                     seq: seq.fetch_add(1, Ordering::Relaxed),
@@ -637,7 +1013,7 @@ async fn run_heartbeat_sender(
                         roles,
                         flow_version: flow_replicator.current_version(),
                         election_term: coord_election.term(),
-                        metrics: None,
+                        metrics,
                     }),
                 };
 
@@ -804,12 +1180,15 @@ async fn run_election(
 
 // ── Heartbeat event handler ──────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn run_event_handler(
     mut rx: mpsc::Receiver<HeartbeatEvent>,
     cancel: CancellationToken,
     _self_id: ClusterNodeId,
     heartbeat_mgr: Arc<HeartbeatManager>,
-    _nodes: Arc<RwLock<HashMap<ClusterNodeId, NodeInfo>>>,
+    nodes: Arc<RwLock<HashMap<ClusterNodeId, NodeInfo>>>,
+    coord_election: Arc<ElectionState>,
+    primary_election: Arc<ElectionState>,
 ) {
     loop {
         tokio::select! {
@@ -820,9 +1199,43 @@ async fn run_event_handler(
             event = rx.recv() => {
                 let Some(event) = event else { break };
                 match event {
-                    HeartbeatEvent::NodeTimedOut { node_id } => {
+                    HeartbeatEvent::NodeTimedOut { ref node_id } => {
                         tracing::warn!(node = %node_id, "Disconnecting node due to heartbeat timeout");
-                        heartbeat_mgr.disconnect_node(&node_id);
+                        heartbeat_mgr.disconnect_node(node_id);
+
+                        // Check if the disconnected node was the primary.
+                        let was_primary = {
+                            let nodes = nodes.read();
+                            nodes.get(node_id).is_some_and(|n| n.is_primary())
+                        };
+
+                        if was_primary {
+                            tracing::warn!(
+                                node = %node_id,
+                                "Primary node disconnected — clearing primary election for re-election"
+                            );
+                            // Clear the primary election so a new election is triggered.
+                            primary_election.reset();
+                            // Remove the role from the disconnected node.
+                            let mut nodes = nodes.write();
+                            if let Some(node) = nodes.get_mut(node_id) {
+                                node.remove_role(ClusterRole::PrimaryNode);
+                            }
+                        }
+
+                        // Check if the disconnected node was the coordinator.
+                        let was_coordinator = coord_election.leader_id().as_deref() == Some(node_id.as_str());
+                        if was_coordinator {
+                            tracing::warn!(
+                                node = %node_id,
+                                "Coordinator disconnected — clearing election for re-election"
+                            );
+                            coord_election.reset();
+                            let mut nodes = nodes.write();
+                            if let Some(node) = nodes.get_mut(node_id) {
+                                node.remove_role(ClusterRole::Coordinator);
+                            }
+                        }
                     }
                     HeartbeatEvent::HeartbeatReceived { node_id, flow_version } => {
                         tracing::trace!(
@@ -835,6 +1248,94 @@ async fn run_event_handler(
                         tracing::info!(node = %node_id, "Node attempting to reconnect");
                     }
                 }
+            }
+        }
+    }
+}
+
+/// Handle gossip membership events and update the shared node map.
+async fn run_gossip_event_handler(
+    mut rx: mpsc::Receiver<GossipEvent>,
+    cancel: CancellationToken,
+    nodes: Arc<RwLock<HashMap<ClusterNodeId, NodeInfo>>>,
+    coord_election: Arc<ElectionState>,
+    primary_election: Arc<ElectionState>,
+) {
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                tracing::debug!("Gossip event handler cancelled");
+                break;
+            }
+            event = rx.recv() => {
+                let Some(event) = event else { break };
+                match event {
+                    GossipEvent::NodeJoined { id, address } => {
+                        tracing::info!(node = %id, address = %address, "Node joined via gossip");
+                        let mut nodes = nodes.write();
+                        let node = nodes
+                            .entry(id.clone())
+                            .or_insert_with(|| NodeInfo::new(id, address));
+                        let _ = node.transition_to(NodeState::Connected);
+                        let size = nodes.len();
+                        coord_election.set_cluster_size(size);
+                        primary_election.set_cluster_size(size);
+                    }
+                    GossipEvent::NodeSuspected { id } => {
+                        tracing::warn!(node = %id, "Node suspected via gossip");
+                    }
+                    GossipEvent::NodeDead { id } => {
+                        tracing::warn!(node = %id, "Node declared dead via gossip");
+                        let mut nodes = nodes.write();
+                        if let Some(node) = nodes.get_mut(&id) {
+                            let _ = node.transition_to(NodeState::Disconnecting);
+                            let _ = node.transition_to(NodeState::Disconnected);
+                        }
+                    }
+                    GossipEvent::NodeLeft { id } => {
+                        tracing::info!(node = %id, "Node left cluster via gossip");
+                        let mut nodes = nodes.write();
+                        if let Some(node) = nodes.get_mut(&id) {
+                            let _ = node.transition_to(NodeState::Disconnecting);
+                            let _ = node.transition_to(NodeState::Disconnected);
+                        }
+                    }
+                    GossipEvent::NodeAlive { id } => {
+                        tracing::info!(node = %id, "Node alive again via gossip");
+                        let mut nodes = nodes.write();
+                        if let Some(node) = nodes.get_mut(&id)
+                            && node.state == NodeState::Disconnected
+                        {
+                            let _ = node.transition_to(NodeState::Connecting);
+                            let _ = node.transition_to(NodeState::Connected);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Periodically check quorum (majority of seed nodes reachable).
+async fn run_quorum_check_loop(
+    cancel: CancellationToken,
+    quorum: Arc<QuorumState>,
+    gossip: Arc<GossipState>,
+    self_id: ClusterNodeId,
+    interval: Duration,
+) {
+    let mut ticker = tokio::time::interval(interval);
+    ticker.tick().await;
+
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                tracing::debug!("Quorum check loop cancelled");
+                break;
+            }
+            _ = ticker.tick() => {
+                let alive = gossip.alive_members();
+                quorum.check_quorum(&alive, &self_id);
             }
         }
     }
@@ -884,6 +1385,30 @@ async fn read_message(stream: &mut TcpStream) -> io::Result<ClusterMessage> {
 /// Extract a node ID from an address string like "node-1:9443".
 fn extract_node_id(addr: &str) -> String {
     addr.split(':').next().unwrap_or(addr).to_string()
+}
+
+/// Read the system load average from /proc/loadavg (Linux only).
+/// Returns the 1-minute load average as a fraction of available CPUs,
+/// or `None` if it cannot be read.
+fn read_system_load() -> Option<f64> {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(contents) = std::fs::read_to_string("/proc/loadavg")
+            && let Some(load_str) = contents.split_whitespace().next()
+            && let Ok(load) = load_str.parse::<f64>()
+        {
+            // Normalize by CPU count.
+            let cpus = std::thread::available_parallelism()
+                .map(|n| n.get() as f64)
+                .unwrap_or(1.0);
+            return Some((load / cpus).min(1.0));
+        }
+        None
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
 }
 
 #[cfg(test)]

@@ -12,6 +12,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::election::ElectionRole;
+use super::gossip::MemberUpdate;
 use super::node::{ClusterNodeId, ClusterRole, NodeState};
 
 /// Envelope for all cluster protocol messages.
@@ -68,6 +69,30 @@ pub enum MessagePayload {
 
     /// Graceful disconnect announcement.
     DisconnectNotice,
+
+    // ── Gossip (Phase 2) ──────────────────────────────────────────────
+    /// SWIM ping probe.
+    Ping(PingData),
+
+    /// SWIM ping acknowledgement with piggybacked membership updates.
+    PingAck(PingAckData),
+
+    /// SWIM indirect ping request — ask a peer to probe a suspect node.
+    PingReq(PingReqData),
+
+    /// Gossip membership update broadcast.
+    GossipMembership(GossipMembershipData),
+
+    // ── Decommission (Phase 2) ────────────────────────────────────────
+    /// Coordinator instructs a node to begin decommissioning.
+    DecommissionNotice,
+
+    /// Node reports that decommission is complete.
+    DecommissionComplete,
+
+    // ── Bulletins (Phase 2) ───────────────────────────────────────────
+    /// Forward a bulletin from a remote node to the coordinator.
+    BulletinForward(BulletinForwardData),
 }
 
 // ── Heartbeat types ──────────────────────────────────────────────────────────
@@ -195,6 +220,54 @@ pub struct JoinResponseData {
     pub flow_version: u64,
     /// Current flow config.
     pub flow_config: Option<String>,
+}
+
+// ── Gossip types ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PingData {
+    /// This node's incarnation number.
+    pub incarnation: u64,
+    /// Piggybacked membership updates.
+    pub updates: Vec<MemberUpdate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PingAckData {
+    /// Responding node's incarnation number.
+    pub incarnation: u64,
+    /// Piggybacked membership updates.
+    pub updates: Vec<MemberUpdate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PingReqData {
+    /// The suspect node to probe.
+    pub target_id: ClusterNodeId,
+    /// Address of the suspect node.
+    pub target_address: String,
+    /// Requester's incarnation.
+    pub incarnation: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GossipMembershipData {
+    /// Batch of membership updates.
+    pub updates: Vec<MemberUpdate>,
+}
+
+// ── Bulletin types ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulletinForwardData {
+    /// The processor that generated the bulletin.
+    pub processor_name: String,
+    /// Severity level ("warn" or "error").
+    pub severity: String,
+    /// The bulletin message.
+    pub message: String,
+    /// Unix timestamp in milliseconds.
+    pub timestamp_ms: u64,
 }
 
 // ── Wire format helpers ──────────────────────────────────────────────────────

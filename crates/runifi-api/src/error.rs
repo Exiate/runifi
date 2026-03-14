@@ -51,6 +51,15 @@ pub enum ApiError {
 
     #[error("Content no longer available for event {0} (expired or garbage collected)")]
     ContentGone(u64),
+
+    #[error("Cluster node not found: {0}")]
+    ClusterNodeNotFound(String),
+
+    #[error("Cluster not enabled")]
+    ClusterNotEnabled,
+
+    #[error("Cluster operation failed: {0}")]
+    ClusterError(String),
 }
 
 impl ApiError {
@@ -71,6 +80,9 @@ impl ApiError {
             ApiError::ProvenanceEventNotFound(_) => StatusCode::NOT_FOUND,
             ApiError::ReportingTaskNotFound(_) => StatusCode::NOT_FOUND,
             ApiError::ContentGone(_) => StatusCode::GONE,
+            ApiError::ClusterNodeNotFound(_) => StatusCode::NOT_FOUND,
+            ApiError::ClusterNotEnabled => StatusCode::SERVICE_UNAVAILABLE,
+            ApiError::ClusterError(_) => StatusCode::CONFLICT,
         }
     }
 
@@ -92,6 +104,9 @@ impl ApiError {
             ApiError::ProvenanceEventNotFound(_) => "Provenance event not found",
             ApiError::ReportingTaskNotFound(_) => "Resource not found",
             ApiError::ContentGone(_) => "Content no longer available",
+            ApiError::ClusterNodeNotFound(_) => "Cluster node not found",
+            ApiError::ClusterNotEnabled => "Cluster not enabled",
+            ApiError::ClusterError(_) => "Cluster operation failed",
         }
     }
 
