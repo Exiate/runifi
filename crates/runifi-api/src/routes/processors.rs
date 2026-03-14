@@ -263,6 +263,14 @@ async fn create_processor(
         state.handle.set_position(&body.name, pos.x, pos.y);
     }
 
+    // Add to process group if specified.
+    if let Some(ref group_id) = body.process_group_id {
+        state
+            .handle
+            .add_processor_to_group(group_id, &body.name)
+            .map_err(ApiError::BadRequest)?;
+    }
+
     let info = state
         .handle
         .get_processor_info(&body.name)

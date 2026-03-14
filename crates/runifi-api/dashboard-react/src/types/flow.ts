@@ -28,6 +28,23 @@ export interface LabelNodeData extends Record<string, unknown> {
   pending: boolean;
 }
 
+export interface ProcessGroupNodeData extends Record<string, unknown> {
+  groupId: string;
+  name: string;
+  processorCount: number;
+  inputPortCount: number;
+  outputPortCount: number;
+  pending: boolean;
+}
+
+export interface PortNodeData extends Record<string, unknown> {
+  portId: string;
+  name: string;
+  portType: 'input' | 'output';
+  groupId: string;
+  pending: boolean;
+}
+
 export interface ConnectionEdgeData extends Record<string, unknown> {
   relationship: string;
   queuedCount: number;

@@ -16,6 +16,10 @@ pub fn routes() -> Router<ApiState> {
     let view_routes = Router::new()
         .route("/api/v1/process-groups", get(list_process_groups))
         .route("/api/v1/process-groups/{id}", get(get_process_group))
+        .route(
+            "/api/v1/process-groups/{id}/flow",
+            get(get_process_group_flow),
+        )
         .layer(middleware::from_fn(rbac::require_view_flow));
 
     // Mutation endpoints — ModifyFlow (Admin only)
@@ -54,6 +58,10 @@ pub fn routes() -> Router<ApiState> {
             "/api/v1/process-groups/{id}/ports/{port_id}",
             delete_method(remove_port),
         )
+        .route(
+            "/api/v1/process-groups/{id}/position",
+            put(update_process_group_position),
+        )
         .layer(middleware::from_fn(rbac::require_modify_flow));
 
     view_routes.merge(modify_routes)
@@ -89,6 +97,18 @@ pub struct UpdateProcessGroupRequest {
     /// New variables for the group (replaces existing, optional).
     #[serde(default)]
     pub variables: Option<HashMap<String, String>>,
+    /// Free-form documentation text.
+    #[serde(default)]
+    pub comments: Option<String>,
+    /// Default back-pressure FlowFile count for new connections in this group.
+    #[serde(default)]
+    pub default_back_pressure_count: Option<Option<usize>>,
+    /// Default back-pressure byte threshold for new connections in this group.
+    #[serde(default)]
+    pub default_back_pressure_bytes: Option<Option<u64>>,
+    /// Default FlowFile expiration in milliseconds for connections in this group.
+    #[serde(default)]
+    pub default_flowfile_expiration_ms: Option<Option<u64>>,
 }
 
 /// Request body for adding a port.
@@ -110,6 +130,13 @@ pub struct ProcessGroupResponse {
     pub child_group_ids: Vec<String>,
     pub parent_group_id: Option<String>,
     pub variables: HashMap<String, String>,
+    pub comments: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_back_pressure_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_back_pressure_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_flowfile_expiration_ms: Option<u64>,
 }
 
 /// Response for a port.
@@ -175,7 +202,15 @@ async fn update_process_group(
 
     state
         .handle
-        .update_process_group(&id, body.name, body.variables)
+        .update_process_group(
+            &id,
+            body.name,
+            body.variables,
+            body.comments,
+            body.default_back_pressure_count,
+            body.default_back_pressure_bytes,
+            body.default_flowfile_expiration_ms,
+        )
         .map_err(ApiError::BadRequest)?;
 
     let group = state
@@ -310,6 +345,181 @@ async fn remove_port(
     Ok(StatusCode::NO_CONTENT)
 }
 
+async fn update_process_group_position(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Json(body): Json<crate::dto::UpdatePositionRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    // Verify the group exists.
+    state
+        .handle
+        .get_process_group(&id)
+        .ok_or_else(|| ApiError::BadRequest(format!("Process group not found: {}", id)))?;
+
+    state.handle.positions.insert(
+        id.clone(),
+        runifi_core::engine::handle::Position {
+            x: body.x,
+            y: body.y,
+        },
+    );
+    state.handle.notify_persist();
+
+    Ok(Json(serde_json::json!({
+        "id": id,
+        "x": body.x,
+        "y": body.y,
+    })))
+}
+
+// ── Scoped flow topology ─────────────────────────────────────────────────────
+
+/// Summary of a child process group in the scoped flow response.
+#[derive(Serialize)]
+pub struct ProcessGroupSummary {
+    pub id: String,
+    pub name: String,
+    pub processor_count: usize,
+    pub input_port_count: usize,
+    pub output_port_count: usize,
+    pub position: Option<crate::dto::PositionResponse>,
+}
+
+/// A breadcrumb segment for navigation.
+#[derive(Serialize)]
+pub struct BreadcrumbSegment {
+    pub id: String,
+    pub name: String,
+}
+
+/// Port summary in the scoped flow response.
+#[derive(Serialize)]
+pub struct PortSummary {
+    pub id: String,
+    pub name: String,
+    pub port_type: String,
+}
+
+/// Scoped flow topology for a process group.
+#[derive(Serialize)]
+pub struct ProcessGroupFlowResponse {
+    pub id: String,
+    pub name: String,
+    pub processors: Vec<crate::dto::FlowNodeResponse>,
+    pub connections: Vec<crate::dto::FlowEdgeResponse>,
+    pub child_groups: Vec<ProcessGroupSummary>,
+    pub input_ports: Vec<PortSummary>,
+    pub output_ports: Vec<PortSummary>,
+    pub breadcrumb: Vec<BreadcrumbSegment>,
+}
+
+async fn get_process_group_flow(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<ProcessGroupFlowResponse>, ApiError> {
+    let flow_info = state
+        .handle
+        .get_group_flow(&id)
+        .ok_or_else(|| ApiError::BadRequest(format!("Process group not found: {}", id)))?;
+
+    let breadcrumb_path = state.handle.get_group_breadcrumb_path(&id);
+
+    let processors: Vec<crate::dto::FlowNodeResponse> = flow_info
+        .processors
+        .iter()
+        .map(|p| {
+            let pos = state
+                .handle
+                .positions
+                .get(&p.name)
+                .map(|e| crate::dto::PositionResponse {
+                    x: e.value().x,
+                    y: e.value().y,
+                });
+            crate::dto::FlowNodeResponse {
+                name: p.name.clone(),
+                type_name: p.type_name.clone(),
+                position: pos,
+            }
+        })
+        .collect();
+
+    let connections: Vec<crate::dto::FlowEdgeResponse> = flow_info
+        .connections
+        .iter()
+        .map(|c| crate::dto::FlowEdgeResponse {
+            id: c.id.clone(),
+            source: c.source_name.clone(),
+            relationship: c.relationship.clone(),
+            destination: c.dest_name.clone(),
+        })
+        .collect();
+
+    let child_groups: Vec<ProcessGroupSummary> = flow_info
+        .child_groups
+        .iter()
+        .map(|g| {
+            let pos = state
+                .handle
+                .positions
+                .get(&g.id)
+                .map(|e| crate::dto::PositionResponse {
+                    x: e.value().x,
+                    y: e.value().y,
+                });
+            ProcessGroupSummary {
+                id: g.id.clone(),
+                name: g.name.clone(),
+                processor_count: g.processor_names.len(),
+                input_port_count: g.input_ports.len(),
+                output_port_count: g.output_ports.len(),
+                position: pos,
+            }
+        })
+        .collect();
+
+    let input_ports: Vec<PortSummary> = flow_info
+        .group
+        .input_ports
+        .iter()
+        .map(|p| PortSummary {
+            id: p.id.clone(),
+            name: p.name.clone(),
+            port_type: "input".to_string(),
+        })
+        .collect();
+
+    let output_ports: Vec<PortSummary> = flow_info
+        .group
+        .output_ports
+        .iter()
+        .map(|p| PortSummary {
+            id: p.id.clone(),
+            name: p.name.clone(),
+            port_type: "output".to_string(),
+        })
+        .collect();
+
+    let breadcrumb: Vec<BreadcrumbSegment> = breadcrumb_path
+        .into_iter()
+        .map(|(seg_id, seg_name)| BreadcrumbSegment {
+            id: seg_id,
+            name: seg_name,
+        })
+        .collect();
+
+    Ok(Json(ProcessGroupFlowResponse {
+        id: flow_info.group.id,
+        name: flow_info.group.name,
+        processors,
+        connections,
+        child_groups,
+        input_ports,
+        output_ports,
+        breadcrumb,
+    }))
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn validate_group_name(name: &str) -> Result<(), ApiError> {
@@ -370,5 +580,9 @@ fn to_response(
         child_group_ids: group.child_group_ids,
         parent_group_id: group.parent_group_id,
         variables: group.variables,
+        comments: group.comments,
+        default_back_pressure_count: group.default_back_pressure_count,
+        default_back_pressure_bytes: group.default_back_pressure_bytes,
+        default_flowfile_expiration_ms: group.default_flowfile_expiration_ms,
     }
 }

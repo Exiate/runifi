@@ -1135,6 +1135,10 @@ impl EngineHandle {
                     child_group_ids: g.child_group_ids.clone(),
                     parent_group_id: g.parent_group_id.clone(),
                     variables: g.variables.clone(),
+                    comments: g.comments.clone(),
+                    default_back_pressure_count: g.default_back_pressure_count,
+                    default_back_pressure_bytes: g.default_back_pressure_bytes,
+                    default_flowfile_expiration_ms: g.default_flowfile_expiration_ms,
                 }
             })
             .collect();
@@ -1225,6 +1229,10 @@ impl EngineHandle {
             child_group_ids: Vec::new(),
             parent_group_id: parent_group_id.clone(),
             variables,
+            comments: String::new(),
+            default_back_pressure_count: None,
+            default_back_pressure_bytes: None,
+            default_flowfile_expiration_ms: None,
         };
 
         groups.push(group_info);
@@ -1271,12 +1279,17 @@ impl EngineHandle {
             .collect()
     }
 
-    /// Update a process group's name and/or variables.
+    /// Update a process group's name, variables, comments, and thresholds.
+    #[allow(clippy::too_many_arguments)]
     pub fn update_process_group(
         &self,
         id: &str,
         name: Option<String>,
         variables: Option<HashMap<String, String>>,
+        comments: Option<String>,
+        default_back_pressure_count: Option<Option<usize>>,
+        default_back_pressure_bytes: Option<Option<u64>>,
+        default_flowfile_expiration_ms: Option<Option<u64>>,
     ) -> Result<(), String> {
         let mut groups = self.process_groups.write();
         let group = groups
@@ -1289,6 +1302,18 @@ impl EngineHandle {
         }
         if let Some(new_vars) = variables {
             group.variables = new_vars;
+        }
+        if let Some(new_comments) = comments {
+            group.comments = new_comments;
+        }
+        if let Some(bp_count) = default_back_pressure_count {
+            group.default_back_pressure_count = bp_count;
+        }
+        if let Some(bp_bytes) = default_back_pressure_bytes {
+            group.default_back_pressure_bytes = bp_bytes;
+        }
+        if let Some(expiration) = default_flowfile_expiration_ms {
+            group.default_flowfile_expiration_ms = expiration;
         }
 
         drop(groups);
@@ -1545,4 +1570,78 @@ impl EngineHandle {
             port_id, group_id
         ))
     }
+
+    // ── Process group navigation ──────────────────────────────────────────
+
+    /// Get the scoped flow topology for a process group.
+    ///
+    /// Returns processors, connections, child groups, and ports
+    /// that belong to the specified group.
+    pub fn get_group_flow(&self, group_id: &str) -> Option<GroupFlowInfo> {
+        let groups = self.process_groups.read();
+        let group = groups.iter().find(|g| g.id == group_id)?;
+
+        let processors: Vec<ProcessorInfo> = self
+            .processors
+            .read()
+            .iter()
+            .filter(|p| group.processor_names.contains(&p.name))
+            .cloned()
+            .collect();
+
+        let connections: Vec<ConnectionInfo> = self
+            .connections
+            .read()
+            .iter()
+            .filter(|c| group.connection_ids.contains(&c.id))
+            .cloned()
+            .collect();
+
+        let child_groups: Vec<ProcessGroupInfo> = groups
+            .iter()
+            .filter(|g| g.parent_group_id.as_deref() == Some(group_id))
+            .cloned()
+            .collect();
+
+        Some(GroupFlowInfo {
+            group: group.clone(),
+            processors,
+            connections,
+            child_groups,
+        })
+    }
+
+    /// Get the breadcrumb path from root to the given group.
+    ///
+    /// Returns a list of `(id, name)` pairs ordered from root to the target group.
+    pub fn get_group_breadcrumb_path(&self, group_id: &str) -> Vec<(String, String)> {
+        let groups = self.process_groups.read();
+        let mut path = Vec::new();
+        let mut current_id = Some(group_id.to_string());
+
+        while let Some(ref id) = current_id {
+            if let Some(g) = groups.iter().find(|g| g.id == *id) {
+                path.push((g.id.clone(), g.name.clone()));
+                current_id = g.parent_group_id.clone();
+            } else {
+                break;
+            }
+        }
+
+        path.reverse();
+        path
+    }
+}
+
+/// Scoped flow topology for a process group.
+#[derive(Clone)]
+pub struct GroupFlowInfo {
+    /// The process group itself.
+    pub group: ProcessGroupInfo,
+    /// Processors belonging to this group.
+    pub processors: Vec<ProcessorInfo>,
+    /// Connections belonging to this group.
+    pub connections: Vec<ConnectionInfo>,
+    /// Child process groups nested in this group.
+    pub child_groups: Vec<ProcessGroupInfo>,
 }

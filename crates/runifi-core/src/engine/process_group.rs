@@ -30,6 +30,14 @@ pub struct ProcessGroupInfo {
     /// Group-scoped variables. Child groups inherit parent variables
     /// and can override them with their own values.
     pub variables: HashMap<String, String>,
+    /// Free-form documentation text.
+    pub comments: String,
+    /// Default back-pressure FlowFile count for new connections in this group.
+    pub default_back_pressure_count: Option<usize>,
+    /// Default back-pressure byte threshold for new connections in this group.
+    pub default_back_pressure_bytes: Option<u64>,
+    /// Default FlowFile expiration in milliseconds for connections in this group.
+    pub default_flowfile_expiration_ms: Option<u64>,
 }
 
 /// Information about an input or output port on a process group.
@@ -73,6 +81,10 @@ impl ProcessGroupInfo {
             child_group_ids: Vec::new(),
             parent_group_id: None,
             variables: HashMap::new(),
+            comments: String::new(),
+            default_back_pressure_count: None,
+            default_back_pressure_bytes: None,
+            default_flowfile_expiration_ms: None,
         }
     }
 

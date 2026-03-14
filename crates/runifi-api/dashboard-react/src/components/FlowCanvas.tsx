@@ -26,6 +26,8 @@ import {
 import { ProcessorNode } from './ProcessorNode';
 import { FunnelNode } from './FunnelNode';
 import { LabelNode } from './LabelNode';
+import { ProcessGroupNode } from './ProcessGroupNode';
+import { PortNode } from './PortNode';
 import { ConnectionEdge } from './ConnectionEdge';
 import { AddProcessorModal } from './AddProcessorModal';
 import { ConnectionModal } from './ConnectionModal';
@@ -38,27 +40,34 @@ import {
   distributeHorizontally, distributeVertically,
 } from '../utils/alignment';
 import { ProcessorConfigModal } from './ProcessorConfigModal';
+import { ProcessGroupConfigModal } from './ProcessGroupConfigModal';
 import { QueueInspectorModal } from './QueueInspectorModal';
 import { ConnectionConfigModal } from './ConnectionConfigModal';
 import { ColorPickerDialog } from './ColorPickerDialog';
 import { computeLayout } from '../utils/layout';
 import { stateColor, backPressureEdgeColor } from '../utils/format';
 import { getSmartHandlePositions, sourceHandleId, targetHandleId } from '../utils/edgeRouting';
-import type { FlowResponse, SseMetricsEvent, PluginDescriptor } from '../types/api';
-import type { ProcessorNodeData, ConnectionEdgeData, LabelNodeData } from '../types/flow';
+import type { FlowResponse, SseMetricsEvent, PluginDescriptor, FlowProcessGroupResponse, PortSummary } from '../types/api';
+import type { ProcessorNodeData, ConnectionEdgeData, LabelNodeData, ProcessGroupNodeData, PortNodeData } from '../types/flow';
 import type { ToastKind } from '../hooks/useToast';
 
 // Concrete node and edge types
 type ProcNode = Node<ProcessorNodeData, 'processorNode'>;
 type FunnelFlowNode = Node<ProcessorNodeData, 'funnelNode'>;
 type LabelFlowNode = Node<LabelNodeData, 'labelNode'>;
-type AnyNode = ProcNode | FunnelFlowNode | LabelFlowNode;
+type GroupFlowNode = Node<ProcessGroupNodeData, 'processGroupNode'>;
+type InputPortFlowNode = Node<PortNodeData, 'inputPortNode'>;
+type OutputPortFlowNode = Node<PortNodeData, 'outputPortNode'>;
+type AnyNode = ProcNode | FunnelFlowNode | LabelFlowNode | GroupFlowNode | InputPortFlowNode | OutputPortFlowNode;
 type ConnEdge = Edge<ConnectionEdgeData, 'connectionEdge'>;
 
 const nodeTypes = {
   processorNode: ProcessorNode,
   funnelNode: FunnelNode,
   labelNode: LabelNode,
+  processGroupNode: ProcessGroupNode,
+  inputPortNode: PortNode,
+  outputPortNode: PortNode,
 } as const;
 const edgeTypes = { connectionEdge: ConnectionEdge } as const;
 
@@ -104,6 +113,18 @@ export interface FlowCanvasProps {
   onSelectionChange?: (nodeIds: string[]) => void;
   colorRequestNodeIds?: string[] | null;
   onColorRequestHandled?: () => void;
+  /** Callback to enter a process group. */
+  onEnterGroup?: (groupId: string) => void;
+  /** Callback to exit the current process group. */
+  onExitGroup?: () => void;
+  /** Current group ID (null = root canvas). */
+  currentGroupId?: string | null;
+  /** Process groups to render (from group flow or root topology). */
+  processGroups?: FlowProcessGroupResponse[];
+  /** Input ports (only when inside a process group). */
+  inputPorts?: PortSummary[];
+  /** Output ports (only when inside a process group). */
+  outputPorts?: PortSummary[];
 }
 
 function loadSavedColors(): Record<string, string> {
@@ -203,6 +224,12 @@ function FlowCanvasInner({
   onSelectionChange,
   colorRequestNodeIds,
   onColorRequestHandled,
+  onEnterGroup,
+  onExitGroup,
+  currentGroupId,
+  processGroups,
+  inputPorts,
+  outputPorts,
 }: FlowCanvasProps) {
   const { screenToFlowPosition, getViewport, setCenter, fitView } = useReactFlow();
 
@@ -252,10 +279,67 @@ function FlowCanvasInner({
         connectable: false,
       }));
 
-      return [...procNodes, ...labelNodes];
+      // Add process group nodes
+      const groupNodes: AnyNode[] = (processGroups ?? topology.process_groups ?? []).map(
+        (g, idx): GroupFlowNode => ({
+          id: g.id,
+          type: 'processGroupNode' as const,
+          position: g.position ?? { x: 400, y: 100 + idx * 220 },
+          data: {
+            groupId: g.id,
+            name: g.name,
+            processorCount: g.processor_count,
+            inputPortCount: g.input_port_count,
+            outputPortCount: g.output_port_count,
+            pending: false,
+            onEnterGroup,
+          },
+          draggable: true,
+          selectable: true,
+        }),
+      );
+
+      // Add port nodes (only when inside a process group)
+      const portNodes: AnyNode[] = [];
+      if (currentGroupId) {
+        (inputPorts ?? []).forEach((p, idx) => {
+          portNodes.push({
+            id: `input-port-${p.id}`,
+            type: 'inputPortNode' as const,
+            position: { x: 50, y: 100 + idx * 80 },
+            data: {
+              portId: p.id,
+              name: p.name,
+              portType: 'input' as const,
+              groupId: currentGroupId,
+              pending: false,
+            },
+            draggable: true,
+            selectable: true,
+          });
+        });
+        (outputPorts ?? []).forEach((p, idx) => {
+          portNodes.push({
+            id: `output-port-${p.id}`,
+            type: 'outputPortNode' as const,
+            position: { x: 800, y: 100 + idx * 80 },
+            data: {
+              portId: p.id,
+              name: p.name,
+              portType: 'output' as const,
+              groupId: currentGroupId,
+              pending: false,
+            },
+            draggable: true,
+            selectable: true,
+          });
+        });
+      }
+
+      return [...procNodes, ...labelNodes, ...groupNodes, ...portNodes];
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [topology],
+    [topology, processGroups, inputPorts, outputPorts, currentGroupId],
   );
   const initialEdges = useMemo(
     () => buildEdges(topology, null, handleQueueClick, initialNodes),
@@ -692,6 +776,7 @@ function FlowCanvasInner({
           name,
           position,
           properties: {},
+          ...(currentGroupId ? { process_group_id: currentGroupId } : {}),
         }),
       })
         .then((res) => {
@@ -711,7 +796,7 @@ function FlowCanvasInner({
           );
         });
     },
-    [pendingDrop, setNodes, onToast],
+    [pendingDrop, setNodes, onToast, currentGroupId],
   );
 
   const handleConnect: OnConnect = useCallback(
@@ -1285,8 +1370,8 @@ function FlowCanvasInner({
 
   // --- Check if any modal/dialog is open ---
   const isModalOpen = useCallback(() => {
-    return !!(pendingDrop || deleteTarget || pendingConnectionContext || configTarget || colorPickerTarget || queueInspectTarget);
-  }, [pendingDrop, deleteTarget, pendingConnectionContext, configTarget, colorPickerTarget, queueInspectTarget]);
+    return !!(pendingDrop || deleteTarget || pendingConnectionContext || configTarget || colorPickerTarget || queueInspectTarget || groupConfigTarget || connConfigTarget);
+  }, [pendingDrop, deleteTarget, pendingConnectionContext, configTarget, colorPickerTarget, queueInspectTarget, groupConfigTarget, connConfigTarget]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -1332,6 +1417,12 @@ function FlowCanvasInner({
         return;
       }
 
+      // Escape with no modals open: navigate up one level if inside a group.
+      if (e.key === 'Escape' && !modalOpen && currentGroupId && onExitGroup) {
+        onExitGroup();
+        return;
+      }
+
       if (e.ctrlKey || e.metaKey) {
         switch (e.key) {
           case 'a':
@@ -1353,14 +1444,15 @@ function FlowCanvasInner({
         }
       }
     },
-    [nodes, edges, initiateDelete, handleDeleteSelected, handleSelectAll, handleCopy, handlePaste, handleDuplicate, isModalOpen, setNodes],
+    [nodes, edges, initiateDelete, handleDeleteSelected, handleSelectAll, handleCopy, handlePaste, handleDuplicate, isModalOpen, setNodes, currentGroupId, onExitGroup],
   );
 
   const handleNodeContextMenu: NodeMouseHandler<AnyNode> = useCallback(
     (event, node) => {
       event.preventDefault();
       const selectedIds = nodes.filter((n) => n.selected).map((n) => n.id);
-      const nodeState = node.type === 'labelNode'
+      const isGroup = node.type === 'processGroupNode';
+      const nodeState = node.type === 'labelNode' || isGroup
         ? 'stopped'
         : (node.data as ProcessorNodeData).state;
       setContextMenu({
@@ -1370,6 +1462,8 @@ function FlowCanvasInner({
         edgeId: null,
         nodeState,
         selectedNodeIds: selectedIds.length > 1 ? selectedIds : undefined,
+        isProcessGroup: isGroup,
+        groupId: isGroup ? (node.data as ProcessGroupNodeData).groupId : undefined,
       });
     },
     [nodes],
@@ -1484,10 +1578,21 @@ function FlowCanvasInner({
     [colorPickerTarget, setNodes],
   );
 
+  // State for process group config modal
+  const [groupConfigTarget, setGroupConfigTarget] = useState<string | null>(null);
+
   const handleNodeDoubleClick: NodeMouseHandler<AnyNode> = useCallback(
     (_event, node) => {
       // Labels handle their own double-click (inline editing), skip config modal
       if (node.type === 'labelNode') return;
+      // Process group: enter the group
+      if (node.type === 'processGroupNode') {
+        const groupData = node.data as ProcessGroupNodeData;
+        onEnterGroup?.(groupData.groupId);
+        return;
+      }
+      // Port nodes: no double-click action
+      if (node.type === 'inputPortNode' || node.type === 'outputPortNode') return;
       const procData = node.data as ProcessorNodeData;
       setConfigTarget({ name: node.id, state: procData.state });
     },
@@ -1640,7 +1745,8 @@ function FlowCanvasInner({
 
       {contextMenu && (() => {
         const isLabelCtx = contextMenu.nodeId?.startsWith('label-');
-        const isProcessorCtx = contextMenu.nodeId && !isLabelCtx;
+        const isGroupCtx = contextMenu.isProcessGroup === true;
+        const isProcessorCtx = contextMenu.nodeId && !isLabelCtx && !isGroupCtx;
         return (
           <ContextMenu
             menu={contextMenu}
@@ -1679,6 +1785,8 @@ function FlowCanvasInner({
             onStopSelected={handleStopSelected}
             onDeleteSelected={handleDeleteSelected}
             onAlign={handleAlign}
+            onEnterGroup={isGroupCtx && contextMenu.groupId ? () => onEnterGroup?.(contextMenu.groupId!) : undefined}
+            onConfigureGroup={isGroupCtx && contextMenu.groupId ? () => setGroupConfigTarget(contextMenu.groupId!) : undefined}
             onClose={() => setContextMenu(null)}
           />
         );
@@ -1717,6 +1825,21 @@ function FlowCanvasInner({
           onSelect={handleColorSelect}
           onClose={() => setColorPickerTarget(null)}
         />
+      )}
+
+      {groupConfigTarget && (
+        <ProcessGroupConfigModal
+          groupId={groupConfigTarget}
+          onClose={() => setGroupConfigTarget(null)}
+          onSaved={() => onToast('success', 'Process group updated')}
+        />
+      )}
+
+      {/* Empty state for process groups */}
+      {currentGroupId && topology.processors.length === 0 && (processGroups ?? []).length === 0 && (
+        <div className="process-group-empty-state">
+          Drop components here to build this process group
+        </div>
       )}
     </div>
   );
