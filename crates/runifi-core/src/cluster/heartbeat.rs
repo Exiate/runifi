@@ -160,11 +160,16 @@ impl HeartbeatManager {
     /// Record a heartbeat received from a peer node.
     ///
     /// Returns `true` if this is a new/reconnecting node.
-    pub fn record_heartbeat(&self, node_id: &ClusterNodeId, flow_version: u64) -> bool {
+    pub fn record_heartbeat(
+        &self,
+        node_id: &ClusterNodeId,
+        flow_version: u64,
+        metrics: Option<super::protocol::NodeMetricsSummary>,
+    ) -> bool {
         let mut nodes = self.nodes.write();
         if let Some(node) = nodes.get_mut(node_id) {
             let was_disconnected = matches!(node.state, NodeState::Disconnected);
-            node.record_heartbeat(flow_version);
+            node.record_heartbeat(flow_version, metrics);
             was_disconnected
         } else {
             false
@@ -214,6 +219,7 @@ mod tests {
             heartbeat_interval_ms: 100, // fast for tests
             heartbeat_miss_threshold: 3,
             election_timeout_ms: 500,
+            ..Default::default()
         }
     }
 
@@ -250,7 +256,7 @@ mod tests {
         let nodes = make_test_nodes();
         let manager = HeartbeatManager::new(&config, nodes.clone());
 
-        let was_reconnecting = manager.record_heartbeat(&"node-2".into(), 5);
+        let was_reconnecting = manager.record_heartbeat(&"node-2".into(), 5, None);
         assert!(!was_reconnecting);
 
         let nodes_read = nodes.read();
@@ -285,7 +291,7 @@ mod tests {
         manager.disconnect_node(&"node-2".into());
 
         // Heartbeat from disconnected node signals reconnection.
-        let was_reconnecting = manager.record_heartbeat(&"node-2".into(), 1);
+        let was_reconnecting = manager.record_heartbeat(&"node-2".into(), 1, None);
         assert!(was_reconnecting);
     }
 

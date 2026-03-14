@@ -74,11 +74,12 @@ impl ClusterCoordinator {
     /// cluster operations.
     pub fn new(config: ClusterConfig) -> Self {
         let self_id = config.node_id.clone();
-        let cluster_size = config.nodes.len();
+        let effective_nodes = config.effective_seed_nodes();
+        let cluster_size = effective_nodes.len();
 
         // Initialize the node map with all configured nodes.
         let mut node_map = HashMap::new();
-        for node_addr in &config.nodes {
+        for node_addr in &effective_nodes {
             let node_id = extract_node_id(node_addr);
             let node = NodeInfo::new(node_id.clone(), node_addr.clone());
             node_map.insert(node_id, node);
@@ -87,6 +88,7 @@ impl ClusterCoordinator {
         // Mark self as connected immediately.
         if let Some(self_node) = node_map.get_mut(&self_id) {
             self_node.state = NodeState::Connected;
+            self_node.start_time = Some(std::time::Instant::now());
         }
 
         let nodes = Arc::new(RwLock::new(node_map));
@@ -129,7 +131,7 @@ impl ClusterCoordinator {
         tracing::info!(
             node_id = %self.self_id,
             bind_address = %self.config.bind_address,
-            cluster_size = self.config.nodes.len(),
+            cluster_size = self.config.effective_seed_nodes().len(),
             "Starting cluster coordinator"
         );
 
@@ -465,7 +467,7 @@ fn process_message(
 ) -> Option<ClusterMessage> {
     match &msg.payload {
         MessagePayload::Heartbeat(data) => {
-            heartbeat_mgr.record_heartbeat(&msg.sender_id, data.flow_version);
+            heartbeat_mgr.record_heartbeat(&msg.sender_id, data.flow_version, data.metrics.clone());
 
             let response = ClusterMessage {
                 sender_id: self_id.clone(),
@@ -1102,6 +1104,7 @@ mod tests {
             heartbeat_interval_ms: 100,
             heartbeat_miss_threshold: 3,
             election_timeout_ms: 500,
+            ..Default::default()
         };
 
         let mut coordinator = ClusterCoordinator::new(config);
