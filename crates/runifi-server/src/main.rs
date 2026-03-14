@@ -5,10 +5,20 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
+use runifi_api::AuthChainBundle;
 use runifi_core::audit::{
     AuditLogger, CompositeAuditLogger, FileAuditLogger, NullAuditLogger, TracingAuditLogger,
 };
+use runifi_core::auth::apikey_provider::ApiKeyAuthProvider;
+use runifi_core::auth::chain::AuthProviderChain;
+use runifi_core::auth::identity_mapper::IdentityMapper;
 use runifi_core::auth::jwt::JwtConfig;
+use runifi_core::auth::ldap_provider::LdapAuthProvider;
+use runifi_core::auth::local_provider::LocalAuthProvider;
+use runifi_core::auth::mtls_provider::MtlsAuthProvider;
+use runifi_core::auth::oidc_provider::OidcAuthProvider;
+use runifi_core::auth::provider::AuthProvider;
+use runifi_core::auth::session::SessionManager;
 use runifi_core::auth::store::UserStore;
 use runifi_core::config::flow_config::FlowConfig;
 use runifi_core::config::flow_config::parse_duration_str;
@@ -569,6 +579,15 @@ async fn main() -> Result<()> {
         None
     };
 
+    // Build enterprise auth provider chain if auth is enabled.
+    let auth_chain = if config.auth.enabled {
+        jwt_config.as_ref().map(|jwt| {
+            build_auth_provider_chain(&config, user_store.clone(), Arc::new(jwt.clone()))
+        })
+    } else {
+        None
+    };
+
     // Initialize flow version store.
     let version_repo_path = cli
         .version_dir
@@ -606,6 +625,7 @@ async fn main() -> Result<()> {
         let api_jwt_config = jwt_config.clone();
         let api_auth_config = config.auth.clone();
         let api_version_store = version_store.clone();
+        let api_auth_chain = auth_chain.clone();
 
         Some(tokio::spawn(async move {
             if let Err(e) = runifi_api::start_api_server_with_registry(
@@ -620,6 +640,7 @@ async fn main() -> Result<()> {
                 api_jwt_config,
                 Some(api_auth_config),
                 api_version_store,
+                api_auth_chain,
             )
             .await
             {
@@ -1170,6 +1191,125 @@ fn load_seed_process_groups(
                 );
             }
         }
+    }
+}
+
+/// Build the enterprise auth provider chain from configuration.
+///
+/// Constructs providers based on `auth.provider` and optional sub-configs.
+/// The local and API key providers are always available as fallbacks.
+fn build_auth_provider_chain(
+    config: &FlowConfig,
+    user_store: Arc<UserStore>,
+    jwt_config: Arc<JwtConfig>,
+) -> AuthChainBundle {
+    let auth = &config.auth;
+    let mut providers: Vec<Box<dyn AuthProvider>> = Vec::new();
+
+    let provider_names: Vec<&str> = if auth.provider == "chain" {
+        auth.chain_order.iter().map(|s| s.as_str()).collect()
+    } else {
+        vec![auth.provider.as_str()]
+    };
+
+    for name in &provider_names {
+        match *name {
+            "local" => {
+                providers.push(Box::new(LocalAuthProvider::new(
+                    user_store.clone(),
+                    jwt_config.clone(),
+                )));
+                tracing::info!("Auth provider enabled: local (password + JWT)");
+            }
+            "oidc" => {
+                if let Some(ref oidc_config) = auth.oidc {
+                    providers.push(Box::new(OidcAuthProvider::new(oidc_config.clone())));
+                    tracing::info!(
+                        discovery_url = %oidc_config.discovery_url,
+                        "Auth provider enabled: OIDC"
+                    );
+                } else {
+                    tracing::warn!(
+                        "Auth provider 'oidc' requested but [auth.oidc] config is missing"
+                    );
+                }
+            }
+            "ldap" => {
+                if let Some(ref ldap_config) = auth.ldap {
+                    providers.push(Box::new(LdapAuthProvider::new(ldap_config.clone())));
+                    tracing::info!(
+                        url = %ldap_config.url,
+                        "Auth provider enabled: LDAP"
+                    );
+                } else {
+                    tracing::warn!(
+                        "Auth provider 'ldap' requested but [auth.ldap] config is missing"
+                    );
+                }
+            }
+            "mtls" => {
+                if let Some(ref mtls_config) = auth.mtls {
+                    providers.push(Box::new(MtlsAuthProvider::new(mtls_config.clone())));
+                    tracing::info!(
+                        ca_cert = %mtls_config.ca_cert_path,
+                        "Auth provider enabled: mTLS"
+                    );
+                } else {
+                    tracing::warn!(
+                        "Auth provider 'mtls' requested but [auth.mtls] config is missing"
+                    );
+                }
+            }
+            other => {
+                tracing::warn!(provider = other, "Unknown auth provider type, skipping");
+            }
+        }
+    }
+
+    // Always add API key provider if keys are configured.
+    if config.api.security.auth_enabled() {
+        providers.push(Box::new(ApiKeyAuthProvider::new(
+            config.api.security.clone(),
+        )));
+        tracing::info!("Auth provider enabled: API key");
+    }
+
+    // If "local" wasn't explicitly in the chain, add it as fallback for JWT validation.
+    if !provider_names.contains(&"local") {
+        providers.push(Box::new(LocalAuthProvider::new(
+            user_store.clone(),
+            jwt_config.clone(),
+        )));
+    }
+
+    let chain = Arc::new(AuthProviderChain::new(providers));
+
+    // Build identity mapper from group_mapping config.
+    let mappings: Vec<(String, String)> = auth
+        .group_mapping
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let mapper = Arc::new(IdentityMapper::new(mappings, auth.default_role.clone()));
+
+    // Build session manager.
+    let session_manager = Arc::new(SessionManager::new(
+        jwt_config,
+        user_store,
+        auth.max_sessions_per_user,
+        auth.jwt_expiry_secs,
+    ));
+
+    tracing::info!(
+        provider = %auth.provider,
+        chain = ?chain.provider_names(),
+        "Auth provider chain initialized"
+    );
+
+    AuthChainBundle {
+        chain,
+        mapper,
+        session_manager,
     }
 }
 

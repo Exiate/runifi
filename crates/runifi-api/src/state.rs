@@ -1,7 +1,10 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
+use runifi_core::auth::chain::AuthProviderChain;
+use runifi_core::auth::identity_mapper::IdentityMapper;
 use runifi_core::auth::jwt::JwtConfig;
+use runifi_core::auth::session::SessionManager;
 use runifi_core::auth::store::UserStore;
 use runifi_core::config::flow_config::{AuthConfig, SecurityConfig};
 use runifi_core::engine::handle::EngineHandle;
@@ -31,6 +34,12 @@ pub struct ApiState {
     pub auth_config: AuthConfig,
     /// Flow version store for git-based versioning.
     pub version_store: Option<Arc<FlowVersionStore>>,
+    /// Authentication provider chain (pluggable enterprise auth).
+    pub auth_chain: Option<Arc<AuthProviderChain>>,
+    /// Identity-to-role mapper for external providers.
+    pub identity_mapper: Arc<IdentityMapper>,
+    /// Session manager for unified session handling.
+    pub session_manager: Option<Arc<SessionManager>>,
 }
 
 impl ApiState {
@@ -47,6 +56,9 @@ impl ApiState {
             jwt_config: None,
             auth_config: AuthConfig::default(),
             version_store: None,
+            auth_chain: None,
+            identity_mapper: Arc::new(IdentityMapper::default()),
+            session_manager: None,
         }
     }
 
@@ -68,6 +80,9 @@ impl ApiState {
             jwt_config: None,
             auth_config: AuthConfig::default(),
             version_store: None,
+            auth_chain: None,
+            identity_mapper: Arc::new(IdentityMapper::default()),
+            session_manager: None,
         }
     }
 
@@ -86,6 +101,18 @@ impl ApiState {
         self.user_store = user_store;
         self.jwt_config = Some(Arc::new(jwt_config));
         self.auth_config = auth_config;
+    }
+
+    /// Set the enterprise auth chain, identity mapper, and session manager.
+    pub fn set_auth_chain(
+        &mut self,
+        chain: Arc<AuthProviderChain>,
+        mapper: Arc<IdentityMapper>,
+        session_manager: Arc<SessionManager>,
+    ) {
+        self.auth_chain = Some(chain);
+        self.identity_mapper = mapper;
+        self.session_manager = Some(session_manager);
     }
 
     /// Returns `true` if JWT-based user auth is enabled.
