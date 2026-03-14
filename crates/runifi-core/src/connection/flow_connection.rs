@@ -351,6 +351,18 @@ impl FlowConnection {
         removed
     }
 
+    // ── FIFO ordering across connections ────────────────────────
+
+    /// Peek at the `created_at_nanos` timestamp of the oldest (front) FlowFile
+    /// in this connection without consuming it.
+    ///
+    /// Returns `None` if the queue is empty. Used by `CoreProcessSession` to
+    /// implement FIFO ordering across multiple input connections.
+    pub fn peek_oldest_timestamp(&self) -> Option<u64> {
+        let shadow = self.shadow.lock();
+        shadow.front().map(|s| s.created_at_nanos)
+    }
+
     // ── Queue inspection API ─────────────────────────────────────
 
     /// Return a paginated snapshot of FlowFiles currently in the queue.
@@ -647,6 +659,23 @@ mod tests {
         // The remaining snapshot should be FlowFile 2.
         let snapshot = conn.queue_snapshot(0, 100);
         assert_eq!(snapshot[0].id, 2);
+    }
+
+    #[test]
+    fn peek_oldest_timestamp_returns_front() {
+        let conn = FlowConnection::new("test", BackPressureConfig::default());
+        assert!(conn.peek_oldest_timestamp().is_none());
+
+        conn.try_send(test_flowfile_with_time(1, 10, 500)).unwrap();
+        conn.try_send(test_flowfile_with_time(2, 10, 300)).unwrap();
+        // peek returns the front of the queue (FIFO order), which is id=1 (t=500).
+        assert_eq!(conn.peek_oldest_timestamp(), Some(500));
+
+        conn.try_recv(); // removes id=1
+        assert_eq!(conn.peek_oldest_timestamp(), Some(300));
+
+        conn.try_recv(); // removes id=2
+        assert!(conn.peek_oldest_timestamp().is_none());
     }
 
     #[test]
