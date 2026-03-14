@@ -1,5 +1,5 @@
 import { memo, useState, useMemo, useCallback, useRef, useEffect } from 'react';
-import type { PluginDescriptor, PluginKind } from '../types/api';
+import type { PluginDescriptor } from '../types/api';
 
 interface ComponentToolbarProps {
   plugins: PluginDescriptor[];
@@ -9,14 +9,17 @@ interface ComponentToolbarProps {
 }
 
 const COMPONENT_TYPES = [
-  { id: 'processor', label: 'Processor', icon: '\u25C6' },
-  { id: 'input-port', label: 'Input Port', icon: '\u25B6' },
-  { id: 'output-port', label: 'Output Port', icon: '\u25C0' },
-  { id: 'funnel', label: 'Funnel', icon: '\u25BD' },
-  { id: 'label', label: 'Label', icon: '\u25A1' },
+  { id: 'processor', label: 'Processor', icon: '\u25C6', enabled: true, tooltip: 'Click to add a processor to the canvas' },
+  { id: 'input-port', label: 'Input Port', icon: '\u25B6', enabled: true, tooltip: 'Drag to add an input port' },
+  { id: 'output-port', label: 'Output Port', icon: '\u25C0', enabled: true, tooltip: 'Drag to add an output port' },
+  { id: 'process-group', label: 'Process Group', icon: '\u25A3', enabled: false, tooltip: 'Process groups (drag-to-create not yet implemented)' },
+  { id: 'remote-process-group', label: 'Remote PG', icon: '\u2601', enabled: false, tooltip: 'Remote process groups (not yet implemented)' },
+  { id: 'funnel', label: 'Funnel', icon: '\u25BD', enabled: true, tooltip: 'Click to add a funnel to the canvas' },
+  { id: 'label', label: 'Label', icon: '\u25A1', enabled: true, tooltip: 'Drag to add a text label' },
 ] as const;
 
-const CATEGORY_MAP: Record<string, string> = {
+// Fallback category map used when backend does not provide tags.
+const CATEGORY_MAP_FALLBACK: Record<string, string> = {
   GenerateFlowFile: 'Data Generation',
   GetFile: 'File System',
   PutFile: 'File System',
@@ -25,9 +28,12 @@ const CATEGORY_MAP: Record<string, string> = {
   UpdateAttribute: 'Attribute Manipulation',
 };
 
-function getCategory(typeName: string, kind: PluginKind): string {
-  if (CATEGORY_MAP[typeName]) return CATEGORY_MAP[typeName];
-  switch (kind) {
+function getCategory(plugin: PluginDescriptor): string {
+  // Prefer backend-provided tags (use the first tag as category)
+  if (plugin.tags && plugin.tags.length > 0) return plugin.tags[0];
+  // Fall back to hardcoded map
+  if (CATEGORY_MAP_FALLBACK[plugin.type_name]) return CATEGORY_MAP_FALLBACK[plugin.type_name];
+  switch (plugin.kind) {
     case 'source': return 'Data Sources';
     case 'sink': return 'Data Sinks';
     default: return 'General';
@@ -45,14 +51,15 @@ function ComponentToolbarInner({ plugins, loading, onDragStart, onAddProcessor }
     const q = search.toLowerCase();
     const filtered = plugins.filter(
       (p) =>
-        (p.display_name ?? '').toLowerCase().includes(q) ||
+        p.kind !== 'service' &&
+        ((p.display_name ?? '').toLowerCase().includes(q) ||
         (p.type_name ?? '').toLowerCase().includes(q) ||
-        (p.description ?? '').toLowerCase().includes(q),
+        (p.description ?? '').toLowerCase().includes(q)),
     );
 
     const cats = new Map<string, PluginDescriptor[]>();
     for (const p of filtered) {
-      const cat = getCategory(p.type_name, p.kind);
+      const cat = getCategory(p);
       if (!cats.has(cat)) cats.set(cat, []);
       cats.get(cat)!.push(p);
     }
@@ -113,10 +120,19 @@ function ComponentToolbarInner({ plugins, loading, onDragStart, onAddProcessor }
         e.preventDefault();
         return;
       }
+      // Funnel opens the same add-processor dialog filtered to Funnel type
+      if (componentType === 'funnel') {
+        const funnelPlugin = plugins.find((p) => p.type_name === 'Funnel');
+        if (funnelPlugin) {
+          onAddProcessor?.(funnelPlugin);
+        }
+        e.preventDefault();
+        return;
+      }
       e.dataTransfer.effectAllowed = 'copy';
       e.dataTransfer.setData('application/runifi-component', componentType);
     },
-    [],
+    [plugins, onAddProcessor],
   );
 
   return (
@@ -125,11 +141,23 @@ function ComponentToolbarInner({ plugins, loading, onDragStart, onAddProcessor }
         {COMPONENT_TYPES.map((ct) => (
           <button
             key={ct.id}
-            className="toolbar-item"
-            draggable={ct.id !== 'processor'}
-            onDragStart={(e) => handleToolbarDrag(e, ct.id)}
-            onClick={ct.id === 'processor' ? () => setShowAddDialog(!showAddDialog) : undefined}
-            title={ct.id === 'processor' ? 'Click to add a processor' : `Drag to add ${ct.label}`}
+            className={`toolbar-item${ct.enabled ? '' : ' toolbar-item-disabled'}`}
+            draggable={ct.enabled && ct.id !== 'processor' && ct.id !== 'funnel'}
+            disabled={!ct.enabled}
+            onDragStart={(e) => ct.enabled ? handleToolbarDrag(e, ct.id) : e.preventDefault()}
+            onClick={
+              !ct.enabled
+                ? undefined
+                : ct.id === 'processor'
+                  ? () => setShowAddDialog(!showAddDialog)
+                  : ct.id === 'funnel'
+                    ? () => {
+                        const fp = plugins.find((p) => p.type_name === 'Funnel');
+                        if (fp) onAddProcessor?.(fp);
+                      }
+                    : undefined
+            }
+            title={ct.tooltip}
             aria-label={ct.label}
           >
             <span className="toolbar-item-icon" aria-hidden="true">

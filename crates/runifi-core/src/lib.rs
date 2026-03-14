@@ -1,4 +1,6 @@
 pub mod audit;
+pub mod auth;
+pub mod cluster;
 pub mod config;
 pub mod connection;
 pub mod engine;
@@ -8,3 +10,4 @@ pub mod id;
 pub mod registry;
 pub mod repository;
 pub mod session;
+pub mod versioning;

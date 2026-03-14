@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use parking_lot::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -13,6 +14,7 @@ use super::metrics::ProcessorMetrics;
 use super::mutation::MutationError;
 use super::processor_node::{ProcessorNode, SchedulingStrategy};
 use crate::audit::{AuditAction, AuditEvent, AuditLogger, AuditTarget};
+use crate::cluster::load_balance::LoadBalanceConfig;
 use crate::connection::back_pressure::BackPressureConfig;
 use crate::connection::flow_connection::FlowConnection;
 use crate::connection::query::FlowConnectionQuery;
@@ -20,6 +22,7 @@ use crate::id::IdGenerator;
 use crate::registry::plugin_registry::PluginRegistry;
 use crate::repository::content_repo::ContentRepository;
 use crate::repository::flowfile_repo::FlowFileRepository;
+use crate::repository::provenance_repo::SharedProvenanceRepository;
 
 use super::flow_engine::scheduling_display;
 
@@ -40,6 +43,7 @@ pub struct DefaultMutationHandler {
     pub runtime_conn_id: usize,
     pub flowfile_repo: Arc<dyn FlowFileRepository>,
     pub audit_logger: Arc<dyn AuditLogger>,
+    pub provenance_repo: SharedProvenanceRepository,
 }
 
 impl DefaultMutationHandler {
@@ -51,8 +55,12 @@ impl DefaultMutationHandler {
         properties: HashMap<String, String>,
         scheduling_strategy: &str,
         interval_ms: u64,
+        cron_expression: Option<&str>,
     ) -> std::result::Result<(), MutationError> {
-        if scheduling_strategy != "timer" && scheduling_strategy != "event" {
+        if scheduling_strategy != "timer"
+            && scheduling_strategy != "event"
+            && scheduling_strategy != "cron"
+        {
             return Err(MutationError::InvalidSchedulingStrategy(
                 scheduling_strategy.to_string(),
             ));
@@ -73,6 +81,16 @@ impl DefaultMutationHandler {
 
         let scheduling = if scheduling_strategy == "event" {
             SchedulingStrategy::EventDriven
+        } else if scheduling_strategy == "cron" {
+            let expr = cron_expression.unwrap_or("0 * * * * *");
+            // Validate the CRON expression.
+            use std::str::FromStr;
+            cron::Schedule::from_str(expr).map_err(|e| {
+                MutationError::InvalidCronExpression(expr.to_string(), e.to_string())
+            })?;
+            SchedulingStrategy::CronDriven {
+                expression: expr.to_string(),
+            }
         } else {
             SchedulingStrategy::TimerDriven { interval_ms }
         };
@@ -94,6 +112,7 @@ impl DefaultMutationHandler {
                 allowed_values: pd
                     .allowed_values
                     .map(|av| av.iter().map(|v| v.to_string()).collect()),
+                expression_language_supported: pd.expression_language_supported,
             })
             .collect();
 
@@ -110,7 +129,7 @@ impl DefaultMutationHandler {
         let shared_props = Arc::new(RwLock::new(properties));
         let child_token = self.parent_cancel.child_token();
 
-        let pn = ProcessorNode::new(
+        let mut pn = ProcessorNode::new(
             name.to_string(),
             format!("runtime-{}", name),
             processor,
@@ -123,6 +142,16 @@ impl DefaultMutationHandler {
             self.bulletin_board.clone(),
             self.flowfile_repo.clone(),
         );
+        pn.set_provenance_repo(self.provenance_repo.clone());
+        pn.set_type_name(type_name.to_string());
+        let sensitive_names: Vec<String> = prop_descriptors
+            .iter()
+            .filter(|d| d.sensitive)
+            .map(|d| d.name.clone())
+            .collect();
+        if !sensitive_names.is_empty() {
+            pn.set_sensitive_property_names(sensitive_names);
+        }
 
         let input_h = pn.input_connections_handle();
         let output_h = pn.output_connections_handle();
@@ -144,6 +173,12 @@ impl DefaultMutationHandler {
             input_connections: input_h,
             output_connections: output_h,
             input_notifiers: notifiers_h,
+            penalty_duration_ms: Arc::new(AtomicU64::new(30_000)),
+            yield_duration_ms: Arc::new(AtomicU64::new(1_000)),
+            bulletin_level: Arc::new(RwLock::new("WARN".to_string())),
+            concurrent_tasks: Arc::new(AtomicU64::new(1)),
+            comments: Arc::new(RwLock::new(String::new())),
+            auto_terminated_relationships: Arc::new(RwLock::new(Vec::new())),
         });
 
         tracing::info!(name, type_name, "Hot-added processor");
@@ -213,6 +248,7 @@ impl DefaultMutationHandler {
         relationship: &str,
         dest_name: &str,
         config: BackPressureConfig,
+        load_balance: Option<LoadBalanceConfig>,
     ) -> std::result::Result<String, MutationError> {
         let (src_output_h, src_rel, dst_input_h, dst_notifiers_h) = {
             let procs = self.live_procs.read();
@@ -267,7 +303,15 @@ impl DefaultMutationHandler {
             }
         }
 
-        let fc = Arc::new(FlowConnection::new(conn_id.clone(), config));
+        let fc = if let Some(lb_config) = load_balance {
+            Arc::new(FlowConnection::with_load_balance(
+                conn_id.clone(),
+                config,
+                lb_config,
+            ))
+        } else {
+            Arc::new(FlowConnection::new(conn_id.clone(), config))
+        };
 
         let notifier = fc.notifier();
         dst_input_h.write().push(Arc::clone(&fc));

@@ -1,42 +1,136 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
+use runifi_api::AuthChainBundle;
 use runifi_core::audit::{
     AuditLogger, CompositeAuditLogger, FileAuditLogger, NullAuditLogger, TracingAuditLogger,
 };
+use runifi_core::auth::apikey_provider::ApiKeyAuthProvider;
+use runifi_core::auth::chain::AuthProviderChain;
+use runifi_core::auth::identity_mapper::IdentityMapper;
+use runifi_core::auth::jwt::JwtConfig;
+use runifi_core::auth::ldap_provider::LdapAuthProvider;
+use runifi_core::auth::local_provider::LocalAuthProvider;
+use runifi_core::auth::mtls_provider::MtlsAuthProvider;
+use runifi_core::auth::oidc_provider::OidcAuthProvider;
+use runifi_core::auth::provider::AuthProvider;
+use runifi_core::auth::session::SessionManager;
+use runifi_core::auth::store::UserStore;
 use runifi_core::config::flow_config::FlowConfig;
+use runifi_core::config::flow_config::parse_duration_str;
 use runifi_core::config::permissions::check_config_permissions;
 use runifi_core::config::property_encryption::{
     decrypt_property_value, expand_env_vars, is_encrypted_value,
 };
+use runifi_core::config::secrets::{
+    EnvSecretsProvider, FileSecretsProvider, SecretsProvider, resolve_secret_refs,
+};
 use runifi_core::connection::back_pressure::BackPressureConfig;
+use runifi_core::connection::flow_connection::QueuePriority;
 use runifi_core::engine::flow_engine::FlowEngine;
 use runifi_core::engine::handle::{PluginKind, PluginTypeInfo};
-use runifi_core::engine::persistence::{self, FlowPersistence, PersistedFlowState};
+use runifi_core::engine::persistence::{
+    self, FlowPersistence, PersistedFlowState, PersistedProcessGroup,
+};
 use runifi_core::engine::processor_node::SchedulingStrategy;
 use runifi_core::registry::plugin_registry::PluginRegistry;
 use runifi_core::repository::content_encrypted::EncryptedContentRepository;
 use runifi_core::repository::content_file::{FileContentRepoConfig, FileContentRepository};
 use runifi_core::repository::content_memory::InMemoryContentRepository;
 use runifi_core::repository::content_repo::ContentRepository;
+use runifi_core::repository::encrypted_wal::{EncryptedWalConfig, EncryptedWalFlowFileRepository};
+use runifi_core::repository::env_key_provider::EnvKeyProvider;
+use runifi_core::repository::file_key_provider::FileKeyProvider;
 use runifi_core::repository::flowfile_repo::{FlowFileRepository, InMemoryFlowFileRepository};
 use runifi_core::repository::flowfile_wal::{
     FsyncMode, WalFlowFileRepoConfig, WalFlowFileRepository,
 };
+use runifi_core::repository::key_provider::KeyProvider;
 use runifi_core::repository::static_key_provider::StaticKeyProvider;
+use runifi_core::versioning::FlowVersionStore;
 
 // Ensure processor registrations are linked in.
 extern crate runifi_processors;
 
+/// RuniFi — high-performance data flow engine.
+///
+/// A Rust reimplementation of Apache NiFi, purpose-built for ultra-low-latency
+/// and high-throughput file transfers.
+#[derive(Parser, Debug)]
+#[command(version, about)]
+struct Cli {
+    /// Path to flow config TOML file.
+    #[arg(short, long, default_value = "config/flow.toml")]
+    config: PathBuf,
+
+    /// API server bind address (overrides config file).
+    #[arg(short, long)]
+    bind: Option<String>,
+
+    /// API server port (overrides config file).
+    #[arg(short, long)]
+    port: Option<u16>,
+
+    /// Log level (overrides RUST_LOG env var).
+    #[arg(long)]
+    log_level: Option<String>,
+
+    /// Runtime persistence directory (overrides config file).
+    #[arg(long)]
+    conf_dir: Option<PathBuf>,
+
+    /// WAL FlowFile repository directory (overrides config file).
+    #[arg(long)]
+    wal_dir: Option<PathBuf>,
+
+    /// Flow version repository directory (default: ~/.runifi/flow-versions/).
+    #[arg(long)]
+    version_dir: Option<PathBuf>,
+}
+
+/// Apply CLI overrides to the loaded config.
+fn apply_cli_overrides(config: &mut FlowConfig, cli: &Cli) {
+    if let Some(ref bind) = cli.bind {
+        config.api.bind_address = bind.clone();
+    }
+    if let Some(port) = cli.port {
+        config.api.port = port;
+    }
+    if let Some(ref dir) = cli.conf_dir {
+        config.engine.conf_dir = dir.clone();
+    }
+    if let Some(ref dir) = cli.wal_dir {
+        let wal_config = config
+            .engine
+            .flowfile_repository
+            .wal
+            .get_or_insert_with(|| runifi_core::config::flow_config::WalRepoConfigToml {
+                dir: dir.clone(),
+                fsync_mode: "always".to_string(),
+                checkpoint_interval_secs: 120,
+            });
+        wal_config.dir = dir.clone();
+        // If the user specifies a WAL dir, ensure the repo type is set to WAL.
+        config.engine.flowfile_repository.repo_type = "wal".to_string();
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
+    let cli = Cli::parse();
+
+    // Determine log filter: CLI flag > RUST_LOG env > default "info".
+    let log_filter = if let Some(ref level) = cli.log_level {
+        EnvFilter::new(level)
+    } else {
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
+    };
+
+    tracing_subscriber::fmt().with_env_filter(log_filter).init();
 
     tracing::info!("RuniFi v{} starting...", env!("CARGO_PKG_VERSION"));
 
@@ -50,53 +144,34 @@ async fn main() -> Result<()> {
     );
 
     // Load seed flow configuration (TOML), defaulting to an empty flow.
-    let config_path = std::env::args().nth(1);
+    let config_path = &cli.config;
 
-    let config: FlowConfig = match &config_path {
-        Some(path) => {
+    let mut config: FlowConfig = match std::fs::read_to_string(config_path) {
+        Ok(config_str) => {
+            let path_str = config_path.display().to_string();
             // Check config file permissions (Unix only).
-            if let Err(e) = check_config_permissions(path) {
+            if let Err(e) = check_config_permissions(&path_str) {
                 tracing::error!(error = %e, "Config file permission check failed");
                 return Err(anyhow::anyhow!("{}", e));
             }
-
-            let config_str = std::fs::read_to_string(path).context("Failed to read config file")?;
             // Expand environment variable references before parsing.
             let config_str = expand_env_vars(&config_str);
             let cfg: FlowConfig =
                 toml::from_str(&config_str).context("Failed to parse flow configuration")?;
-            tracing::info!(flow = %cfg.flow.name, path = %path, "Loaded seed flow configuration");
+            tracing::info!(flow = %cfg.flow.name, path = %path_str, "Loaded seed flow configuration");
             cfg
         }
-        None => {
-            // Try the default path; if it doesn't exist, start with an empty flow.
-            let default_path = "config/flow.toml";
-            match std::fs::read_to_string(default_path) {
-                Ok(config_str) => {
-                    // Check permissions on default path too.
-                    if let Err(e) = check_config_permissions(default_path) {
-                        tracing::error!(error = %e, "Config file permission check failed");
-                        return Err(anyhow::anyhow!("{}", e));
-                    }
-                    let config_str = expand_env_vars(&config_str);
-                    let cfg: FlowConfig = toml::from_str(&config_str)
-                        .context("Failed to parse flow configuration")?;
-                    tracing::info!(
-                        flow = %cfg.flow.name,
-                        path = %default_path,
-                        "Loaded seed flow configuration"
-                    );
-                    cfg
-                }
-                Err(_) => {
-                    tracing::info!("No config file found, starting with blank canvas");
-                    FlowConfig::default()
-                }
-            }
+        Err(_) => {
+            tracing::info!("No config file found, starting with blank canvas");
+            FlowConfig::default()
         }
     };
 
+    // Apply CLI overrides on top of the config file values.
+    apply_cli_overrides(&mut config, &cli);
+
     // Resolve the encryption key from config (needed for ENC() decryption).
+    // First check api.encryption (legacy), then engine.encryption (new).
     let encryption_key: Option<Vec<u8>> = config
         .api
         .encryption
@@ -108,23 +183,58 @@ async fn main() -> Result<()> {
     // Warn if the encryption key appears to be stored as plaintext in the config file.
     if encryption_key.is_some()
         && let Some(enc) = config.api.encryption.as_ref()
+        && let Ok(raw_config) = std::fs::read_to_string(config_path)
+        && raw_config.contains(&enc.key)
     {
-        let raw_path = config_path.as_deref().unwrap_or("config/flow.toml");
-        if let Ok(raw_config) = std::fs::read_to_string(raw_path)
-            && raw_config.contains(&enc.key)
-        {
-            tracing::warn!(
-                "Encryption key appears to be stored as plaintext in the config file. \
-                 Consider using environment variable substitution: \
-                 key = \"${{RUNIFI_ENCRYPTION_KEY}}\""
-            );
+        tracing::warn!(
+            "Encryption key appears to be stored as plaintext in the config file. \
+             Consider using environment variable substitution: \
+             key = \"${{RUNIFI_ENCRYPTION_KEY}}\""
+        );
+    }
+
+    // Build the engine-level key provider for repository encryption (if configured).
+    let repo_key_provider: Option<Arc<dyn KeyProvider>> = build_key_provider(&config)?;
+
+    // Build secrets provider for ${secret:KEY} resolution.
+    let secrets_provider: Arc<dyn SecretsProvider> = build_secrets_provider(&config)?;
+
+    // Resolve ${secret:KEY} references in seed config processor properties.
+    for proc_config in &mut config.flow.processors {
+        for (_prop_name, prop_value) in proc_config.properties.iter_mut() {
+            if prop_value.contains("${secret:") {
+                *prop_value = resolve_secret_refs(prop_value, secrets_provider.as_ref())
+                    .with_context(|| {
+                        format!(
+                            "Failed to resolve secret reference in processor '{}' property",
+                            proc_config.name
+                        )
+                    })?;
+            }
+        }
+    }
+    for svc_config in &mut config.flow.services {
+        for (_prop_name, prop_value) in svc_config.properties.iter_mut() {
+            if prop_value.contains("${secret:") {
+                *prop_value = resolve_secret_refs(prop_value, secrets_provider.as_ref())
+                    .with_context(|| {
+                        format!(
+                            "Failed to resolve secret reference in service '{}' property",
+                            svc_config.name
+                        )
+                    })?;
+            }
         }
     }
 
     // Check for persisted runtime flow state.
     let conf_dir = config.engine.conf_dir.clone();
     let runtime_flow = match persistence::load_runtime_flow(&conf_dir) {
-        Ok(Some(state)) => {
+        Ok(Some(mut state)) => {
+            // Decrypt any ENC() values in the persisted state.
+            state
+                .decrypt_sensitive_properties(encryption_key.as_deref())
+                .context("Failed to decrypt sensitive properties in persisted flow state")?;
             tracing::info!(
                 conf_dir = %conf_dir.display(),
                 processors = state.processors.len(),
@@ -172,13 +282,13 @@ async fn main() -> Result<()> {
                 runifi_core::repository::cleanup::spawn_cleanup_task(file_repo.clone());
                 tracing::info!("Using file-based content repository");
                 // Wrap with encryption if configured.
-                wrap_with_encryption(file_repo, &config)?
+                wrap_with_encryption(file_repo, &config, repo_key_provider.clone())?
             }
             _ => {
                 let base_repo: Arc<dyn ContentRepository> =
                     Arc::new(InMemoryContentRepository::new());
                 tracing::info!("Using in-memory content repository");
-                wrap_with_encryption(base_repo, &config)?
+                wrap_with_encryption(base_repo, &config, repo_key_provider.clone())?
             }
         };
 
@@ -186,26 +296,44 @@ async fn main() -> Result<()> {
     let flowfile_repo: Arc<dyn FlowFileRepository> =
         match config.engine.flowfile_repository.repo_type.as_str() {
             "wal" => {
-                let wal_config = match &config.engine.flowfile_repository.wal {
-                    Some(wc) => {
-                        let fsync = match wc.fsync_mode.as_str() {
-                            "never" => FsyncMode::Never,
-                            _ => FsyncMode::Always,
-                        };
-                        WalFlowFileRepoConfig {
-                            dir: wc.dir.clone(),
-                            fsync_mode: fsync,
-                            checkpoint_interval_secs: wc.checkpoint_interval_secs,
-                        }
-                    }
-                    None => WalFlowFileRepoConfig::default(),
+                let wal_toml = config.engine.flowfile_repository.wal.as_ref();
+                let fsync = match wal_toml.map(|wc| wc.fsync_mode.as_str()) {
+                    Some("never") => FsyncMode::Never,
+                    _ => FsyncMode::Always,
                 };
-                let repo = Arc::new(
-                    WalFlowFileRepository::new(wal_config)
-                        .context("Failed to create WAL FlowFile repository")?,
-                );
-                tracing::info!("Using WAL-based FlowFile repository");
-                repo
+                let dir = wal_toml
+                    .map(|wc| wc.dir.clone())
+                    .unwrap_or_else(|| PathBuf::from("data/flowfile-repo"));
+                let checkpoint_secs = wal_toml
+                    .map(|wc| wc.checkpoint_interval_secs)
+                    .unwrap_or(120);
+
+                // Use encrypted WAL if engine.encryption is configured.
+                if let Some(ref kp) = repo_key_provider {
+                    let enc_config = EncryptedWalConfig {
+                        dir,
+                        fsync_mode: fsync,
+                        checkpoint_interval_secs: checkpoint_secs,
+                    };
+                    let repo = Arc::new(
+                        EncryptedWalFlowFileRepository::new(enc_config, kp.clone())
+                            .context("Failed to create encrypted WAL FlowFile repository")?,
+                    );
+                    tracing::info!("Using encrypted WAL-based FlowFile repository");
+                    repo
+                } else {
+                    let wal_config = WalFlowFileRepoConfig {
+                        dir,
+                        fsync_mode: fsync,
+                        checkpoint_interval_secs: checkpoint_secs,
+                    };
+                    let repo = Arc::new(
+                        WalFlowFileRepository::new(wal_config)
+                            .context("Failed to create WAL FlowFile repository")?,
+                    );
+                    tracing::info!("Using WAL-based FlowFile repository");
+                    repo
+                }
             }
             _ => {
                 tracing::info!("Using in-memory FlowFile repository (no crash recovery)");
@@ -265,8 +393,66 @@ async fn main() -> Result<()> {
     engine.set_registry(registry.clone());
 
     // Set up flow persistence.
-    let persistence_layer = FlowPersistence::new(conf_dir);
+    let persistence_layer = FlowPersistence::new(conf_dir.clone());
+    // Pass the encryption key to the persistence layer so sensitive properties
+    // are encrypted in the persisted flow state.
+    if let Some(ref key) = encryption_key {
+        persistence_layer.set_encryption_key(key.clone());
+    }
     engine.set_persistence(persistence_layer);
+
+    // Set up processor state provider (file-backed, stored under conf_dir/state/local/).
+    let state_dir = conf_dir.join("state").join("local");
+    let state_provider = Arc::new(
+        runifi_core::repository::state_provider::LocalStateProvider::new(&state_dir)
+            .context("Failed to initialize local state provider")?,
+    );
+    engine.set_state_provider(state_provider);
+
+    // Set up provenance repository.
+    let provenance_config = &config.engine.provenance;
+    match provenance_config.repo_type.as_str() {
+        "file" => {
+            use runifi_core::repository::provenance_file::{
+                FileProvenanceConfig, FileProvenanceRepository,
+            };
+            let file_config = FileProvenanceConfig {
+                directory: provenance_config.directory.clone(),
+                max_segment_size: provenance_config.segment_size_mb * 1024 * 1024,
+                retention_days: provenance_config.retention_days,
+                max_total_size: provenance_config.max_storage_gb * 1024 * 1024 * 1024,
+            };
+            let provenance_repo = FileProvenanceRepository::new(file_config)
+                .context("Failed to initialize file-backed provenance repository")?;
+            engine.set_provenance_repo(Arc::new(provenance_repo));
+            tracing::info!(
+                "Provenance repository: file-backed (dir={}, retention={}d, max={}GB)",
+                provenance_config.directory.display(),
+                provenance_config.retention_days,
+                provenance_config.max_storage_gb,
+            );
+        }
+        _ => {
+            use runifi_core::repository::provenance_repo::{
+                InMemoryProvenanceRepository, ProvenanceConfig,
+            };
+            let mem_config = ProvenanceConfig {
+                max_events: provenance_config.max_events,
+                max_age_nanos: provenance_config.retention_days as u64
+                    * 24
+                    * 60
+                    * 60
+                    * 1_000_000_000,
+            };
+            engine.set_provenance_repo(Arc::new(InMemoryProvenanceRepository::with_config(
+                mem_config,
+            )));
+            tracing::info!(
+                "Provenance repository: in-memory (max_events={})",
+                provenance_config.max_events,
+            );
+        }
+    }
 
     // Populate the engine from either runtime state or seed config.
     if let Some(ref state) = runtime_flow {
@@ -279,20 +465,84 @@ async fn main() -> Result<()> {
     engine.start().await.context("Failed to start engine")?;
     tracing::info!("Flow engine is running");
 
-    // Restore positions from persisted state.
+    // Restore positions and labels from persisted state. Uses restore_position()
+    // to avoid triggering an unnecessary persist of the state just loaded.
     if let Some(ref state) = runtime_flow
         && let Some(handle) = engine.handle()
     {
         for (name, pos) in &state.positions {
-            handle.set_position(name, pos.x, pos.y);
+            handle.restore_position(name, pos.x, pos.y);
         }
+        // Restore labels directly into the shared labels vec (no persist trigger).
+        {
+            let mut labels = handle.labels.write();
+            let mut max_label_id: u64 = 0;
+            for pl in &state.labels {
+                // Extract numeric suffix from "label-N" for counter reset.
+                if let Some(suffix) = pl.id.strip_prefix("label-")
+                    && let Ok(n) = suffix.parse::<u64>()
+                {
+                    max_label_id = max_label_id.max(n);
+                }
+                labels.push(runifi_core::engine::handle::LabelInfo {
+                    id: pl.id.clone(),
+                    text: pl.text.clone(),
+                    x: pl.x,
+                    y: pl.y,
+                    width: pl.width,
+                    height: pl.height,
+                    background_color: pl.background_color.clone(),
+                    font_size: pl.font_size,
+                });
+            }
+            // Reset the label ID counter so new labels don't collide.
+            if max_label_id > 0 {
+                runifi_core::engine::handle::reset_label_id_counter(max_label_id + 1);
+            }
+        }
+
+        // Restore per-processor config fields (penalty, yield, bulletin, comments, etc.).
+        {
+            let procs = handle.processors.read();
+            for proc_state in &state.processors {
+                if let Some(info) = procs.iter().find(|p| p.name == proc_state.name) {
+                    if let Some(penalty) = proc_state.penalty_duration_ms {
+                        info.penalty_duration_ms
+                            .store(penalty, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    if let Some(yield_ms) = proc_state.yield_duration_ms {
+                        info.yield_duration_ms
+                            .store(yield_ms, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    if let Some(ref bulletin) = proc_state.bulletin_level {
+                        *info.bulletin_level.write() = bulletin.clone();
+                    }
+                    if let Some(concurrent) = proc_state.concurrent_tasks {
+                        info.concurrent_tasks
+                            .store(concurrent, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    if let Some(ref comments) = proc_state.comments {
+                        *info.comments.write() = comments.clone();
+                    }
+                    if let Some(ref auto_term) = proc_state.auto_terminated_relationships {
+                        *info.auto_terminated_relationships.write() = auto_term.clone();
+                    }
+                }
+            }
+        }
+
+        // Restore process groups from persisted state.
+        restore_process_groups(handle, &state.process_groups);
     }
 
-    // On first startup (no runtime flow), trigger an initial persist so the
-    // seed config is saved as the runtime state.
+    // On first startup (no runtime flow), load process groups from seed config
+    // and trigger an initial persist so the seed config is saved as the runtime state.
     if runtime_flow.is_none()
         && let Some(handle) = engine.handle()
     {
+        if !config.flow.process_groups.is_empty() {
+            load_seed_process_groups(handle, &config.flow.process_groups, None);
+        }
         handle.notify_persist();
     }
 
@@ -302,21 +552,115 @@ async fn main() -> Result<()> {
         plugin_types.push(PluginTypeInfo {
             type_name: name.to_string(),
             kind: PluginKind::Processor,
+            tags: registry.processor_tags(name),
         });
     }
     for name in registry.source_types() {
         plugin_types.push(PluginTypeInfo {
             type_name: name.to_string(),
             kind: PluginKind::Source,
+            tags: registry.source_tags(name),
         });
     }
     for name in registry.sink_types() {
         plugin_types.push(PluginTypeInfo {
             type_name: name.to_string(),
             kind: PluginKind::Sink,
+            tags: registry.sink_tags(name),
+        });
+    }
+    for name in registry.service_types() {
+        plugin_types.push(PluginTypeInfo {
+            type_name: name.to_string(),
+            kind: PluginKind::Service,
+            tags: Vec::new(),
+        });
+    }
+    for name in registry.reporting_task_types() {
+        plugin_types.push(PluginTypeInfo {
+            type_name: name.to_string(),
+            kind: PluginKind::ReportingTask,
+            tags: registry.reporting_task_tags(name),
         });
     }
     engine.set_plugin_types(plugin_types);
+
+    // Initialize user management if auth is enabled.
+    let user_store = Arc::new(UserStore::new());
+    let jwt_config = if config.auth.enabled {
+        if config.auth.jwt_secret == "change-me-in-production" {
+            tracing::warn!(
+                "Using default JWT secret. Set auth.jwt_secret or RUNIFI_JWT_SECRET for production."
+            );
+        }
+        let jwt = JwtConfig::new(&config.auth.jwt_secret, config.auth.jwt_expiry_secs);
+
+        // Single-user mode: bootstrap a default admin if no users exist.
+        if config.auth.single_user_mode && user_store.user_count() == 0 {
+            match user_store.create_user(
+                config.auth.default_admin_username.clone(),
+                &config.auth.default_admin_password,
+            ) {
+                Ok(user) => {
+                    tracing::info!(
+                        username = %user.username,
+                        "Single-user mode: default admin account created"
+                    );
+                    if config.auth.default_admin_password == "admin" {
+                        tracing::warn!(
+                            "Default admin password is 'admin'. Change it immediately in production."
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to create default admin user");
+                }
+            }
+        }
+
+        tracing::info!(
+            expiry_secs = config.auth.jwt_expiry_secs,
+            single_user_mode = config.auth.single_user_mode,
+            "JWT user authentication enabled"
+        );
+        Some(jwt)
+    } else {
+        tracing::info!("User authentication is disabled");
+        None
+    };
+
+    // Build enterprise auth provider chain if auth is enabled.
+    let auth_chain = if config.auth.enabled {
+        jwt_config.as_ref().map(|jwt| {
+            build_auth_provider_chain(&config, user_store.clone(), Arc::new(jwt.clone()))
+        })
+    } else {
+        None
+    };
+
+    // Initialize flow version store.
+    let version_repo_path = cli
+        .version_dir
+        .clone()
+        .unwrap_or_else(dirs_default_version_path);
+    let version_store: Option<Arc<FlowVersionStore>> =
+        match FlowVersionStore::open(&version_repo_path) {
+            Ok(store) => {
+                tracing::info!(
+                    path = %version_repo_path.display(),
+                    "Flow version store initialized"
+                );
+                Some(Arc::new(store))
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    path = %version_repo_path.display(),
+                    "Failed to initialize flow version store — versioning will be disabled"
+                );
+                None
+            }
+        };
 
     // Start the API server if enabled.
     let api_handle = if config.api.enabled {
@@ -326,9 +670,30 @@ async fn main() -> Result<()> {
             .clone();
 
         let api_config = config.api.clone();
+        let api_registry = registry.clone();
+        let api_user_store = user_store.clone();
+        let api_jwt_config = jwt_config.clone();
+        let api_auth_config = config.auth.clone();
+        let api_version_store = version_store.clone();
+        let api_auth_chain = auth_chain.clone();
 
         Some(tokio::spawn(async move {
-            if let Err(e) = runifi_api::start_api_server(engine_handle, &api_config).await {
+            if let Err(e) = runifi_api::start_api_server_with_registry(
+                engine_handle,
+                &api_config,
+                Some(api_registry),
+                if api_auth_config.enabled {
+                    Some(api_user_store)
+                } else {
+                    None
+                },
+                api_jwt_config,
+                Some(api_auth_config),
+                api_version_store,
+                api_auth_chain,
+            )
+            .await
+            {
                 tracing::error!(error = %e, "API server failed");
             }
         }))
@@ -352,18 +717,128 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Build a key provider from the engine-level encryption config.
+fn build_key_provider(config: &FlowConfig) -> Result<Option<Arc<dyn KeyProvider>>> {
+    let enc = match &config.engine.encryption {
+        Some(enc) if enc.enabled => enc,
+        _ => return Ok(None),
+    };
+
+    if enc.algorithm != "AES-256-GCM" {
+        return Err(anyhow::anyhow!(
+            "Unsupported encryption algorithm: '{}'. Only 'AES-256-GCM' is supported.",
+            enc.algorithm
+        ));
+    }
+
+    let kp = &enc.key_provider;
+    let provider: Arc<dyn KeyProvider> = match kp.provider_type.as_str() {
+        "file" => {
+            let path = kp.path.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("engine.encryption.key_provider.path is required for file provider")
+            })?;
+            let provider = FileKeyProvider::from_file(std::path::Path::new(path))
+                .map_err(|e| anyhow::anyhow!("Failed to load key file: {}", e))?;
+            tracing::info!(path = %path, "Loaded encryption keys from file");
+            Arc::new(provider)
+        }
+        "env" => {
+            let active_id = kp.active_key_id.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "engine.encryption.key_provider.active_key_id is required for env provider"
+                )
+            })?;
+            let key_ids = kp.key_ids.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "engine.encryption.key_provider.key_ids is required for env provider"
+                )
+            })?;
+            let provider = EnvKeyProvider::new(active_id.clone(), key_ids, &kp.key_env_prefix)
+                .map_err(|e| anyhow::anyhow!("Failed to load encryption keys from env: {}", e))?;
+            tracing::info!(
+                active_key_id = %active_id,
+                key_count = key_ids.len(),
+                "Loaded encryption keys from environment variables"
+            );
+            Arc::new(provider)
+        }
+        "static" => {
+            let key_hex = kp.key.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "engine.encryption.key_provider.key is required for static provider"
+                )
+            })?;
+            let key_id = kp.key_id.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "engine.encryption.key_provider.key_id is required for static provider"
+                )
+            })?;
+            let provider = StaticKeyProvider::from_hex(key_id.clone(), key_hex)
+                .map_err(|e| anyhow::anyhow!("Invalid static encryption key: {}", e))?;
+            tracing::info!(key_id = %key_id, "Using static encryption key");
+            Arc::new(provider)
+        }
+        other => {
+            return Err(anyhow::anyhow!(
+                "Unknown key provider type: '{}'. Supported types: file, env, static",
+                other
+            ));
+        }
+    };
+
+    Ok(Some(provider))
+}
+
+/// Build a secrets provider from the `[secrets]` config section.
+fn build_secrets_provider(config: &FlowConfig) -> Result<Arc<dyn SecretsProvider>> {
+    match config.secrets.provider.as_str() {
+        "environment" => {
+            let prefix = config.secrets.env_prefix.clone();
+            tracing::info!(prefix = %prefix, "Using environment secrets provider");
+            Ok(Arc::new(EnvSecretsProvider::with_prefix(prefix)))
+        }
+        "file" => {
+            let path = config.secrets.file_path.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("secrets.file_path is required when secrets.provider = \"file\"")
+            })?;
+            let provider = FileSecretsProvider::from_path(std::path::Path::new(path))
+                .map_err(|e| anyhow::anyhow!("Failed to load secrets file '{}': {}", path, e))?;
+            tracing::info!(path = %path, "Using file secrets provider");
+            Ok(Arc::new(provider))
+        }
+        "static" => {
+            tracing::info!("Using static (empty) secrets provider");
+            Ok(Arc::new(
+                runifi_core::config::secrets::StaticSecretsProvider::empty(),
+            ))
+        }
+        other => Err(anyhow::anyhow!(
+            "Unknown secrets provider type: '{}'. Supported: environment, file, static",
+            other
+        )),
+    }
+}
+
 /// Optionally wrap a content repository with encryption based on config.
 fn wrap_with_encryption(
     base_repo: Arc<dyn ContentRepository>,
     config: &FlowConfig,
+    repo_key_provider: Option<Arc<dyn KeyProvider>>,
 ) -> Result<Arc<dyn ContentRepository>> {
+    // First, try engine-level encryption (new config path).
+    if let Some(kp) = repo_key_provider {
+        tracing::info!("Content encryption at rest enabled (engine.encryption)");
+        return Ok(Arc::new(EncryptedContentRepository::new(base_repo, kp)));
+    }
+
+    // Fall back to legacy api.encryption config.
     match &config.api.encryption {
         Some(enc) if enc.enabled => {
             let key_provider = Arc::new(
                 StaticKeyProvider::from_hex(enc.key_id.clone(), &enc.key)
                     .context("Invalid encryption configuration")?,
             );
-            tracing::info!(key_id = %enc.key_id, "Content encryption at rest enabled");
+            tracing::info!(key_id = %enc.key_id, "Content encryption at rest enabled (api.encryption)");
             Ok(Arc::new(EncryptedContentRepository::new(
                 base_repo,
                 key_provider,
@@ -393,6 +868,13 @@ fn load_from_persisted_state(
 
         let scheduling = match proc_state.scheduling.strategy.as_str() {
             "event" => SchedulingStrategy::EventDriven,
+            "cron" => SchedulingStrategy::CronDriven {
+                expression: proc_state
+                    .scheduling
+                    .expression
+                    .clone()
+                    .unwrap_or_else(|| "0 * * * * *".to_string()),
+            },
             _ => SchedulingStrategy::TimerDriven {
                 interval_ms: proc_state.scheduling.interval_ms,
             },
@@ -411,6 +893,37 @@ fn load_from_persisted_state(
             name = %proc_state.name,
             type_name = %proc_state.type_name,
             "Added processor (from persisted state)"
+        );
+    }
+
+    // Load controller services from persisted state.
+    for svc_state in &state.services {
+        let service = registry
+            .create_service(&svc_state.type_name)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Unknown service type in persisted state: {}",
+                    svc_state.type_name
+                )
+            })?;
+
+        let service_registry = engine.service_registry();
+        let mut reg = service_registry.write();
+        reg.add_service(svc_state.name.clone(), svc_state.type_name.clone(), service)
+            .map_err(|e| anyhow::anyhow!("Failed to add service '{}': {}", svc_state.name, e))?;
+
+        if !svc_state.properties.is_empty() {
+            reg.configure_service(&svc_state.name, svc_state.properties.clone())
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to configure service '{}': {}", svc_state.name, e)
+                })?;
+        }
+        drop(reg);
+
+        tracing::info!(
+            name = %svc_state.name,
+            type_name = %svc_state.type_name,
+            "Added controller service (from persisted state)"
         );
     }
 
@@ -438,8 +951,25 @@ fn load_from_persisted_state(
             None => BackPressureConfig::default(),
         };
 
+        let expiration = conn_state
+            .expiration
+            .as_deref()
+            .and_then(parse_duration_str);
+        let priority = parse_queue_priority(
+            conn_state.priority.as_deref(),
+            conn_state.priority_attribute.as_deref(),
+        );
+
         let rel_name: &'static str = Box::leak(conn_state.relationship.clone().into_boxed_str());
-        engine.connect(source_id, rel_name, dest_id, bp_config);
+        engine.connect_with_load_balance(
+            source_id,
+            rel_name,
+            dest_id,
+            bp_config,
+            expiration,
+            priority,
+            conn_state.load_balancing.clone(),
+        );
 
         tracing::info!(
             source = %conn_state.source,
@@ -450,6 +980,17 @@ fn load_from_persisted_state(
     }
 
     Ok(())
+}
+
+/// Parse queue priority from config strings.
+fn parse_queue_priority(priority: Option<&str>, priority_attribute: Option<&str>) -> QueuePriority {
+    match priority {
+        Some("NewestFirst") => QueuePriority::NewestFirst,
+        Some("PriorityAttribute") => {
+            QueuePriority::PriorityAttribute(priority_attribute.unwrap_or("priority").to_string())
+        }
+        _ => QueuePriority::Fifo,
+    }
 }
 
 /// Load processors and connections from the seed TOML config.
@@ -468,6 +1009,13 @@ fn load_from_seed_config(
 
         let scheduling = match proc_config.scheduling.strategy.as_str() {
             "event" => SchedulingStrategy::EventDriven,
+            "cron" => SchedulingStrategy::CronDriven {
+                expression: proc_config
+                    .scheduling
+                    .expression
+                    .clone()
+                    .unwrap_or_else(|| "0 * * * * *".to_string()),
+            },
             _ => SchedulingStrategy::TimerDriven {
                 interval_ms: proc_config.scheduling.interval_ms,
             },
@@ -514,6 +1062,36 @@ fn load_from_seed_config(
         );
     }
 
+    // Load controller services from seed config.
+    for svc_config in &config.flow.services {
+        let service = registry
+            .create_service(&svc_config.type_name)
+            .ok_or_else(|| anyhow::anyhow!("Unknown service type: {}", svc_config.type_name))?;
+
+        let service_registry = engine.service_registry();
+        let mut reg = service_registry.write();
+        reg.add_service(
+            svc_config.name.clone(),
+            svc_config.type_name.clone(),
+            service,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to add service '{}': {}", svc_config.name, e))?;
+
+        if !svc_config.properties.is_empty() {
+            reg.configure_service(&svc_config.name, svc_config.properties.clone())
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to configure service '{}': {}", svc_config.name, e)
+                })?;
+        }
+        drop(reg);
+
+        tracing::info!(
+            name = %svc_config.name,
+            type_name = %svc_config.type_name,
+            "Added controller service"
+        );
+    }
+
     for conn_config in &config.flow.connections {
         let source_id = *node_ids
             .get(&conn_config.source)
@@ -532,8 +1110,25 @@ fn load_from_seed_config(
             None => BackPressureConfig::default(),
         };
 
+        let expiration = conn_config
+            .expiration
+            .as_deref()
+            .and_then(parse_duration_str);
+        let priority = parse_queue_priority(
+            conn_config.priority.as_deref(),
+            conn_config.priority_attribute.as_deref(),
+        );
+
         let rel_name: &'static str = Box::leak(conn_config.relationship.clone().into_boxed_str());
-        engine.connect(source_id, rel_name, dest_id, bp_config);
+        engine.connect_with_load_balance(
+            source_id,
+            rel_name,
+            dest_id,
+            bp_config,
+            expiration,
+            priority,
+            conn_config.load_balancing.clone(),
+        );
 
         tracing::info!(
             source = %conn_config.source,
@@ -546,9 +1141,404 @@ fn load_from_seed_config(
     Ok(())
 }
 
+/// Default path for the flow version repository: `~/.runifi/flow-versions/`.
+fn dirs_default_version_path() -> PathBuf {
+    if let Some(home) = std::env::var_os("HOME") {
+        PathBuf::from(home).join(".runifi").join("flow-versions")
+    } else {
+        PathBuf::from("./data/flow-versions")
+    }
+}
+
+/// Restore process groups from persisted state directly into the engine handle.
+///
+/// This bypasses the `create_process_group` API (which would generate new IDs
+/// and trigger audit events) and instead populates the handle's process_groups
+/// store directly — preserving original IDs from the persisted state.
+fn restore_process_groups(
+    handle: &runifi_core::engine::handle::EngineHandle,
+    persisted_groups: &[PersistedProcessGroup],
+) {
+    use runifi_core::engine::process_group::{PortInfo, PortType, ProcessGroupInfo};
+
+    if persisted_groups.is_empty() {
+        return;
+    }
+
+    let mut groups = handle.process_groups.write();
+    let mut max_group_id: u64 = 0;
+
+    for pg in persisted_groups {
+        // Extract numeric suffix from "pg-N" for counter reset.
+        if let Some(suffix) = pg.id.strip_prefix("pg-")
+            && let Ok(n) = suffix.parse::<u64>()
+        {
+            max_group_id = max_group_id.max(n);
+        }
+
+        let input_ports: Vec<PortInfo> = pg
+            .input_ports
+            .iter()
+            .map(|p| PortInfo {
+                id: p.id.clone(),
+                name: p.name.clone(),
+                port_type: PortType::Input,
+                group_id: pg.id.clone(),
+            })
+            .collect();
+
+        let output_ports: Vec<PortInfo> = pg
+            .output_ports
+            .iter()
+            .map(|p| PortInfo {
+                id: p.id.clone(),
+                name: p.name.clone(),
+                port_type: PortType::Output,
+                group_id: pg.id.clone(),
+            })
+            .collect();
+
+        groups.push(ProcessGroupInfo {
+            id: pg.id.clone(),
+            name: pg.name.clone(),
+            input_ports,
+            output_ports,
+            processor_names: pg.processor_names.clone(),
+            connection_ids: pg.connection_ids.clone(),
+            child_group_ids: pg.child_group_ids.clone(),
+            parent_group_id: pg.parent_group_id.clone(),
+            variables: pg.variables.clone(),
+            comments: pg.comments.clone(),
+            default_back_pressure_count: pg.default_back_pressure_count,
+            default_back_pressure_bytes: pg.default_back_pressure_bytes,
+            default_flowfile_expiration_ms: pg.default_flowfile_expiration_ms,
+        });
+    }
+
+    // Reset the group ID counter so new groups don't collide.
+    if max_group_id > 0 {
+        runifi_core::engine::handle::reset_group_id_counter(max_group_id + 1);
+    }
+
+    tracing::info!(
+        count = persisted_groups.len(),
+        "Restored process groups from persisted state"
+    );
+}
+
+/// Load process groups from the seed TOML configuration into the engine handle.
+///
+/// This is called when starting fresh (no persisted state) and creates the
+/// hierarchical process group structure defined in the config.
+fn load_seed_process_groups(
+    handle: &runifi_core::engine::handle::EngineHandle,
+    groups_config: &[runifi_core::config::flow_config::ProcessGroupConfig],
+    parent_id: Option<String>,
+) {
+    for pg_config in groups_config {
+        let input_ports = pg_config
+            .input_ports
+            .as_ref()
+            .map(|p| p.ports.clone())
+            .unwrap_or_default();
+
+        let output_ports = pg_config
+            .output_ports
+            .as_ref()
+            .map(|p| p.ports.clone())
+            .unwrap_or_default();
+
+        match handle.create_process_group(
+            pg_config.name.clone(),
+            parent_id.clone(),
+            input_ports,
+            output_ports,
+            pg_config.variables.clone(),
+        ) {
+            Ok(group_id) => {
+                tracing::info!(
+                    name = %pg_config.name,
+                    id = %group_id,
+                    "Created process group (from seed config)"
+                );
+
+                // Recursively create child process groups.
+                if !pg_config.process_groups.is_empty() {
+                    load_seed_process_groups(handle, &pg_config.process_groups, Some(group_id));
+                }
+            }
+            Err(e) => {
+                tracing::error!(
+                    name = %pg_config.name,
+                    error = %e,
+                    "Failed to create process group from seed config"
+                );
+            }
+        }
+    }
+}
+
+/// Build the enterprise auth provider chain from configuration.
+///
+/// Constructs providers based on `auth.provider` and optional sub-configs.
+/// The local and API key providers are always available as fallbacks.
+fn build_auth_provider_chain(
+    config: &FlowConfig,
+    user_store: Arc<UserStore>,
+    jwt_config: Arc<JwtConfig>,
+) -> AuthChainBundle {
+    let auth = &config.auth;
+    let mut providers: Vec<Box<dyn AuthProvider>> = Vec::new();
+
+    let provider_names: Vec<&str> = if auth.provider == "chain" {
+        auth.chain_order.iter().map(|s| s.as_str()).collect()
+    } else {
+        vec![auth.provider.as_str()]
+    };
+
+    for name in &provider_names {
+        match *name {
+            "local" => {
+                providers.push(Box::new(LocalAuthProvider::new(
+                    user_store.clone(),
+                    jwt_config.clone(),
+                )));
+                tracing::info!("Auth provider enabled: local (password + JWT)");
+            }
+            "oidc" => {
+                if let Some(ref oidc_config) = auth.oidc {
+                    providers.push(Box::new(OidcAuthProvider::new(oidc_config.clone())));
+                    tracing::info!(
+                        discovery_url = %oidc_config.discovery_url,
+                        "Auth provider enabled: OIDC"
+                    );
+                } else {
+                    tracing::warn!(
+                        "Auth provider 'oidc' requested but [auth.oidc] config is missing"
+                    );
+                }
+            }
+            "ldap" => {
+                if let Some(ref ldap_config) = auth.ldap {
+                    providers.push(Box::new(LdapAuthProvider::new(ldap_config.clone())));
+                    tracing::info!(
+                        url = %ldap_config.url,
+                        "Auth provider enabled: LDAP"
+                    );
+                } else {
+                    tracing::warn!(
+                        "Auth provider 'ldap' requested but [auth.ldap] config is missing"
+                    );
+                }
+            }
+            "mtls" => {
+                if let Some(ref mtls_config) = auth.mtls {
+                    providers.push(Box::new(MtlsAuthProvider::new(mtls_config.clone())));
+                    tracing::info!(
+                        ca_cert = %mtls_config.ca_cert_path,
+                        "Auth provider enabled: mTLS"
+                    );
+                } else {
+                    tracing::warn!(
+                        "Auth provider 'mtls' requested but [auth.mtls] config is missing"
+                    );
+                }
+            }
+            other => {
+                tracing::warn!(provider = other, "Unknown auth provider type, skipping");
+            }
+        }
+    }
+
+    // Always add API key provider if keys are configured.
+    if config.api.security.auth_enabled() {
+        providers.push(Box::new(ApiKeyAuthProvider::new(
+            config.api.security.clone(),
+        )));
+        tracing::info!("Auth provider enabled: API key");
+    }
+
+    // If "local" wasn't explicitly in the chain, add it as fallback for JWT validation.
+    if !provider_names.contains(&"local") {
+        providers.push(Box::new(LocalAuthProvider::new(
+            user_store.clone(),
+            jwt_config.clone(),
+        )));
+    }
+
+    let chain = Arc::new(AuthProviderChain::new(providers));
+
+    // Build identity mapper from group_mapping config.
+    let mappings: Vec<(String, String)> = auth
+        .group_mapping
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let mapper = Arc::new(IdentityMapper::new(mappings, auth.default_role.clone()));
+
+    // Build session manager.
+    let session_manager = Arc::new(SessionManager::new(
+        jwt_config,
+        user_store,
+        auth.max_sessions_per_user,
+        auth.jwt_expiry_secs,
+    ));
+
+    tracing::info!(
+        provider = %auth.provider,
+        chain = ?chain.provider_names(),
+        "Auth provider chain initialized"
+    );
+
+    AuthChainBundle {
+        chain,
+        mapper,
+        session_manager,
+    }
+}
+
 async fn wait_for_shutdown() {
     tokio::signal::ctrl_c()
         .await
         .expect("Failed to listen for Ctrl+C");
     tracing::info!("Received shutdown signal");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn cli_defaults() {
+        let cli = Cli::parse_from(["runifi"]);
+        assert_eq!(cli.config, PathBuf::from("config/flow.toml"));
+        assert!(cli.bind.is_none());
+        assert!(cli.port.is_none());
+        assert!(cli.log_level.is_none());
+        assert!(cli.conf_dir.is_none());
+        assert!(cli.wal_dir.is_none());
+    }
+
+    #[test]
+    fn cli_config_short_flag() {
+        let cli = Cli::parse_from(["runifi", "-c", "my/flow.toml"]);
+        assert_eq!(cli.config, PathBuf::from("my/flow.toml"));
+    }
+
+    #[test]
+    fn cli_config_long_flag() {
+        let cli = Cli::parse_from(["runifi", "--config", "my/flow.toml"]);
+        assert_eq!(cli.config, PathBuf::from("my/flow.toml"));
+    }
+
+    #[test]
+    fn cli_bind_and_port() {
+        let cli = Cli::parse_from(["runifi", "-b", "0.0.0.0", "-p", "9090"]);
+        assert_eq!(cli.bind.as_deref(), Some("0.0.0.0"));
+        assert_eq!(cli.port, Some(9090));
+    }
+
+    #[test]
+    fn cli_log_level() {
+        let cli = Cli::parse_from(["runifi", "--log-level", "debug"]);
+        assert_eq!(cli.log_level.as_deref(), Some("debug"));
+    }
+
+    #[test]
+    fn cli_conf_dir_and_wal_dir() {
+        let cli = Cli::parse_from([
+            "runifi",
+            "--conf-dir",
+            "/data/conf",
+            "--wal-dir",
+            "/data/wal",
+        ]);
+        assert_eq!(cli.conf_dir, Some(PathBuf::from("/data/conf")));
+        assert_eq!(cli.wal_dir, Some(PathBuf::from("/data/wal")));
+    }
+
+    #[test]
+    fn cli_all_flags_combined() {
+        let cli = Cli::parse_from([
+            "runifi",
+            "-c",
+            "test.toml",
+            "-b",
+            "192.168.1.1",
+            "-p",
+            "3000",
+            "--log-level",
+            "trace",
+            "--conf-dir",
+            "/tmp/conf",
+            "--wal-dir",
+            "/tmp/wal",
+        ]);
+        assert_eq!(cli.config, PathBuf::from("test.toml"));
+        assert_eq!(cli.bind.as_deref(), Some("192.168.1.1"));
+        assert_eq!(cli.port, Some(3000));
+        assert_eq!(cli.log_level.as_deref(), Some("trace"));
+        assert_eq!(cli.conf_dir, Some(PathBuf::from("/tmp/conf")));
+        assert_eq!(cli.wal_dir, Some(PathBuf::from("/tmp/wal")));
+    }
+
+    #[test]
+    fn apply_overrides_bind_and_port() {
+        let mut config = FlowConfig::default();
+        let cli = Cli::parse_from(["runifi", "-b", "10.0.0.1", "-p", "4000"]);
+        apply_cli_overrides(&mut config, &cli);
+        assert_eq!(config.api.bind_address, "10.0.0.1");
+        assert_eq!(config.api.port, 4000);
+    }
+
+    #[test]
+    fn apply_overrides_conf_dir() {
+        let mut config = FlowConfig::default();
+        let cli = Cli::parse_from(["runifi", "--conf-dir", "/var/runifi/conf"]);
+        apply_cli_overrides(&mut config, &cli);
+        assert_eq!(config.engine.conf_dir, PathBuf::from("/var/runifi/conf"));
+    }
+
+    #[test]
+    fn apply_overrides_wal_dir_sets_repo_type() {
+        let mut config = FlowConfig::default();
+        assert_eq!(config.engine.flowfile_repository.repo_type, "memory");
+        let cli = Cli::parse_from(["runifi", "--wal-dir", "/var/runifi/wal"]);
+        apply_cli_overrides(&mut config, &cli);
+        assert_eq!(config.engine.flowfile_repository.repo_type, "wal");
+        let wal = config.engine.flowfile_repository.wal.as_ref().unwrap();
+        assert_eq!(wal.dir, PathBuf::from("/var/runifi/wal"));
+    }
+
+    #[test]
+    fn apply_overrides_no_flags_leaves_defaults() {
+        let mut config = FlowConfig::default();
+        let original_bind = config.api.bind_address.clone();
+        let original_port = config.api.port;
+        let original_conf = config.engine.conf_dir.clone();
+        let cli = Cli::parse_from(["runifi"]);
+        apply_cli_overrides(&mut config, &cli);
+        assert_eq!(config.api.bind_address, original_bind);
+        assert_eq!(config.api.port, original_port);
+        assert_eq!(config.engine.conf_dir, original_conf);
+        assert!(config.engine.flowfile_repository.wal.is_none());
+    }
+
+    #[test]
+    fn cli_version_flag() {
+        let result = Cli::try_parse_from(["runifi", "--version"]);
+        // --version causes clap to exit with an error containing version info.
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
+    }
+
+    #[test]
+    fn cli_help_flag() {
+        let result = Cli::try_parse_from(["runifi", "--help"]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
+    }
 }

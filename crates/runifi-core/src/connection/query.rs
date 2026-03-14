@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use super::back_pressure::BackPressureConfig;
 use super::flow_connection::{FlowConnection, FlowFileSnapshot};
+use crate::cluster::load_balance::LoadBalanceConfig;
 
 /// Trait for querying metadata and state of a connection between processors.
 ///
@@ -41,6 +42,20 @@ pub trait ConnectionQuery: Send + Sync {
     fn remove_flowfile(&self, flowfile_id: u64) -> bool;
     /// Clear all FlowFiles from the queue. Returns the number removed.
     fn clear_queue(&self) -> usize;
+
+    /// Return the load balance configuration for this connection, if any.
+    fn load_balance_config(&self) -> Option<&LoadBalanceConfig> {
+        None
+    }
+
+    /// Update back-pressure thresholds at runtime. Default is no-op.
+    fn update_back_pressure(&self, _max_count: usize, _max_bytes: u64) {}
+
+    /// Access the underlying FlowConnection (for persistence of expiration/priority).
+    /// Returns `None` if the implementation does not use a FlowConnection.
+    fn flow_connection(&self) -> Option<&FlowConnection> {
+        None
+    }
 }
 
 /// Standard implementation of `ConnectionQuery` that wraps a `FlowConnection`
@@ -123,5 +138,17 @@ impl ConnectionQuery for FlowConnectionQuery {
 
     fn clear_queue(&self) -> usize {
         self.connection.clear_queue()
+    }
+
+    fn load_balance_config(&self) -> Option<&LoadBalanceConfig> {
+        self.connection.load_balance_config()
+    }
+
+    fn update_back_pressure(&self, max_count: usize, max_bytes: u64) {
+        self.connection.update_back_pressure(max_count, max_bytes);
+    }
+
+    fn flow_connection(&self) -> Option<&FlowConnection> {
+        Some(&self.connection)
     }
 }

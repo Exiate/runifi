@@ -4,7 +4,7 @@ import type { Node } from '@xyflow/react';
 import type { FlowEdgeResponse, FlowNodeResponse } from '../types/api';
 import type { ProcessorNodeData } from '../types/flow';
 
-export type ProcNode = Node<ProcessorNodeData, 'processorNode'>;
+export type LayoutNode = Node<ProcessorNodeData>;
 
 const NODE_WIDTH = 220;
 const NODE_HEIGHT = 120;
@@ -15,14 +15,15 @@ const PADDING_Y = 60;
 
 /**
  * Compute layered positions for React Flow nodes using Kahn's topological
- * sort. Returns fully formed ProcNode objects ready for React Flow.
+ * sort. Returns fully formed node objects ready for React Flow.
+ * Funnel processors receive the 'funnelNode' type for distinct rendering.
  * The `relationships` and `pending` fields are set to defaults here and
  * overridden by the caller once the plugin list is available.
  */
 export function computeLayout(
   processors: FlowNodeResponse[],
   connections: FlowEdgeResponse[],
-): ProcNode[] {
+): LayoutNode[] {
   const names = processors.map((p) => p.name);
   const nameSet = new Set(names);
 
@@ -86,11 +87,11 @@ export function computeLayout(
     }
   }
 
-  // Build React Flow ProcNode objects
-  return processors.map((p): ProcNode => ({
+  // Build React Flow node objects — Funnel processors get a distinct type
+  return processors.map((p): LayoutNode => ({
     id: p.name,
-    type: 'processorNode' as const,
-    position: positions.get(p.name) ?? { x: PADDING_X, y: PADDING_Y },
+    type: p.type_name === 'Funnel' ? 'funnelNode' : 'processorNode',
+    position: p.position ?? positions.get(p.name) ?? { x: PADDING_X, y: PADDING_Y },
     data: {
       label: p.name,
       typeName: p.type_name,

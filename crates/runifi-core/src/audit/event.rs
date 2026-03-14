@@ -103,9 +103,25 @@ pub enum AuditAction {
     QueueInspected,
     ContentDownloaded,
     QueueEmptied,
+    // Controller services
+    ServiceCreated,
+    ServiceRemoved,
+    ServiceEnabled,
+    ServiceDisabled,
+    ServiceConfigured,
+    // Process groups
+    ProcessGroupCreated,
+    ProcessGroupUpdated,
+    ProcessGroupRemoved,
     // System
     EngineStarted,
     EngineShutdown,
+    // Authentication
+    AuthLoginSuccess,
+    AuthLoginFailed,
+    AuthLogout,
+    AuthTokenRefreshed,
+    AuthSessionExpired,
 }
 
 /// The resource targeted by an audit action.
@@ -132,6 +148,20 @@ impl AuditTarget {
         }
     }
 
+    pub fn service(name: impl Into<String>) -> Self {
+        Self {
+            resource_type: "service".to_string(),
+            resource_id: name.into(),
+        }
+    }
+
+    pub fn process_group(id: impl Into<String>) -> Self {
+        Self {
+            resource_type: "process_group".to_string(),
+            resource_id: id.into(),
+        }
+    }
+
     pub fn queue(connection_id: impl Into<String>) -> Self {
         Self {
             resource_type: "queue".to_string(),
@@ -143,6 +173,13 @@ impl AuditTarget {
         Self {
             resource_type: "system".to_string(),
             resource_id: "engine".to_string(),
+        }
+    }
+
+    pub fn auth(identity: impl Into<String>) -> Self {
+        Self {
+            resource_type: "auth".to_string(),
+            resource_id: identity.into(),
         }
     }
 }

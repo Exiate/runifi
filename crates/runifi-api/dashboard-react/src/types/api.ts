@@ -1,6 +1,6 @@
 // API response types matching the Rust DTOs in runifi-api/src/dto.rs
 
-export type ProcessorState = 'running' | 'paused' | 'stopped' | 'circuit-open';
+export type ProcessorState = 'running' | 'paused' | 'stopped' | 'circuit-open' | 'invalid' | 'disabled';
 
 export type SseStatus = 'connecting' | 'connected' | 'disconnected';
 
@@ -30,8 +30,9 @@ export interface ProcessorResponse {
   name: string;
   type_name: string;
   scheduling: string;
-  state: string;
+  state: ProcessorState;
   metrics: MetricsResponse;
+  validation_errors?: string[];
 }
 
 export interface ConnectionResponse {
@@ -42,11 +43,15 @@ export interface ConnectionResponse {
   queued_count: number;
   queued_bytes: number;
   back_pressured: boolean;
+  back_pressure_object_threshold: number;
+  back_pressure_bytes_threshold: number;
+  fill_percentage: number;
 }
 
 export interface FlowNodeResponse {
   name: string;
   type_name: string;
+  position?: { x: number; y: number };
 }
 
 export interface FlowEdgeResponse {
@@ -55,10 +60,59 @@ export interface FlowEdgeResponse {
   destination: string;
 }
 
+export interface FlowLabelResponse {
+  id: string;
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  background_color: string;
+  font_size: number;
+}
+
+export interface FlowProcessGroupResponse {
+  id: string;
+  name: string;
+  processor_count: number;
+  input_port_count: number;
+  output_port_count: number;
+  position?: { x: number; y: number };
+}
+
 export interface FlowResponse {
   name: string;
   processors: FlowNodeResponse[];
   connections: FlowEdgeResponse[];
+  labels?: FlowLabelResponse[];
+  process_groups?: FlowProcessGroupResponse[];
+}
+
+// ── Process group scoped flow ──────────────────────────────────────
+
+/** Alias: same shape as FlowProcessGroupResponse. */
+export type ProcessGroupSummary = FlowProcessGroupResponse;
+
+export interface BreadcrumbSegment {
+  id: string;
+  name: string;
+}
+
+export interface PortSummary {
+  id: string;
+  name: string;
+  port_type: string;
+}
+
+export interface ProcessGroupFlowResponse {
+  id: string;
+  name: string;
+  processors: FlowNodeResponse[];
+  connections: FlowEdgeResponse[];
+  child_groups: ProcessGroupSummary[];
+  input_ports: PortSummary[];
+  output_ports: PortSummary[];
+  breadcrumb: BreadcrumbSegment[];
 }
 
 export interface BulletinResponse {
@@ -85,7 +139,7 @@ export interface SystemResponse {
 }
 
 // Plugin/processor type registry (GET /api/v1/plugins)
-export type PluginKind = 'processor' | 'source' | 'sink';
+export type PluginKind = 'processor' | 'source' | 'sink' | 'service';
 
 export interface PluginDescriptor {
   type_name: string;
@@ -94,6 +148,7 @@ export interface PluginDescriptor {
   kind: PluginKind;
   relationships?: string[];
   properties?: PropertyDescriptor[];
+  tags?: string[];
 }
 
 export interface PropertyDescriptor {
@@ -135,7 +190,9 @@ export interface PropertyDescriptorFull {
   description: string;
   default_value: string | null;
   required: boolean;
+  sensitive: boolean;
   allowed_values: string[] | null;
+  expression_language_supported: boolean;
 }
 
 export interface RelationshipDescriptor {
@@ -147,6 +204,7 @@ export interface RelationshipDescriptor {
 export interface SchedulingConfig {
   strategy: string;
   interval_ms: number | null;
+  concurrent_tasks: number;
 }
 
 export interface ProcessorConfigResponse {
@@ -156,6 +214,12 @@ export interface ProcessorConfigResponse {
   property_descriptors: PropertyDescriptorFull[];
   scheduling: SchedulingConfig;
   relationships: RelationshipDescriptor[];
+  penalty_duration_ms: number;
+  yield_duration_ms: number;
+  bulletin_level: string;
+  concurrent_tasks: number;
+  comments: string;
+  auto_terminated_relationships: string[];
 }
 
 // ── Queue inspection ───────────────────────────────────────────────
@@ -174,4 +238,33 @@ export interface QueueResponse {
   offset: number;
   limit: number;
   flowfiles: FlowFileEntry[];
+}
+
+// ── Controller service types ──────────────────────────────────────
+
+export interface ServicePropertyDescriptor {
+  name: string;
+  description: string;
+  required: boolean;
+  default_value: string | null;
+  sensitive: boolean;
+}
+
+export interface ServiceResponse {
+  name: string;
+  type_name: string;
+  state: string;
+  properties: Record<string, string>;
+  property_descriptors: ServicePropertyDescriptor[];
+  referencing_processors: string[];
+}
+
+export interface CreateServiceRequest {
+  type: string;
+  name: string;
+  properties: Record<string, string>;
+}
+
+export interface UpdateServiceConfigRequest {
+  properties: Record<string, string>;
 }

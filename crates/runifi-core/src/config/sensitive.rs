@@ -23,7 +23,10 @@ impl SensitiveString {
 
     /// Consume this wrapper and return the inner string.
     ///
-    /// The caller assumes responsibility for protecting the value.
+    /// The caller assumes responsibility for protecting the returned value.
+    /// The returned `String` is **not** zeroized on drop — if the value is
+    /// held beyond immediate use, the caller must clear it manually.
+    #[must_use]
     pub fn into_inner(self) -> String {
         // We need to extract the inner value without triggering zeroize.
         // Clone the string before self is dropped (and zeroized).
@@ -74,6 +77,21 @@ impl PartialEq for SensitiveString {
 }
 
 impl Eq for SensitiveString {}
+
+/// Redact known sensitive values from a message string.
+///
+/// Replaces any occurrence of the given `sensitive_values` with `"********"`.
+/// Used to scrub sensitive property values from error messages, bulletins,
+/// and tracing output before they leave the engine.
+pub fn redact_sensitive_values(message: &str, sensitive_values: &[&str]) -> String {
+    let mut result = message.to_string();
+    for val in sensitive_values {
+        if !val.is_empty() {
+            result = result.replace(val, "********");
+        }
+    }
+    result
+}
 
 #[cfg(test)]
 mod tests {
@@ -135,6 +153,40 @@ mod tests {
         let c = SensitiveString::new("different".to_string());
         assert_eq!(a, b);
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn redact_replaces_sensitive_values() {
+        let msg = "Failed to connect with password s3cret to host db.example.com";
+        let redacted = redact_sensitive_values(msg, &["s3cret"]);
+        assert_eq!(
+            redacted,
+            "Failed to connect with password ******** to host db.example.com"
+        );
+        assert!(!redacted.contains("s3cret"));
+    }
+
+    #[test]
+    fn redact_multiple_values() {
+        let msg = "user=admin pass=secret123 token=abc-token";
+        let redacted = redact_sensitive_values(msg, &["secret123", "abc-token"]);
+        assert!(!redacted.contains("secret123"));
+        assert!(!redacted.contains("abc-token"));
+        assert!(redacted.contains("admin")); // non-sensitive stays
+    }
+
+    #[test]
+    fn redact_empty_value_is_noop() {
+        let msg = "some message";
+        let redacted = redact_sensitive_values(msg, &[""]);
+        assert_eq!(redacted, msg);
+    }
+
+    #[test]
+    fn redact_no_match_is_noop() {
+        let msg = "some message";
+        let redacted = redact_sensitive_values(msg, &["not-in-message"]);
+        assert_eq!(redacted, msg);
     }
 
     #[test]

@@ -1,19 +1,28 @@
 [package]
 name = "runifi-transport"
-description = "Network transport layer for RuniFi — QUIC, TCP, and io_uring backends"
+description = "Network transport layer for RuniFi — QUIC-based site-to-site FlowFile transfers"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-runifi-core = { workspace = true }
+runifi-plugin-api = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 quinn = { workspace = true }
-rustls = { workspace = true }
+rustls = { workspace = true, features = ["ring", "std"] }
+rcgen = { workspace = true }
+rustls-pemfile = { workspace = true }
+blake3 = { workspace = true }
 bytes = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-memmap2 = { workspace = true }
 serde = { workspace = true }
-uuid = { workspace = true }
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+futures = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+tracing-subscriber = { workspace = true }

@@ -112,6 +112,7 @@ inventory::submit! {
         type_name: "RouteOnAttribute",
         description: "Routes FlowFiles based on attribute value matching",
         factory: || Box::new(RouteOnAttribute::new()),
+        tags: &["Routing"],
     }
 }
 

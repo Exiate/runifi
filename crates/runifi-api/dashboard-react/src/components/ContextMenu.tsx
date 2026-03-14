@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef } from 'react';
+import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 export interface ContextMenuState {
   x: number;
@@ -8,24 +8,34 @@ export interface ContextMenuState {
   nodeState?: string;
   isCanvas?: boolean;
   selectedNodeIds?: string[];
+  isProcessGroup?: boolean;
+  groupId?: string;
 }
+
+export type AlignAction =
+  | 'align-left' | 'align-center' | 'align-right'
+  | 'align-top' | 'align-middle' | 'align-bottom'
+  | 'distribute-horizontal' | 'distribute-vertical';
 
 interface ContextMenuProps {
   menu: ContextMenuState;
   onDelete: () => void;
   onConfigure?: () => void;
+  onConfigureConnection?: () => void;
   onStart?: () => void;
   onStop?: () => void;
   onPause?: () => void;
   onResume?: () => void;
   onResetCircuit?: () => void;
-  onViewStatus?: () => void;
   onChangeColor?: () => void;
   onViewQueue?: () => void;
   onSelectAll?: () => void;
   onStartSelected?: () => void;
   onStopSelected?: () => void;
   onDeleteSelected?: () => void;
+  onAlign?: (action: AlignAction) => void;
+  onEnterGroup?: () => void;
+  onConfigureGroup?: () => void;
   onClose: () => void;
 }
 
@@ -33,21 +43,43 @@ function ContextMenuInner({
   menu,
   onDelete,
   onConfigure,
+  onConfigureConnection,
   onStart,
   onStop,
   onPause,
   onResume,
   onResetCircuit,
-  onViewStatus,
   onChangeColor,
   onViewQueue,
   onSelectAll,
   onStartSelected,
   onStopSelected,
   onDeleteSelected,
+  onAlign,
+  onEnterGroup,
+  onConfigureGroup,
   onClose,
 }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
+  const [adjustedPos, setAdjustedPos] = useState<{ x: number; y: number }>({ x: menu.x, y: menu.y });
+
+  // Clamp menu position to viewport after render
+  useLayoutEffect(() => {
+    const el = menuRef.current;
+    if (!el) {
+      setAdjustedPos({ x: menu.x, y: menu.y });
+      return;
+    }
+    const rect = el.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const padding = 8;
+    let x = menu.x;
+    let y = menu.y;
+    if (x + rect.width > vw - padding) x = Math.max(padding, vw - rect.width - padding);
+    if (y + rect.height > vh - padding) y = Math.max(padding, vh - rect.height - padding);
+    setAdjustedPos({ x, y });
+  }, [menu.x, menu.y]);
 
   useEffect(() => {
     const handler = (e: MouseEvent | KeyboardEvent) => {
@@ -83,7 +115,7 @@ function ContextMenuInner({
       <div
         ref={menuRef}
         className="context-menu"
-        style={{ left: menu.x, top: menu.y }}
+        style={{ left: adjustedPos.x, top: adjustedPos.y }}
         role="menu"
         aria-label="Canvas context menu"
       >
@@ -107,11 +139,11 @@ function ContextMenuInner({
       <div
         ref={menuRef}
         className="context-menu"
-        style={{ left: menu.x, top: menu.y }}
+        style={{ left: adjustedPos.x, top: adjustedPos.y }}
         role="menu"
         aria-label="Multi-select context menu"
       >
-        <div className="context-menu-header">{count} processors selected</div>
+        <div className="context-menu-header">{count} components selected</div>
         <div className="context-menu-separator" aria-hidden="true" />
         {onStartSelected && (
           <button
@@ -130,6 +162,42 @@ function ContextMenuInner({
           >
             Stop Selected
           </button>
+        )}
+        {onAlign && count >= 2 && (
+          <>
+            <div className="context-menu-separator" aria-hidden="true" />
+            <div className="context-menu-header context-menu-subheader">Align Horizontally</div>
+            <button className="context-menu-item" onClick={() => { onAlign('align-left'); onClose(); }} role="menuitem">
+              Align Left
+            </button>
+            <button className="context-menu-item" onClick={() => { onAlign('align-center'); onClose(); }} role="menuitem">
+              Align Center
+            </button>
+            <button className="context-menu-item" onClick={() => { onAlign('align-right'); onClose(); }} role="menuitem">
+              Align Right
+            </button>
+            <div className="context-menu-header context-menu-subheader">Align Vertically</div>
+            <button className="context-menu-item" onClick={() => { onAlign('align-top'); onClose(); }} role="menuitem">
+              Align Top
+            </button>
+            <button className="context-menu-item" onClick={() => { onAlign('align-middle'); onClose(); }} role="menuitem">
+              Align Middle
+            </button>
+            <button className="context-menu-item" onClick={() => { onAlign('align-bottom'); onClose(); }} role="menuitem">
+              Align Bottom
+            </button>
+            {count >= 3 && (
+              <>
+                <div className="context-menu-header context-menu-subheader">Distribute</div>
+                <button className="context-menu-item" onClick={() => { onAlign('distribute-horizontal'); onClose(); }} role="menuitem">
+                  Distribute Horizontally
+                </button>
+                <button className="context-menu-item" onClick={() => { onAlign('distribute-vertical'); onClose(); }} role="menuitem">
+                  Distribute Vertically
+                </button>
+              </>
+            )}
+          </>
         )}
         <div className="context-menu-separator" aria-hidden="true" />
         {onDeleteSelected && (
@@ -151,10 +219,19 @@ function ContextMenuInner({
       <div
         ref={menuRef}
         className="context-menu"
-        style={{ left: menu.x, top: menu.y }}
+        style={{ left: adjustedPos.x, top: adjustedPos.y }}
         role="menu"
         aria-label="Connection context menu"
       >
+        {onConfigureConnection && (
+          <button
+            className="context-menu-item"
+            onClick={() => { onConfigureConnection(); onClose(); }}
+            role="menuitem"
+          >
+            Configure
+          </button>
+        )}
         {onViewQueue && (
           <button
             className="context-menu-item"
@@ -176,12 +253,52 @@ function ContextMenuInner({
     );
   }
 
+  // Process group context menu
+  if (menu.isProcessGroup && isNode) {
+    return (
+      <div
+        ref={menuRef}
+        className="context-menu"
+        style={{ left: adjustedPos.x, top: adjustedPos.y }}
+        role="menu"
+        aria-label="Process group context menu"
+      >
+        {onEnterGroup && (
+          <button
+            className="context-menu-item"
+            onClick={() => { onEnterGroup(); onClose(); }}
+            role="menuitem"
+          >
+            Enter Group
+          </button>
+        )}
+        {onConfigureGroup && (
+          <button
+            className="context-menu-item"
+            onClick={() => { onConfigureGroup(); onClose(); }}
+            role="menuitem"
+          >
+            Configure
+          </button>
+        )}
+        <div className="context-menu-separator" aria-hidden="true" />
+        <button
+          className="context-menu-item context-menu-item-danger"
+          onClick={onDelete}
+          role="menuitem"
+        >
+          Delete Group
+        </button>
+      </div>
+    );
+  }
+
   // Node context menu (single processor)
   return (
     <div
       ref={menuRef}
       className="context-menu"
-      style={{ left: menu.x, top: menu.y }}
+      style={{ left: adjustedPos.x, top: adjustedPos.y }}
       role="menu"
       aria-label="Processor context menu"
     >
@@ -192,16 +309,6 @@ function ContextMenuInner({
           role="menuitem"
         >
           Configure
-        </button>
-      )}
-
-      {isNode && onViewStatus && (
-        <button
-          className="context-menu-item"
-          onClick={() => { onViewStatus(); onClose(); }}
-          role="menuitem"
-        >
-          View Status
         </button>
       )}
 

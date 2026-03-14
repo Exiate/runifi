@@ -15,6 +15,8 @@ pub enum InvocationResult {
     Failed(String),
     /// Processor panicked (caught by catch_unwind).
     Panic(String),
+    /// Processor requested a yield (no more work available right now).
+    Yield,
 }
 
 /// Wraps a processor with fault isolation, failure tracking, and circuit breaker logic.
@@ -109,6 +111,11 @@ impl ProcessorSupervisor {
                 self.consecutive_failures = 0;
                 InvocationResult::Success
             }
+            Ok(Err(runifi_plugin_api::result::PluginError::Yield)) => {
+                // Yield is not a failure — reset consecutive failures.
+                self.consecutive_failures = 0;
+                InvocationResult::Yield
+            }
             Ok(Err(e)) => {
                 self.record_failure();
                 InvocationResult::Failed(e.to_string())
@@ -140,6 +147,19 @@ impl ProcessorSupervisor {
     /// Get the processor's relationships.
     pub fn relationships(&self) -> Vec<runifi_plugin_api::Relationship> {
         self.processor.relationships()
+    }
+
+    /// Get the processor's property descriptors.
+    pub fn property_descriptors(&self) -> Vec<runifi_plugin_api::PropertyDescriptor> {
+        self.processor.property_descriptors()
+    }
+
+    /// Validate the processor's configuration.
+    pub fn validate(
+        &self,
+        context: &dyn ProcessContext,
+    ) -> Vec<runifi_plugin_api::ValidationResult> {
+        self.processor.validate(context)
     }
 
     fn record_failure(&mut self) {
@@ -342,5 +362,129 @@ mod tests {
 
         sup.invoke(&ctx, &mut session);
         assert_eq!(sup.current_backoff(), Duration::from_millis(400));
+    }
+
+    #[test]
+    fn backoff_capped_at_30s() {
+        let mut sup = ProcessorSupervisor::new(Box::new(FailProcessor));
+        let ctx = TestContext;
+        let mut session = NoOpSession;
+
+        // Trip through many failures to reach the cap.
+        for _ in 0..20 {
+            sup.invoke(&ctx, &mut session);
+        }
+
+        // Backoff should be capped at 30s.
+        assert!(sup.current_backoff() <= Duration::from_millis(30_000));
+    }
+
+    #[test]
+    fn success_after_failures_resets_count() {
+        // Create a processor that fails first, then succeeds.
+        struct ToggleProcessor {
+            call_count: u32,
+            fail_count: u32,
+        }
+        impl Processor for ToggleProcessor {
+            fn on_trigger(
+                &mut self,
+                _ctx: &dyn ProcessContext,
+                _session: &mut dyn ProcessSession,
+            ) -> ProcessResult {
+                self.call_count += 1;
+                if self.call_count <= self.fail_count {
+                    Err(PluginError::ProcessingFailed("test".into()))
+                } else {
+                    Ok(())
+                }
+            }
+            fn relationships(&self) -> Vec<Relationship> {
+                vec![]
+            }
+        }
+
+        let proc = ToggleProcessor {
+            call_count: 0,
+            fail_count: 3,
+        };
+        let mut sup = ProcessorSupervisor::new(Box::new(proc));
+        let ctx = TestContext;
+        let mut session = NoOpSession;
+
+        // 3 failures.
+        for _ in 0..3 {
+            sup.invoke(&ctx, &mut session);
+        }
+        assert_eq!(sup.consecutive_failures(), 3);
+        assert_eq!(sup.total_failures(), 3);
+
+        // Then success.
+        sup.invoke(&ctx, &mut session);
+        assert_eq!(sup.consecutive_failures(), 0);
+        assert_eq!(sup.total_failures(), 3); // Total doesn't reset.
+        assert_eq!(sup.total_invocations(), 4);
+    }
+
+    #[test]
+    fn on_scheduled_delegates_to_processor() {
+        let mut sup = ProcessorSupervisor::new(Box::new(OkProcessor));
+        let ctx = TestContext;
+        assert!(sup.on_scheduled(&ctx).is_ok());
+    }
+
+    #[test]
+    fn relationships_delegates_to_processor() {
+        let sup = ProcessorSupervisor::new(Box::new(OkProcessor));
+        let rels = sup.relationships();
+        assert!(rels.is_empty());
+    }
+
+    #[test]
+    fn panic_with_string_message() {
+        struct StringPanicProcessor;
+        impl Processor for StringPanicProcessor {
+            fn on_trigger(
+                &mut self,
+                _ctx: &dyn ProcessContext,
+                _session: &mut dyn ProcessSession,
+            ) -> ProcessResult {
+                panic!("{}", "string panic".to_string());
+            }
+            fn relationships(&self) -> Vec<Relationship> {
+                vec![]
+            }
+        }
+
+        let mut sup = ProcessorSupervisor::new(Box::new(StringPanicProcessor));
+        let ctx = TestContext;
+        let mut session = NoOpSession;
+
+        let result = sup.invoke(&ctx, &mut session);
+        if let InvocationResult::Panic(msg) = result {
+            assert!(msg.contains("string panic"));
+        } else {
+            panic!("Expected Panic result");
+        }
+    }
+
+    #[test]
+    fn circuit_stays_open_after_more_invocations() {
+        let mut sup = ProcessorSupervisor::new(Box::new(FailProcessor));
+        let ctx = TestContext;
+        let mut session = NoOpSession;
+
+        // Trip the circuit breaker.
+        for _ in 0..5 {
+            sup.invoke(&ctx, &mut session);
+        }
+        assert!(sup.is_circuit_open());
+
+        // Subsequent invocations return circuit-open error without incrementing counters.
+        let before_invocations = sup.total_invocations();
+        let result = sup.invoke(&ctx, &mut session);
+        assert!(matches!(result, InvocationResult::Failed(_)));
+        // total_invocations should not change since the circuit was open.
+        assert_eq!(sup.total_invocations(), before_invocations);
     }
 }

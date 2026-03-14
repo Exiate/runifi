@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
@@ -25,13 +26,18 @@ use super::processor_node::{
 };
 use crate::audit::{AuditAction, AuditEvent, AuditLogger, AuditTarget, NullAuditLogger};
 use crate::connection::back_pressure::BackPressureConfig;
-use crate::connection::flow_connection::FlowConnection;
+use crate::connection::flow_connection::{FlowConnection, QueuePriority};
 use crate::connection::query::FlowConnectionQuery;
 use crate::error::{Result, RuniFiError};
 use crate::id::IdGenerator;
 use crate::registry::plugin_registry::PluginRegistry;
+use crate::registry::service_registry::SharedServiceRegistry;
 use crate::repository::content_repo::ContentRepository;
 use crate::repository::flowfile_repo::FlowFileRepository;
+use crate::repository::provenance_repo::{
+    InMemoryProvenanceRepository, SharedProvenanceRepository,
+};
+use crate::repository::state_provider::SharedLocalStateProvider;
 
 /// A unique identifier for a processor node in the engine.
 pub type NodeId = usize;
@@ -54,6 +60,9 @@ pub struct FlowEngine {
     flowfile_repo: Arc<dyn FlowFileRepository>,
     persistence: Option<FlowPersistence>,
     audit_logger: Arc<dyn AuditLogger>,
+    service_registry: SharedServiceRegistry,
+    provenance_repo: SharedProvenanceRepository,
+    state_provider: Option<SharedLocalStateProvider>,
 
     nodes: Vec<NodeBuilder>,
     connections: Vec<ConnBuilder>,
@@ -80,6 +89,9 @@ struct ConnBuilder {
     relationship: &'static str,
     dest_node: NodeId,
     config: BackPressureConfig,
+    expiration: Option<Duration>,
+    priority: QueuePriority,
+    load_balance: Option<crate::cluster::load_balance::LoadBalanceConfig>,
 }
 
 impl FlowEngine {
@@ -98,6 +110,9 @@ impl FlowEngine {
             flowfile_repo,
             persistence: None,
             audit_logger: Arc::new(NullAuditLogger),
+            service_registry: SharedServiceRegistry::new(),
+            provenance_repo: Arc::new(InMemoryProvenanceRepository::new()),
+            state_provider: None,
             nodes: Vec::new(),
             connections: Vec::new(),
             next_node_id: 0,
@@ -121,6 +136,21 @@ impl FlowEngine {
     /// Set the flow persistence layer for runtime state saving.
     pub fn set_persistence(&mut self, persistence: FlowPersistence) {
         self.persistence = Some(persistence);
+    }
+
+    /// Set the provenance repository for FlowFile lineage tracking.
+    pub fn set_provenance_repo(&mut self, repo: SharedProvenanceRepository) {
+        self.provenance_repo = repo;
+    }
+
+    /// Set the local state provider for processor state persistence.
+    pub fn set_state_provider(&mut self, provider: SharedLocalStateProvider) {
+        self.state_provider = Some(provider);
+    }
+
+    /// Get a reference to the provenance repository.
+    pub fn provenance_repo(&self) -> &SharedProvenanceRepository {
+        &self.provenance_repo
     }
 
     /// Add a processor to the engine. Returns a node ID for wiring connections.
@@ -153,6 +183,26 @@ impl FlowEngine {
         dest_id: NodeId,
         config: BackPressureConfig,
     ) -> ConnId {
+        self.connect_with_options(
+            source_id,
+            relationship,
+            dest_id,
+            config,
+            None,
+            QueuePriority::Fifo,
+        )
+    }
+
+    /// Connect two processors with full options (expiration, priority).
+    pub fn connect_with_options(
+        &mut self,
+        source_id: NodeId,
+        relationship: &'static str,
+        dest_id: NodeId,
+        config: BackPressureConfig,
+        expiration: Option<Duration>,
+        priority: QueuePriority,
+    ) -> ConnId {
         let id = self.next_conn_id;
         self.next_conn_id += 1;
         self.connections.push(ConnBuilder {
@@ -161,6 +211,36 @@ impl FlowEngine {
             relationship,
             dest_node: dest_id,
             config,
+            expiration,
+            priority,
+            load_balance: None,
+        });
+        id
+    }
+
+    /// Connect two processors with load balance configuration.
+    #[allow(clippy::too_many_arguments)]
+    pub fn connect_with_load_balance(
+        &mut self,
+        source_id: NodeId,
+        relationship: &'static str,
+        dest_id: NodeId,
+        config: BackPressureConfig,
+        expiration: Option<Duration>,
+        priority: QueuePriority,
+        load_balance: Option<crate::cluster::load_balance::LoadBalanceConfig>,
+    ) -> ConnId {
+        let id = self.next_conn_id;
+        self.next_conn_id += 1;
+        self.connections.push(ConnBuilder {
+            _id: id,
+            source_node: source_id,
+            relationship,
+            dest_node: dest_id,
+            config,
+            expiration,
+            priority,
+            load_balance,
         });
         id
     }
@@ -190,7 +270,20 @@ impl FlowEngine {
         let mut flow_connections: Vec<(usize, &'static str, usize, Arc<FlowConnection>)> =
             Vec::new();
         for (idx, conn) in self.connections.iter().enumerate() {
-            let fc = Arc::new(FlowConnection::new(format!("conn-{}", idx), conn.config));
+            let fc = if let Some(ref lb_config) = conn.load_balance {
+                Arc::new(FlowConnection::with_load_balance(
+                    format!("conn-{}", idx),
+                    conn.config,
+                    lb_config.clone(),
+                ))
+            } else {
+                Arc::new(FlowConnection::with_options(
+                    format!("conn-{}", idx),
+                    conn.config,
+                    conn.expiration,
+                    conn.priority.clone(),
+                ))
+            };
             flow_connections.push((conn.source_node, conn.relationship, conn.dest_node, fc));
         }
 
@@ -250,6 +343,7 @@ impl FlowEngine {
                         allowed_values: pd
                             .allowed_values
                             .map(|av| av.iter().map(|v| v.to_string()).collect()),
+                        expression_language_supported: pd.expression_language_supported,
                     })
                     .collect();
                 let rs = proc
@@ -337,6 +431,24 @@ impl FlowEngine {
                 self.bulletin_board.clone(),
                 self.flowfile_repo.clone(),
             );
+            pn.set_service_registry(self.service_registry.clone());
+            pn.set_provenance_repo(self.provenance_repo.clone());
+            pn.set_type_name(node_builder.type_name.clone());
+
+            // Set sensitive property names for bulletin redaction.
+            if let Some((descriptors, _)) = static_meta_by_node.get(&node_builder.id) {
+                let sensitive_names: Vec<String> = descriptors
+                    .iter()
+                    .filter(|d| d.sensitive)
+                    .map(|d| d.name.clone())
+                    .collect();
+                if !sensitive_names.is_empty() {
+                    pn.set_sensitive_property_names(sensitive_names);
+                }
+            }
+            if let Some(ref provider) = self.state_provider {
+                pn.set_state_provider(provider.clone());
+            }
 
             for (src, rel, dst, fc) in &flow_connections {
                 if *src == node_builder.id {
@@ -391,6 +503,12 @@ impl FlowEngine {
                 input_connections: input_h,
                 output_connections: output_h,
                 input_notifiers: notifiers_h,
+                penalty_duration_ms: Arc::new(AtomicU64::new(30_000)),
+                yield_duration_ms: Arc::new(AtomicU64::new(1_000)),
+                bulletin_level: Arc::new(RwLock::new("WARN".to_string())),
+                concurrent_tasks: Arc::new(AtomicU64::new(1)),
+                comments: Arc::new(RwLock::new(String::new())),
+                auto_terminated_relationships: Arc::new(RwLock::new(Vec::new())),
             });
         }
 
@@ -401,6 +519,15 @@ impl FlowEngine {
         // Create the mutation command channel.
         let (mutation_tx, mutation_rx) = mpsc::channel::<MutationCommand>(64);
 
+        // Shared position store.
+        let positions = Arc::new(DashMap::new());
+
+        // Shared label store.
+        let labels = Arc::new(RwLock::new(Vec::new()));
+
+        // Shared process group store.
+        let process_groups = Arc::new(RwLock::new(Vec::new()));
+
         // Build the EngineHandle.
         let engine_handle = EngineHandle {
             flow_name: self.flow_name.clone(),
@@ -410,15 +537,35 @@ impl FlowEngine {
             plugin_types: Arc::new(Vec::new()),
             bulletin_board: self.bulletin_board.clone(),
             content_repo: self.content_repo.clone(),
-            positions: Arc::new(DashMap::new()),
+            positions: positions.clone(),
             audit_logger: self.audit_logger.clone(),
+            service_registry: self.service_registry.clone(),
+            labels: labels.clone(),
+            process_groups: process_groups.clone(),
             mutation_tx,
             persistence: self.persistence.clone(),
+            provenance_repo: self.provenance_repo.clone(),
+            state_provider: self.state_provider.clone(),
+            reporting_task_manager: Some(Arc::new(parking_lot::RwLock::new(
+                super::reporting_task_manager::ReportingTaskManager::new(
+                    self.bulletin_board.clone(),
+                    self.state_provider.clone(),
+                ),
+            ))),
         };
 
-        // Wire persistence: give it the handle and spawn the background writer.
+        // Wire persistence: pass only the data collections it needs for
+        // snapshotting (not the full EngineHandle) to break the Arc cycle.
         if let Some(ref persistence) = self.persistence {
-            persistence.set_handle(engine_handle.clone());
+            persistence.set_source(
+                self.flow_name.clone(),
+                live_procs.clone(),
+                live_conns.clone(),
+                positions,
+                self.service_registry.clone(),
+                labels,
+                process_groups,
+            );
             let persist_token = self.cancel_token.child_token();
             let persist_clone = persistence.clone();
             let persist_handle = tokio::spawn(async move {
@@ -492,6 +639,53 @@ impl FlowEngine {
             self.task_handles.push(ckpt_handle);
         }
 
+        // Spawn the FlowFile expiration background task.
+        // Checks all connections with configured expiration and drops expired FlowFiles.
+        {
+            let expire_token = self.cancel_token.child_token();
+            let expire_conns: Vec<Arc<FlowConnection>> = flow_connections
+                .iter()
+                .filter(|(_, _, _, fc)| fc.expiration().is_some())
+                .map(|(_, _, _, fc)| fc.clone())
+                .collect();
+
+            if !expire_conns.is_empty() {
+                let num_expire_conns = expire_conns.len();
+                let expire_handle = tokio::spawn(async move {
+                    // Check every 5 seconds.
+                    let mut interval = tokio::time::interval(Duration::from_secs(5));
+                    // Skip the first immediate tick.
+                    interval.tick().await;
+                    loop {
+                        tokio::select! {
+                            _ = expire_token.cancelled() => break,
+                            _ = interval.tick() => {
+                                let now_nanos = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_nanos() as u64;
+                                for conn in &expire_conns {
+                                    let expired = conn.expire_flowfiles(now_nanos);
+                                    if !expired.is_empty() {
+                                        tracing::info!(
+                                            connection_id = %conn.id,
+                                            expired_count = expired.len(),
+                                            "Expired FlowFiles removed from queue"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+                self.task_handles.push(expire_handle);
+                tracing::info!(
+                    connections_with_expiration = num_expire_conns,
+                    "FlowFile expiration task started"
+                );
+            }
+        }
+
         // Spawn the mutation handler task.
         {
             let mutation_cancel = self.cancel_token.child_token();
@@ -506,6 +700,7 @@ impl FlowEngine {
 
             let flowfile_repo_mutation = self.flowfile_repo.clone();
             let audit_logger = self.audit_logger.clone();
+            let provenance_repo_mutation = self.provenance_repo.clone();
             let mutation_handle = tokio::spawn(run_mutation_handler(
                 mutation_rx,
                 mutation_cancel,
@@ -519,6 +714,7 @@ impl FlowEngine {
                 shared_tokens,
                 flowfile_repo_mutation,
                 audit_logger,
+                provenance_repo_mutation,
             ));
             self.task_handles.push(mutation_handle);
         }
@@ -580,6 +776,11 @@ impl FlowEngine {
         self.handle.as_ref()
     }
 
+    /// Get a reference to the shared service registry for pre-start configuration.
+    pub fn service_registry(&self) -> &SharedServiceRegistry {
+        &self.service_registry
+    }
+
     /// Set the plugin types on the engine handle (called by server after discovery).
     pub fn set_plugin_types(&mut self, plugin_types: Vec<PluginTypeInfo>) {
         if let Some(handle) = &mut self.handle {
@@ -600,6 +801,9 @@ pub(crate) fn scheduling_display(strategy: &SchedulingStrategy) -> String {
             format!("timer-driven ({}ms)", interval_ms)
         }
         SchedulingStrategy::EventDriven => "event-driven".to_string(),
+        SchedulingStrategy::CronDriven { expression } => {
+            format!("cron-driven ({})", expression)
+        }
     }
 }
 
@@ -623,6 +827,7 @@ async fn run_mutation_handler(
     proc_tokens: Arc<parking_lot::Mutex<HashMap<String, CancellationToken>>>,
     flowfile_repo: Arc<dyn FlowFileRepository>,
     audit_logger: Arc<dyn AuditLogger>,
+    provenance_repo: SharedProvenanceRepository,
 ) {
     let mut handler = DefaultMutationHandler {
         live_procs,
@@ -636,6 +841,7 @@ async fn run_mutation_handler(
         runtime_conn_id: 0,
         flowfile_repo,
         audit_logger,
+        provenance_repo,
     };
 
     loop {
@@ -653,11 +859,12 @@ async fn run_mutation_handler(
                 match cmd {
                     MutationCommand::AddProcessor {
                         name, type_name, properties,
-                        scheduling_strategy, interval_ms, reply,
+                        scheduling_strategy, interval_ms, cron_expression, reply,
                     } => {
                         let result = handler.handle_add_processor(
                             &name, &type_name, properties,
                             &scheduling_strategy, interval_ms,
+                            cron_expression.as_deref(),
                         );
                         let _ = reply.send(result);
                     }
@@ -668,12 +875,12 @@ async fn run_mutation_handler(
                     }
 
                     MutationCommand::AddConnection {
-                        source_name, relationship, dest_name, config, reply,
+                        source_name, relationship, dest_name, config, load_balance, reply,
                     } => {
                         handler.runtime_conn_id += 1;
                         let conn_id = format!("runtime-conn-{}", handler.runtime_conn_id);
                         let result = handler.handle_add_connection(
-                            conn_id, &source_name, &relationship, &dest_name, config,
+                            conn_id, &source_name, &relationship, &dest_name, config, load_balance,
                         );
                         let _ = reply.send(result);
                     }

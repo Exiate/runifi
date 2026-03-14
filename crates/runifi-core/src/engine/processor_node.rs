@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::Ordering;
 
 use parking_lot::RwLock;
@@ -8,16 +9,22 @@ use tokio_util::sync::CancellationToken;
 
 use runifi_plugin_api::property::PropertyValue;
 use runifi_plugin_api::relationship::Relationship;
+use runifi_plugin_api::service::ServiceLookup;
 use runifi_plugin_api::session::ProcessSession;
+use runifi_plugin_api::state::StateManager;
 use runifi_plugin_api::{FlowFile, Processor};
 
 use super::bulletin::{BulletinBoard, BulletinSeverity};
 use super::metrics::ProcessorMetrics;
 use super::supervisor::{InvocationResult, ProcessorSupervisor};
+use crate::cluster::load_balance::{LoadBalanceStrategy, LoadBalancer};
 use crate::connection::flow_connection::FlowConnection;
 use crate::id::IdGenerator;
+use crate::registry::service_registry::{RegistryServiceLookup, SharedServiceRegistry};
 use crate::repository::content_repo::ContentRepository;
 use crate::repository::flowfile_repo::{FlowFileOp, FlowFileRepository};
+use crate::repository::provenance_repo::SharedProvenanceRepository;
+use crate::repository::state_provider::SharedLocalStateProvider;
 use crate::session::process_session::CoreProcessSession;
 
 /// Scheduling strategy for a processor node.
@@ -27,6 +34,8 @@ pub enum SchedulingStrategy {
     TimerDriven { interval_ms: u64 },
     /// Trigger when input data is available.
     EventDriven,
+    /// Trigger based on a CRON expression.
+    CronDriven { expression: String },
 }
 
 /// Runtime context for a single processor instance.
@@ -35,6 +44,8 @@ struct NodeProcessContext {
     id: String,
     properties: HashMap<String, String>,
     yield_duration_ms: u64,
+    service_lookup: Option<Box<dyn ServiceLookup>>,
+    state_manager: Option<Box<dyn StateManager>>,
 }
 
 impl runifi_plugin_api::context::ProcessContext for NodeProcessContext {
@@ -60,6 +71,14 @@ impl runifi_plugin_api::context::ProcessContext for NodeProcessContext {
     fn yield_duration_ms(&self) -> u64 {
         self.yield_duration_ms
     }
+
+    fn service_lookup(&self) -> Option<&dyn ServiceLookup> {
+        self.service_lookup.as_deref()
+    }
+
+    fn state_manager(&self) -> Option<&dyn StateManager> {
+        self.state_manager.as_deref()
+    }
 }
 
 /// Shared, mutable list of input connections.
@@ -84,6 +103,8 @@ pub type SharedInputNotifiers = Arc<RwLock<Vec<Arc<Notify>>>>;
 pub struct ProcessorNode {
     pub name: String,
     pub id: String,
+    /// Processor type name (e.g. "GenerateFlowFile").
+    pub type_name: String,
     pub scheduling: SchedulingStrategy,
     pub properties: Arc<RwLock<HashMap<String, String>>>,
     supervisor: ProcessorSupervisor,
@@ -100,6 +121,18 @@ pub struct ProcessorNode {
     metrics: Arc<ProcessorMetrics>,
     bulletin_board: Arc<BulletinBoard>,
     flowfile_repo: Arc<dyn FlowFileRepository>,
+    service_registry: Option<SharedServiceRegistry>,
+    provenance_repo: SharedProvenanceRepository,
+    /// Local state provider for processor state persistence.
+    state_provider: Option<SharedLocalStateProvider>,
+    /// Names of properties that are marked sensitive. Used to redact their
+    /// values from error messages and bulletins.
+    sensitive_property_names: Vec<String>,
+    /// Penalty duration in milliseconds for penalized FlowFiles (default 30s).
+    penalty_duration_ms: u64,
+    /// Lazily initialized load balancer for distributing FlowFiles across
+    /// multiple output connections on the same relationship.
+    load_balancer: OnceLock<LoadBalancer>,
 }
 
 impl ProcessorNode {
@@ -120,6 +153,7 @@ impl ProcessorNode {
         Self {
             name,
             id,
+            type_name: String::new(),
             scheduling,
             properties,
             supervisor: ProcessorSupervisor::new(processor),
@@ -132,7 +166,53 @@ impl ProcessorNode {
             metrics,
             bulletin_board,
             flowfile_repo,
+            service_registry: None,
+            provenance_repo: Arc::new(crate::repository::provenance_repo::NullProvenanceRepository),
+            state_provider: None,
+            sensitive_property_names: Vec::new(),
+            penalty_duration_ms: crate::session::process_session::DEFAULT_PENALTY_DURATION_MS,
+            load_balancer: OnceLock::new(),
         }
+    }
+
+    /// Set the service registry for service lookup during processing.
+    pub fn set_service_registry(&mut self, registry: SharedServiceRegistry) {
+        self.service_registry = Some(registry);
+    }
+
+    /// Set the provenance repository for lineage tracking.
+    pub fn set_provenance_repo(&mut self, repo: SharedProvenanceRepository) {
+        self.provenance_repo = repo;
+    }
+
+    /// Set the processor type name for provenance events.
+    pub fn set_type_name(&mut self, type_name: String) {
+        self.type_name = type_name;
+    }
+
+    /// Set the names of sensitive properties for bulletin redaction.
+    pub fn set_sensitive_property_names(&mut self, names: Vec<String>) {
+        self.sensitive_property_names = names;
+    }
+
+    /// Redact sensitive property values from a message string.
+    fn redact_message(&self, message: &str) -> String {
+        if self.sensitive_property_names.is_empty() {
+            return message.to_string();
+        }
+        let props = self.properties.read();
+        let sensitive_values: Vec<&str> = self
+            .sensitive_property_names
+            .iter()
+            .filter_map(|name| props.get(name).map(|v| v.as_str()))
+            .filter(|v| !v.is_empty())
+            .collect();
+        crate::config::sensitive::redact_sensitive_values(message, &sensitive_values)
+    }
+
+    /// Set the local state provider for processor state persistence.
+    pub fn set_state_provider(&mut self, provider: SharedLocalStateProvider) {
+        self.state_provider = Some(provider);
     }
 
     /// Add an input connection and wire its notifier for event-driven wakeup.
@@ -188,12 +268,31 @@ impl ProcessorNode {
     /// until `enabled` is set back to true (or the cancellation token fires).
     pub async fn run(mut self) {
         // Last context, kept for on_stopped after lifecycle loop exits.
+        let make_service_lookup = || -> Option<Box<dyn ServiceLookup>> {
+            self.service_registry
+                .as_ref()
+                .map(|r| -> Box<dyn ServiceLookup> {
+                    Box::new(RegistryServiceLookup::new(r.clone()))
+                })
+        };
+
+        let make_state_manager = || -> Option<Box<dyn StateManager>> {
+            self.state_provider.as_ref().map(|p| {
+                Box::new(crate::repository::state_provider::CoreStateManager::new(
+                    p.clone(),
+                    self.name.clone(),
+                )) as Box<dyn StateManager>
+            })
+        };
+
         #[allow(unused_assignments)]
         let mut last_ctx = NodeProcessContext {
             name: self.name.clone(),
             id: self.id.clone(),
             properties: self.properties.read().clone(),
             yield_duration_ms: 1000,
+            service_lookup: make_service_lookup(),
+            state_manager: make_state_manager(),
         };
 
         'lifecycle: loop {
@@ -204,15 +303,24 @@ impl ProcessorNode {
                 id: self.id.clone(),
                 properties: self.properties.read().clone(),
                 yield_duration_ms: 1000,
+                service_lookup: make_service_lookup(),
+                state_manager: make_state_manager(),
             };
             last_ctx = NodeProcessContext {
                 name: ctx.name.clone(),
                 id: ctx.id.clone(),
                 properties: ctx.properties.clone(),
                 yield_duration_ms: ctx.yield_duration_ms,
+                service_lookup: make_service_lookup(),
+                state_manager: make_state_manager(),
             };
-            // Wait until the processor is enabled (or cancelled).
-            while !self.metrics.enabled.load(Ordering::Relaxed) {
+            // Wait until the processor is enabled and not disabled (or cancelled).
+            loop {
+                let enabled = self.metrics.enabled.load(Ordering::Relaxed);
+                let disabled = self.metrics.disabled.load(Ordering::Relaxed);
+                if enabled && !disabled {
+                    break;
+                }
                 tokio::select! {
                     _ = self.cancel_token.cancelled() => {
                         tracing::info!(processor = %self.name, "Processor exiting (cancelled while stopped)");
@@ -239,6 +347,12 @@ impl ProcessorNode {
             loop {
                 // Check per-processor enabled flag — break cleanly on stop.
                 if !self.metrics.enabled.load(Ordering::Relaxed) {
+                    tracing::info!(processor = %self.name, "Processor stopping (stopped)");
+                    break;
+                }
+
+                // Check disabled flag — break cleanly on disable.
+                if self.metrics.disabled.load(Ordering::Relaxed) {
                     tracing::info!(processor = %self.name, "Processor stopping (disabled)");
                     break;
                 }
@@ -264,9 +378,11 @@ impl ProcessorNode {
                     _ = self.wait_for_trigger() => {}
                 }
 
-                // Re-check enabled after waking from trigger wait.
-                if !self.metrics.enabled.load(Ordering::Relaxed) {
-                    tracing::info!(processor = %self.name, "Processor stopping (disabled)");
+                // Re-check enabled/disabled after waking from trigger wait.
+                if !self.metrics.enabled.load(Ordering::Relaxed)
+                    || self.metrics.disabled.load(Ordering::Relaxed)
+                {
+                    tracing::info!(processor = %self.name, "Processor stopping (stopped/disabled)");
                     break;
                 }
 
@@ -317,6 +433,12 @@ impl ProcessorNode {
                     self.id_gen.clone(),
                     input_conns_snapshot,
                     ctx.yield_duration_ms,
+                    self.penalty_duration_ms,
+                );
+                session.set_provenance(
+                    self.provenance_repo.clone(),
+                    self.name.clone(),
+                    self.type_name.clone(),
                 );
 
                 // Invoke with fault isolation via spawn_blocking.
@@ -379,10 +501,52 @@ impl ProcessorNode {
                             }
                         }
                     }
+                    InvocationResult::Yield => {
+                        // Yield is not an error — commit the session and sleep
+                        // for the configured yield duration before re-triggering.
+                        if session.is_committed() {
+                            let (ff_out, bytes_out, routed) = self.route_transfers(&mut session);
+                            self.metrics
+                                .flowfiles_out
+                                .fetch_add(ff_out, Ordering::Relaxed);
+                            self.metrics
+                                .bytes_out
+                                .fetch_add(bytes_out, Ordering::Relaxed);
+
+                            let remove_ids = session.take_committed_remove_ids();
+                            if !routed.is_empty() || !remove_ids.is_empty() {
+                                let mut ops: Vec<FlowFileOp<'_>> = Vec::new();
+                                for (ff, conn_id) in &routed {
+                                    ops.push(FlowFileOp::Upsert {
+                                        flowfile: ff,
+                                        queue_id: conn_id,
+                                    });
+                                }
+                                for id in &remove_ids {
+                                    ops.push(FlowFileOp::Delete { id: *id });
+                                }
+                                if let Err(e) = self.flowfile_repo.commit_batch(&ops) {
+                                    tracing::error!(
+                                        processor = %self.name,
+                                        error = %e,
+                                        "WAL commit_batch failed"
+                                    );
+                                }
+                            }
+                        }
+                        tracing::debug!(
+                            processor = %self.name,
+                            yield_ms = ctx.yield_duration_ms,
+                            "Processor yielded, sleeping"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(ctx.yield_duration_ms))
+                            .await;
+                    }
                     InvocationResult::Failed(e) => {
+                        let redacted_err = self.redact_message(&e.to_string());
                         tracing::warn!(
                             processor = %self.name,
-                            error = %e,
+                            error = %redacted_err,
                             consecutive = self.supervisor.consecutive_failures(),
                             "Processor failed"
                         );
@@ -392,7 +556,7 @@ impl ProcessorNode {
                             format!(
                                 "Processor failed (consecutive: {}): {}",
                                 self.supervisor.consecutive_failures(),
-                                e
+                                redacted_err
                             ),
                         );
                         session.rollback();
@@ -402,9 +566,10 @@ impl ProcessorNode {
                         }
                     }
                     InvocationResult::Panic(msg) => {
+                        let redacted_msg = self.redact_message(msg);
                         tracing::error!(
                             processor = %self.name,
-                            panic = %msg,
+                            panic = %redacted_msg,
                             consecutive = self.supervisor.consecutive_failures(),
                             "Processor panicked"
                         );
@@ -414,7 +579,7 @@ impl ProcessorNode {
                             format!(
                                 "Processor panicked (consecutive: {}): {}",
                                 self.supervisor.consecutive_failures(),
-                                msg
+                                redacted_msg
                             ),
                         );
                         // Session is automatically rolled back on drop.
@@ -446,13 +611,48 @@ impl ProcessorNode {
                 // the lock so we never hold parking_lot across an await point.
                 let notifiers: Vec<Arc<Notify>> = self.input_notifiers.read().clone();
                 if notifiers.is_empty() {
-                    // No inputs wired — suspend forever (cancel token will break the loop).
+                    // No inputs wired -- suspend forever (cancel token will break the loop).
                     std::future::pending::<()>().await;
                 } else {
-                    // Race all input connection notifiers — wake on ANY data arrival.
+                    // Race all input connection notifiers -- wake on ANY data arrival.
                     let futures: Vec<_> =
                         notifiers.iter().map(|n| Box::pin(n.notified())).collect();
                     futures::future::select_all(futures).await;
+                }
+            }
+            SchedulingStrategy::CronDriven { expression } => {
+                use std::str::FromStr;
+                match cron::Schedule::from_str(expression) {
+                    Ok(schedule) => {
+                        let now = chrono::Utc::now();
+                        if let Some(next) = schedule.upcoming(chrono::Utc).next() {
+                            let delay = (next - now).to_std().unwrap_or_default();
+                            tracing::debug!(
+                                processor = %self.name,
+                                next_fire = %next,
+                                delay_ms = delay.as_millis(),
+                                "CRON: waiting for next fire time"
+                            );
+                            tokio::time::sleep(delay).await;
+                        } else {
+                            // No upcoming fire time -- sleep for a long time.
+                            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            processor = %self.name,
+                            expression = %expression,
+                            error = %e,
+                            "Invalid CRON expression, falling back to 60s interval"
+                        );
+                        self.bulletin_board.add(
+                            &self.name,
+                            BulletinSeverity::Error,
+                            format!("Invalid CRON expression '{}': {}", expression, e),
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    }
                 }
             }
         }
@@ -469,6 +669,13 @@ impl ProcessorNode {
     ///
     /// The third element contains `(FlowFile, connection_id)` for each
     /// successfully routed FlowFile, used by the WAL.
+    ///
+    /// When multiple connections exist for the same relationship, uses the
+    /// load balance strategy (configured per-connection) to select the target:
+    /// - `DoNotLoadBalance`: sends to the first matching connection (default)
+    /// - `RoundRobin`: distributes evenly across all connections for the relationship
+    /// - `PartitionByAttribute`: routes based on a hash of the specified attribute
+    /// - `SingleNode`: sends all FlowFiles to the first connection
     fn route_transfers(
         &self,
         session: &mut CoreProcessSession,
@@ -481,34 +688,15 @@ impl ProcessorNode {
             self.output_connections.read().clone();
         for (flowfile, rel_name) in session.take_transfers() {
             let size = flowfile.size;
-            let mut routed = false;
-            for (rel, conn) in &output_connections {
-                if rel.name == rel_name {
-                    let conn_id = conn.id.clone();
-                    if let Err(_ff) = conn.try_send(flowfile.clone()) {
-                        tracing::warn!(
-                            processor = %self.name,
-                            relationship = rel_name,
-                            "Failed to route FlowFile — connection full"
-                        );
-                        self.bulletin_board.add(
-                            &self.name,
-                            BulletinSeverity::Warn,
-                            format!(
-                                "Failed to route FlowFile on relationship '{}' — connection full",
-                                rel_name
-                            ),
-                        );
-                    } else {
-                        ff_out += 1;
-                        bytes_out += size;
-                        routed_list.push((flowfile, conn_id));
-                    }
-                    routed = true;
-                    break;
-                }
-            }
-            if !routed {
+
+            // Collect all connections for this relationship.
+            let matching_conns: Vec<&Arc<FlowConnection>> = output_connections
+                .iter()
+                .filter(|(rel, _)| rel.name == rel_name)
+                .map(|(_, conn)| conn)
+                .collect();
+
+            if matching_conns.is_empty() {
                 // Check if the relationship is auto-terminated.
                 let is_auto_term = output_connections
                     .iter()
@@ -520,8 +708,101 @@ impl ProcessorNode {
                         "No connection for relationship (auto-terminated or unconnected)"
                     );
                 }
+                continue;
+            }
+
+            // Select target connection using load balance strategy.
+            let target_idx = if matching_conns.len() == 1 {
+                0
+            } else {
+                self.select_load_balanced_connection(&matching_conns, &flowfile)
+            };
+
+            let conn = matching_conns[target_idx];
+            let conn_id = conn.id.clone();
+            if let Err(_ff) = conn.try_send(flowfile.clone()) {
+                tracing::warn!(
+                    processor = %self.name,
+                    relationship = rel_name,
+                    connection_id = %conn_id,
+                    "Failed to route FlowFile -- connection full"
+                );
+                self.bulletin_board.add(
+                    &self.name,
+                    BulletinSeverity::Warn,
+                    format!(
+                        "Failed to route FlowFile on relationship '{}' -- connection full",
+                        rel_name
+                    ),
+                );
+            } else {
+                ff_out += 1;
+                bytes_out += size;
+                routed_list.push((flowfile, conn_id));
             }
         }
         (ff_out, bytes_out, routed_list)
+    }
+
+    /// Select a target connection index using the load balance strategy
+    /// configured on the connections.
+    ///
+    /// If any connection has a load balance config, its strategy is used.
+    /// Otherwise, defaults to the first connection (DoNotLoadBalance behavior).
+    fn select_load_balanced_connection(
+        &self,
+        connections: &[&Arc<FlowConnection>],
+        flowfile: &FlowFile,
+    ) -> usize {
+        // Find the first connection with a load balance config to determine strategy.
+        let lb_config = connections
+            .iter()
+            .find_map(|conn| conn.load_balance_config());
+
+        let Some(config) = lb_config else {
+            return 0; // No load balancing configured — use first connection.
+        };
+
+        match &config.strategy {
+            LoadBalanceStrategy::DoNotLoadBalance => 0,
+
+            LoadBalanceStrategy::RoundRobin => {
+                // Use the shared load balancer for round-robin distribution.
+                let lb = self
+                    .load_balancer
+                    .get_or_init(|| LoadBalancer::new(LoadBalanceStrategy::RoundRobin));
+                let nodes: Vec<String> = connections.iter().map(|c| c.id.clone()).collect();
+                let local = nodes[0].clone();
+                if let Some(target_id) = lb.select_node(&local, &nodes, None) {
+                    nodes.iter().position(|n| *n == target_id).unwrap_or(0)
+                } else {
+                    0
+                }
+            }
+
+            LoadBalanceStrategy::PartitionByAttribute { attribute } => {
+                // Hash the attribute value to select a consistent target.
+                let attr_value = flowfile
+                    .attributes
+                    .iter()
+                    .find(|(k, _)| k.as_ref() == attribute.as_str())
+                    .map(|(_, v)| v.as_ref() as &str);
+
+                let lb = self.load_balancer.get_or_init(|| {
+                    LoadBalancer::new(LoadBalanceStrategy::PartitionByAttribute {
+                        attribute: attribute.clone(),
+                    })
+                });
+                let nodes: Vec<String> = connections.iter().map(|c| c.id.clone()).collect();
+                let local = nodes[0].clone();
+                if let Some(target_id) = lb.select_node(&local, &nodes, attr_value) {
+                    nodes.iter().position(|n| *n == target_id).unwrap_or(0)
+                } else {
+                    0
+                }
+            }
+
+            LoadBalanceStrategy::SingleNode { .. } => 0,
+        }
     }
 }

@@ -1,8 +1,11 @@
-use axum::extract::{Path, State};
+use std::collections::HashMap;
+
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{delete as delete_method, get, post, put};
 use axum::{Json, Router, middleware};
+use serde::{Deserialize, Serialize};
 
 use crate::dto::{
     CreateProcessorRequest, ProcessorConfigResponse, ProcessorConfigUpdateRequest,
@@ -21,6 +24,7 @@ pub fn routes() -> Router<ApiState> {
             "/api/v1/processors/{name}/config",
             get(get_processor_config),
         )
+        .route("/api/v1/processors/{name}/state", get(get_processor_state))
         .layer(middleware::from_fn(rbac::require_view_flow));
 
     // POST lifecycle endpoints — OperateProcessors (Operator+)
@@ -33,6 +37,13 @@ pub fn routes() -> Router<ApiState> {
         .route("/api/v1/processors/{name}/start", post(start_processor))
         .route("/api/v1/processors/{name}/pause", post(pause_processor))
         .route("/api/v1/processors/{name}/resume", post(resume_processor))
+        .route("/api/v1/processors/{name}/disable", put(disable_processor))
+        .route("/api/v1/processors/{name}/enable", put(enable_processor))
+        .route("/api/v1/processors/{name}/validation", get(get_validation))
+        .route(
+            "/api/v1/processors/{name}/state",
+            delete_method(clear_processor_state),
+        )
         .layer(middleware::from_fn(rbac::require_operate_processors));
 
     // Flow mutation endpoints — ModifyFlow (Admin only)
@@ -102,7 +113,9 @@ fn validate_processor_name(name: &str) -> Result<(), ApiError> {
 }
 
 /// Validate properties against the processor type's property descriptors.
-/// Rejects unknown property keys, missing required properties, and invalid allowed values.
+/// Rejects unknown property keys and invalid allowed values.
+/// Required-property checks are deferred to start time (matching NiFi behavior:
+/// create → configure → start).
 fn validate_properties(
     properties: &std::collections::HashMap<String, String>,
     descriptors: &[runifi_plugin_api::PropertyDescriptor],
@@ -117,16 +130,6 @@ fn validate_properties(
                 "Unknown property '{}'. Valid properties: {:?}",
                 key,
                 known_names.iter().collect::<Vec<_>>()
-            )));
-        }
-    }
-
-    // Validate required properties are present (or have defaults).
-    for desc in descriptors {
-        if desc.required && desc.default_value.is_none() && !properties.contains_key(desc.name) {
-            return Err(ApiError::BadRequest(format!(
-                "Required property '{}' is missing",
-                desc.name
             )));
         }
     }
@@ -194,6 +197,7 @@ async fn create_processor(
                         );
                         leaked
                     }),
+                    expression_language_supported: d.expression_language_supported,
                 })
                 .collect()
         })
@@ -243,6 +247,7 @@ async fn create_processor(
                     );
                     leaked
                 }),
+                expression_language_supported: d.expression_language_supported,
             })
             .collect();
 
@@ -256,6 +261,14 @@ async fn create_processor(
     // Store canvas position if provided.
     if let Some(pos) = body.position {
         state.handle.set_position(&body.name, pos.x, pos.y);
+    }
+
+    // Add to process group if specified.
+    if let Some(ref group_id) = body.process_group_id {
+        state
+            .handle
+            .add_processor_to_group(group_id, &body.name)
+            .map_err(ApiError::BadRequest)?;
     }
 
     let info = state
@@ -277,7 +290,24 @@ async fn create_processor(
         })
         .collect();
 
-    let properties = info.properties.read().clone();
+    // Mask sensitive properties in the response.
+    let raw_properties = info.properties.read().clone();
+    let sensitive_names: std::collections::HashSet<&str> = info
+        .property_descriptors
+        .iter()
+        .filter(|pd| pd.sensitive)
+        .map(|pd| pd.name.as_str())
+        .collect();
+    let properties: std::collections::HashMap<String, String> = raw_properties
+        .into_iter()
+        .map(|(k, v)| {
+            if sensitive_names.contains(k.as_str()) && !v.is_empty() {
+                (k, "********".to_string())
+            } else {
+                (k, v)
+            }
+        })
+        .collect();
 
     let detail = ProcessorDetailResponse {
         name: info.name.clone(),
@@ -341,13 +371,16 @@ async fn update_processor_config(
     Path(name): Path<String>,
     Json(body): Json<ProcessorConfigUpdateRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let properties = body
-        .properties
-        .ok_or_else(|| ApiError::BadRequest("Missing 'properties' field in request body".into()))?;
-
-    state
-        .handle
-        .update_processor_properties(&name, properties)?;
+    state.handle.update_processor_config(
+        &name,
+        body.properties,
+        body.penalty_duration_ms,
+        body.yield_duration_ms,
+        body.bulletin_level,
+        body.concurrent_tasks,
+        body.auto_terminated_relationships,
+        body.comments,
+    )?;
 
     Ok(Json(
         serde_json::json!({ "status": "updated", "processor": name }),
@@ -384,13 +417,10 @@ async fn start_processor(
     State(state): State<ApiState>,
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    if state.handle.start_processor(&name) {
-        Ok(Json(
-            serde_json::json!({ "status": "started", "processor": name }),
-        ))
-    } else {
-        Err(ApiError::ProcessorNotFound(name))
-    }
+    state.handle.start_processor(&name)?;
+    Ok(Json(
+        serde_json::json!({ "status": "started", "processor": name }),
+    ))
 }
 
 async fn pause_processor(
@@ -417,4 +447,151 @@ async fn resume_processor(
     } else {
         Err(ApiError::ProcessorNotFound(name))
     }
+}
+
+async fn disable_processor(
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    state
+        .handle
+        .disable_processor(&name)
+        .map_err(ApiError::ProcessorNotFound)?;
+    Ok(Json(
+        serde_json::json!({ "status": "disabled", "processor": name }),
+    ))
+}
+
+async fn enable_processor(
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    state
+        .handle
+        .enable_processor(&name)
+        .map_err(ApiError::ProcessorNotFound)?;
+    Ok(Json(
+        serde_json::json!({ "status": "enabled", "processor": name }),
+    ))
+}
+
+async fn get_validation(
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let errors = state
+        .handle
+        .get_validation_errors(&name)
+        .map_err(ApiError::ProcessorNotFound)?;
+    Ok(Json(serde_json::json!({
+        "valid": errors.is_empty(),
+        "errors": errors,
+    })))
+}
+
+// ── Processor State Endpoints ─────────────────────────────────────────────────
+
+/// Query parameters for state endpoints.
+#[derive(Debug, Deserialize)]
+struct StateQuery {
+    /// State scope: "local" (default) or "cluster".
+    scope: Option<String>,
+}
+
+/// Response DTO for processor state.
+#[derive(Debug, Serialize)]
+struct ProcessorStateResponse {
+    processor: String,
+    scope: String,
+    version: i64,
+    state: HashMap<String, String>,
+}
+
+/// Parse the scope query parameter, defaulting to "local".
+fn parse_scope(query: &StateQuery) -> Result<&str, ApiError> {
+    let scope = query.scope.as_deref().unwrap_or("local");
+    match scope {
+        "local" | "cluster" => Ok(scope),
+        other => Err(ApiError::BadRequest(format!(
+            "Invalid scope '{}'. Must be 'local' or 'cluster'.",
+            other
+        ))),
+    }
+}
+
+/// GET /api/v1/processors/{name}/state?scope=local
+///
+/// Returns the current state (key-value map + version) for the processor.
+async fn get_processor_state(
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+    Query(query): Query<StateQuery>,
+) -> Result<Json<ProcessorStateResponse>, ApiError> {
+    // Verify processor exists.
+    let _info = state
+        .handle
+        .get_processor_info(&name)
+        .ok_or(ApiError::ProcessorNotFound(name.clone()))?;
+
+    let scope_str = parse_scope(&query)?;
+
+    let provider =
+        state.handle.state_provider.as_ref().ok_or_else(|| {
+            ApiError::BadRequest("State management is not configured".to_string())
+        })?;
+
+    if scope_str == "cluster" {
+        return Err(ApiError::BadRequest(
+            "Cluster state scope is not yet implemented".to_string(),
+        ));
+    }
+
+    let state_map = provider
+        .get_state(&name)
+        .map_err(|e| ApiError::BadRequest(format!("Failed to read processor state: {}", e)))?;
+
+    Ok(Json(ProcessorStateResponse {
+        processor: name,
+        scope: scope_str.to_string(),
+        version: state_map.version(),
+        state: state_map.into_entries(),
+    }))
+}
+
+/// DELETE /api/v1/processors/{name}/state?scope=local
+///
+/// Clears all state for the processor in the given scope.
+async fn clear_processor_state(
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+    Query(query): Query<StateQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    // Verify processor exists.
+    let _info = state
+        .handle
+        .get_processor_info(&name)
+        .ok_or(ApiError::ProcessorNotFound(name.clone()))?;
+
+    let scope_str = parse_scope(&query)?;
+
+    let provider =
+        state.handle.state_provider.as_ref().ok_or_else(|| {
+            ApiError::BadRequest("State management is not configured".to_string())
+        })?;
+
+    if scope_str == "cluster" {
+        return Err(ApiError::BadRequest(
+            "Cluster state scope is not yet implemented".to_string(),
+        ));
+    }
+
+    provider
+        .clear(&name)
+        .map_err(|e| ApiError::BadRequest(format!("Failed to clear processor state: {}", e)))?;
+
+    Ok(Json(serde_json::json!({
+        "status": "cleared",
+        "processor": name,
+        "scope": scope_str,
+    })))
 }

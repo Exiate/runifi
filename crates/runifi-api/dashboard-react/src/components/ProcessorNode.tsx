@@ -13,6 +13,10 @@ function stateBadgeClass(state: string): string {
       return 'state-badge paused';
     case 'circuit-open':
       return 'state-badge circuit-open';
+    case 'invalid':
+      return 'state-badge invalid';
+    case 'disabled':
+      return 'state-badge disabled';
     default:
       return 'state-badge stopped';
   }
@@ -28,6 +32,9 @@ function handleTopPercent(index: number, total: number): string {
   const step = 100 / (total + 1);
   return `${step * (index + 1)}%`;
 }
+
+/** All four sides for multi-directional handles */
+const ALL_POSITIONS = [Position.Top, Position.Right, Position.Bottom, Position.Left] as const;
 
 function ProcessorNodeInner({ data }: NodeProps<ProcessorNodeType>) {
   const { label, typeName, state, metrics, bulletin, relationships, pending, customColor } = data;
@@ -47,12 +54,29 @@ function ProcessorNodeInner({ data }: NodeProps<ProcessorNodeType>) {
       role="article"
       aria-label={`Processor ${label}${pending ? ' (pending)' : ''}`}
     >
+      {/* Target handles on all 4 sides */}
+      {ALL_POSITIONS.map((pos) => (
+        <Handle
+          key={`target--${pos}`}
+          type="target"
+          position={pos}
+          id={`target--${pos}`}
+          className="edge-anchor-handle"
+        />
+      ))}
+
+      {/* NiFi-style center connection handle — visible on hover */}
       <Handle
-        type="target"
-        position={Position.Left}
-        id="target"
-        style={{ top: '50%' }}
+        type="source"
+        position={Position.Right}
+        id="center-source"
+        className="center-connect-handle"
       />
+      <div className="center-connect-indicator" aria-label="Drag to connect">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M3 8H13M13 8L9 4M13 8L9 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+      </div>
 
       <div className="proc-node-header" style={headerStyle}>
         <div className="proc-node-identity">
@@ -73,10 +97,15 @@ function ProcessorNodeInner({ data }: NodeProps<ProcessorNodeType>) {
           )}
           {bulletin && (
             <span
-              className={`bulletin-dot ${bulletin.severity}`}
+              className={`bulletin-indicator ${bulletin.severity}`}
               title={bulletin.message}
-              aria-label={`${bulletin.severity} bulletin`}
-            />
+              aria-label={`${bulletin.severity} bulletin: ${bulletin.message}`}
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden="true">
+                <path d="M2 1h10l-2 2v8L2 11V1z" />
+                <path d="M10 1l2 2h-2V1z" opacity="0.6" />
+              </svg>
+            </span>
           )}
         </div>
       </div>
@@ -112,16 +141,22 @@ function ProcessorNodeInner({ data }: NodeProps<ProcessorNodeType>) {
         </div>
       )}
 
-      {rels.map((rel, idx) => (
-        <Handle
-          key={rel}
-          type="source"
-          position={Position.Right}
-          id={rel}
-          style={{ top: handleTopPercent(idx, rels.length) }}
-          title={rel}
-        />
-      ))}
+      {/* Per-relationship source handles on all 4 sides */}
+      {rels.map((rel, idx) =>
+        ALL_POSITIONS.map((pos) => (
+          <Handle
+            key={`${rel}--${pos}`}
+            type="source"
+            position={pos}
+            id={`${rel}--${pos}`}
+            className="edge-anchor-handle"
+            style={pos === Position.Right || pos === Position.Left
+              ? { top: handleTopPercent(idx, rels.length) }
+              : undefined
+            }
+          />
+        ))
+      )}
     </div>
   );
 }

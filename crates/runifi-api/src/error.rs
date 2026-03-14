@@ -3,6 +3,8 @@ use axum::response::{IntoResponse, Response};
 
 use runifi_core::engine::handle::ConfigUpdateError;
 use runifi_core::engine::mutation::MutationError;
+use runifi_core::engine::reporting_task_manager::ReportingTaskError;
+use runifi_core::registry::service_registry::ServiceError;
 
 /// API error type with automatic HTTP status mapping.
 #[derive(Debug, thiserror::Error)]
@@ -13,6 +15,9 @@ pub enum ApiError {
 
     #[error("Connection not found: {0}")]
     ConnectionNotFound(String),
+
+    #[error("Service not found: {0}")]
+    ServiceNotFound(String),
 
     #[error("FlowFile not found: {0}")]
     FlowFileNotFound(u64),
@@ -37,6 +42,24 @@ pub enum ApiError {
 
     #[error("Forbidden: insufficient permissions")]
     Forbidden,
+
+    #[error("Provenance event not found: {0}")]
+    ProvenanceEventNotFound(u64),
+
+    #[error("Reporting task not found: {0}")]
+    ReportingTaskNotFound(String),
+
+    #[error("Content no longer available for event {0} (expired or garbage collected)")]
+    ContentGone(u64),
+
+    #[error("Cluster node not found: {0}")]
+    ClusterNodeNotFound(String),
+
+    #[error("Cluster not enabled")]
+    ClusterNotEnabled,
+
+    #[error("Cluster operation failed: {0}")]
+    ClusterError(String),
 }
 
 impl ApiError {
@@ -45,6 +68,7 @@ impl ApiError {
         match self {
             ApiError::ProcessorNotFound(_) => StatusCode::NOT_FOUND,
             ApiError::ConnectionNotFound(_) => StatusCode::NOT_FOUND,
+            ApiError::ServiceNotFound(_) => StatusCode::NOT_FOUND,
             ApiError::FlowFileNotFound(_) => StatusCode::NOT_FOUND,
             ApiError::ContentNotAvailable(_) => StatusCode::NOT_FOUND,
             ApiError::ConfigError(_) => StatusCode::CONFLICT,
@@ -53,6 +77,12 @@ impl ApiError {
             ApiError::EngineNotRunning => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
             ApiError::Forbidden => StatusCode::FORBIDDEN,
+            ApiError::ProvenanceEventNotFound(_) => StatusCode::NOT_FOUND,
+            ApiError::ReportingTaskNotFound(_) => StatusCode::NOT_FOUND,
+            ApiError::ContentGone(_) => StatusCode::GONE,
+            ApiError::ClusterNodeNotFound(_) => StatusCode::NOT_FOUND,
+            ApiError::ClusterNotEnabled => StatusCode::SERVICE_UNAVAILABLE,
+            ApiError::ClusterError(_) => StatusCode::CONFLICT,
         }
     }
 
@@ -62,6 +92,7 @@ impl ApiError {
         match self {
             ApiError::ProcessorNotFound(_) => "Resource not found",
             ApiError::ConnectionNotFound(_) => "Resource not found",
+            ApiError::ServiceNotFound(_) => "Resource not found",
             ApiError::FlowFileNotFound(_) => "Resource not found",
             ApiError::ContentNotAvailable(_) => "Content not available",
             ApiError::ConfigError(_) => "Configuration conflict",
@@ -70,6 +101,12 @@ impl ApiError {
             ApiError::EngineNotRunning => "Service unavailable",
             ApiError::TooManyRequests => "Too many requests",
             ApiError::Forbidden => "Forbidden",
+            ApiError::ProvenanceEventNotFound(_) => "Provenance event not found",
+            ApiError::ReportingTaskNotFound(_) => "Resource not found",
+            ApiError::ContentGone(_) => "Content no longer available",
+            ApiError::ClusterNodeNotFound(_) => "Cluster node not found",
+            ApiError::ClusterNotEnabled => "Cluster not enabled",
+            ApiError::ClusterError(_) => "Cluster operation failed",
         }
     }
 
@@ -140,10 +177,59 @@ impl From<MutationError> for ApiError {
             )),
             MutationError::EngineNotRunning => ApiError::EngineNotRunning,
             MutationError::InvalidSchedulingStrategy(s) => ApiError::BadRequest(format!(
-                "Invalid scheduling strategy '{}'; must be 'timer' or 'event'",
+                "Invalid scheduling strategy '{}'; must be 'timer', 'event', or 'cron'",
                 s
             )),
+            MutationError::InvalidCronExpression(expr, msg) => {
+                ApiError::BadRequest(format!("Invalid CRON expression '{}': {}", expr, msg))
+            }
             MutationError::Internal(msg) => ApiError::ConfigError(msg),
+        }
+    }
+}
+
+impl From<ServiceError> for ApiError {
+    fn from(err: ServiceError) -> Self {
+        match err {
+            ServiceError::NotFound(name) => ApiError::ServiceNotFound(name),
+            ServiceError::DuplicateName(name) => {
+                ApiError::Conflict(format!("A service named '{}' already exists", name))
+            }
+            ServiceError::UnknownType(name) => {
+                ApiError::BadRequest(format!("Unknown service type: {}", name))
+            }
+            ServiceError::InvalidState {
+                name,
+                current_state,
+                expected_state,
+            } => ApiError::Conflict(format!(
+                "Service '{}' is in state {}, expected {}",
+                name, current_state, expected_state
+            )),
+            ServiceError::HasReferences { name, processors } => ApiError::Conflict(format!(
+                "Service '{}' is referenced by processors: {}",
+                name, processors
+            )),
+            ServiceError::ConfigFailed(msg) => ApiError::BadRequest(msg),
+            ServiceError::ValidationFailed(msg) => ApiError::BadRequest(msg),
+            ServiceError::EnableFailed(msg) => ApiError::ConfigError(msg),
+        }
+    }
+}
+
+impl From<ReportingTaskError> for ApiError {
+    fn from(err: ReportingTaskError) -> Self {
+        match err {
+            ReportingTaskError::NotFound(name) => ApiError::ReportingTaskNotFound(name),
+            ReportingTaskError::DuplicateName(name) => {
+                ApiError::Conflict(format!("A reporting task named '{}' already exists", name))
+            }
+            ReportingTaskError::UnknownType(name) => {
+                ApiError::BadRequest(format!("Unknown reporting task type: {}", name))
+            }
+            ReportingTaskError::InvalidState { name, message } => {
+                ApiError::Conflict(format!("Reporting task '{}': {}", name, message))
+            }
         }
     }
 }

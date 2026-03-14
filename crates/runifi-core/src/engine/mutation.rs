@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use tokio::sync::oneshot;
 
+use crate::cluster::load_balance::LoadBalanceConfig;
 use crate::connection::back_pressure::BackPressureConfig;
 
 /// A runtime mutation command sent to the engine via the command channel.
@@ -17,6 +18,8 @@ pub enum MutationCommand {
         properties: HashMap<String, String>,
         scheduling_strategy: String,
         interval_ms: u64,
+        /// CRON expression (only used when scheduling_strategy = "cron").
+        cron_expression: Option<String>,
         reply: oneshot::Sender<Result<(), MutationError>>,
     },
 
@@ -32,6 +35,7 @@ pub enum MutationCommand {
         relationship: String,
         dest_name: String,
         config: BackPressureConfig,
+        load_balance: Option<LoadBalanceConfig>,
         reply: oneshot::Sender<Result<String, MutationError>>,
     },
 
@@ -76,8 +80,11 @@ pub enum MutationError {
     #[error("engine not running")]
     EngineNotRunning,
 
-    #[error("invalid scheduling strategy '{0}'; must be 'timer' or 'event'")]
+    #[error("invalid scheduling strategy '{0}'; must be 'timer', 'event', or 'cron'")]
     InvalidSchedulingStrategy(String),
+
+    #[error("invalid CRON expression '{0}': {1}")]
+    InvalidCronExpression(String, String),
 
     #[error("{0}")]
     Internal(String),

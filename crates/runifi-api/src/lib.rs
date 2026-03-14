@@ -17,9 +17,24 @@ use governor::{Quota, RateLimiter, clock::DefaultClock, state::keyed::DashMapSta
 use tower_http::cors::CorsLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 
-use runifi_core::config::flow_config::ApiConfig;
+use runifi_core::auth::chain::AuthProviderChain;
+use runifi_core::auth::identity_mapper::IdentityMapper;
+use runifi_core::auth::jwt::JwtConfig;
+use runifi_core::auth::session::SessionManager;
+use runifi_core::auth::store::UserStore;
+use runifi_core::config::flow_config::{ApiConfig, AuthConfig};
 use runifi_core::engine::handle::EngineHandle;
+use runifi_core::registry::plugin_registry::PluginRegistry;
+use runifi_core::versioning::FlowVersionStore;
 use state::ApiState;
+
+/// Bundle of auth infrastructure passed from the server to the API layer.
+#[derive(Clone)]
+pub struct AuthChainBundle {
+    pub chain: Arc<AuthProviderChain>,
+    pub mapper: Arc<IdentityMapper>,
+    pub session_manager: Arc<SessionManager>,
+}
 
 /// Per-IP rate limiter type.
 type IpRateLimiter =
@@ -27,12 +42,42 @@ type IpRateLimiter =
 
 /// Create the API router with all routes and security middleware.
 pub fn create_router(handle: EngineHandle, api_config: &ApiConfig) -> Router {
-    let state = ApiState::with_config(
+    create_router_with_registry(handle, api_config, None, None, None, None, None, None)
+}
+
+/// Create the API router with an optional plugin registry for service creation.
+#[allow(clippy::too_many_arguments)]
+pub fn create_router_with_registry(
+    handle: EngineHandle,
+    api_config: &ApiConfig,
+    plugin_registry: Option<Arc<PluginRegistry>>,
+    user_store: Option<Arc<UserStore>>,
+    jwt_config: Option<JwtConfig>,
+    auth_config: Option<AuthConfig>,
+    version_store: Option<Arc<FlowVersionStore>>,
+    auth_bundle: Option<AuthChainBundle>,
+) -> Router {
+    let mut state = ApiState::with_config(
         handle,
         api_config.max_sse_connections,
         api_config.detailed_errors,
         api_config.security.clone(),
     );
+    if let Some(registry) = plugin_registry {
+        state.set_plugin_registry(registry);
+    }
+    if let Some(store) = user_store
+        && let Some(jwt) = jwt_config
+    {
+        let ac = auth_config.unwrap_or_default();
+        state.set_auth(store, jwt, ac);
+    }
+    if let Some(vs) = version_store {
+        state.set_version_store(vs);
+    }
+    if let Some(bundle) = auth_bundle {
+        state.set_auth_chain(bundle.chain, bundle.mapper, bundle.session_manager);
+    }
 
     // -- CORS --
     let cors = build_cors_layer(&api_config.cors_allowed_origins);
@@ -56,6 +101,17 @@ pub fn create_router(handle: EngineHandle, api_config: &ApiConfig) -> Router {
         .merge(routes::plugins::routes())
         .merge(routes::events::routes())
         .merge(routes::bulletins::routes())
+        .merge(routes::services::routes())
+        .merge(routes::secrets::routes())
+        .merge(routes::auth_routes::routes())
+        .merge(routes::users::routes())
+        .merge(routes::user_groups::routes())
+        .merge(routes::labels::routes())
+        .merge(routes::provenance::routes())
+        .merge(routes::reporting_tasks::routes())
+        .merge(routes::versions::routes())
+        .merge(routes::cluster::routes())
+        .merge(routes::process_groups::routes())
         .merge(dashboard::routes())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -194,10 +250,34 @@ fn validate_security_config(api_config: &ApiConfig) -> Result<(), std::io::Error
 /// When TLS is configured, the server uses `axum-server` with rustls. Otherwise
 /// it falls back to plain-text HTTP via `tokio::net::TcpListener`.
 pub async fn start_api_server(handle: EngineHandle, api_config: &ApiConfig) -> std::io::Result<()> {
+    start_api_server_with_registry(handle, api_config, None, None, None, None, None, None).await
+}
+
+/// Start the API server with optional plugin registry, auth, and versioning support.
+#[allow(clippy::too_many_arguments)]
+pub async fn start_api_server_with_registry(
+    handle: EngineHandle,
+    api_config: &ApiConfig,
+    plugin_registry: Option<Arc<PluginRegistry>>,
+    user_store: Option<Arc<UserStore>>,
+    jwt_config: Option<JwtConfig>,
+    auth_config: Option<AuthConfig>,
+    version_store: Option<Arc<FlowVersionStore>>,
+    auth_bundle: Option<AuthChainBundle>,
+) -> std::io::Result<()> {
     // Validate security posture before binding.
     validate_security_config(api_config)?;
 
-    let app = create_router(handle, api_config);
+    let app = create_router_with_registry(
+        handle,
+        api_config,
+        plugin_registry,
+        user_store,
+        jwt_config,
+        auth_config,
+        version_store,
+        auth_bundle,
+    );
     let addr: SocketAddr = format!("{}:{}", api_config.bind_address, api_config.port)
         .parse()
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
