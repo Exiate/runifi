@@ -125,18 +125,30 @@ fn rotate_key(conf_dir: &std::path::Path, old_key_hex: &str, new_key_hex: &str) 
         }
     }
 
-    // Write atomically using serde_json + std::fs (matching persistence module pattern).
+    // Write atomically (matching persistence module pattern):
+    // 1. Write to temp file, 2. fsync temp, 3. backup rename, 4. atomic rename, 5. fsync dir
     let json = serde_json::to_string_pretty(&state).context("Failed to serialize flow state")?;
     let tmp_path = conf_dir.join("flow.json.tmp");
     let flow_path = conf_dir.join("flow.json");
     let bak_path = conf_dir.join("flow.json.bak");
 
-    std::fs::write(&tmp_path, json.as_bytes()).context("Failed to write temp file")?;
+    {
+        use std::io::Write;
+        let mut file = std::fs::File::create(&tmp_path).context("Failed to create temp file")?;
+        file.write_all(json.as_bytes())
+            .context("Failed to write temp file")?;
+        file.sync_all().context("Failed to fsync temp file")?;
+    }
 
     if flow_path.exists() {
         let _ = std::fs::rename(&flow_path, &bak_path);
     }
     std::fs::rename(&tmp_path, &flow_path).context("Failed to rename temp file to flow.json")?;
+
+    // Fsync the directory to ensure the rename metadata is durable.
+    std::fs::File::open(conf_dir)
+        .and_then(|f| f.sync_all())
+        .context("Failed to fsync config directory")?;
 
     println!(
         "Key rotation complete: {} encrypted properties re-encrypted.",

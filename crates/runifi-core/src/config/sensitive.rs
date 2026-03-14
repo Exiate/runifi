@@ -23,7 +23,10 @@ impl SensitiveString {
 
     /// Consume this wrapper and return the inner string.
     ///
-    /// The caller assumes responsibility for protecting the value.
+    /// The caller assumes responsibility for protecting the returned value.
+    /// The returned `String` is **not** zeroized on drop — if the value is
+    /// held beyond immediate use, the caller must clear it manually.
+    #[must_use]
     pub fn into_inner(self) -> String {
         // We need to extract the inner value without triggering zeroize.
         // Clone the string before self is dropped (and zeroized).

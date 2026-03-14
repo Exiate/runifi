@@ -9,6 +9,7 @@ use dashmap::DashMap;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
+use zeroize::Zeroizing;
 
 use super::handle::{ConnectionInfo, LabelInfo, Position, ProcessorInfo};
 use super::process_group::ProcessGroupInfo;
@@ -185,8 +186,6 @@ pub(crate) struct SnapshotSource {
     pub service_registry: crate::registry::service_registry::SharedServiceRegistry,
     pub labels: Arc<RwLock<Vec<LabelInfo>>>,
     pub process_groups: Arc<RwLock<Vec<ProcessGroupInfo>>>,
-    /// Encryption key for sensitive property values (None = no encryption).
-    pub encryption_key: Option<Vec<u8>>,
 }
 
 // ── Snapshot from live engine state ───────────────────────────────────────────
@@ -194,9 +193,9 @@ pub(crate) struct SnapshotSource {
 impl PersistedFlowState {
     /// Capture a snapshot of the current flow state from the snapshot source.
     ///
-    /// When `source.encryption_key` is set, sensitive property values are
+    /// When `encryption_key` is provided, sensitive property values are
     /// encrypted into `ENC(base64)` format before serialization.
-    pub(crate) fn snapshot(source: &SnapshotSource) -> Self {
+    pub(crate) fn snapshot(source: &SnapshotSource, encryption_key: Option<&[u8]>) -> Self {
         let processors: Vec<PersistedProcessor> = source
             .processors
             .read()
@@ -212,7 +211,7 @@ impl PersistedFlowState {
                 let mut properties = p.properties.read().clone();
 
                 // Encrypt sensitive property values if an encryption key is available.
-                if let Some(ref key) = source.encryption_key {
+                if let Some(key) = encryption_key {
                     for name in &sensitive_names {
                         if let Some(value) = properties.get_mut(name)
                             && !value.is_empty()
@@ -582,7 +581,7 @@ struct FlowPersistenceInner {
     conf_dir: PathBuf,
     notify: Notify,
     source: RwLock<Option<SnapshotSource>>,
-    encryption_key: RwLock<Option<Vec<u8>>>,
+    encryption_key: RwLock<Option<Zeroizing<Vec<u8>>>>,
 }
 
 impl FlowPersistence {
@@ -601,7 +600,7 @@ impl FlowPersistence {
     /// Set the encryption key used to encrypt sensitive property values
     /// in the persisted flow state. Must be exactly 32 bytes (AES-256).
     pub fn set_encryption_key(&self, key: Vec<u8>) {
-        *self.inner.encryption_key.write() = Some(key);
+        *self.inner.encryption_key.write() = Some(Zeroizing::new(key));
     }
 
     /// Set the snapshot source — the live data collections needed for
@@ -620,7 +619,6 @@ impl FlowPersistence {
         labels: Arc<RwLock<Vec<LabelInfo>>>,
         process_groups: Arc<RwLock<Vec<ProcessGroupInfo>>>,
     ) {
-        let encryption_key = self.inner.encryption_key.read().clone();
         *self.inner.source.write() = Some(SnapshotSource {
             flow_name,
             processors,
@@ -629,7 +627,6 @@ impl FlowPersistence {
             service_registry,
             labels,
             process_groups,
-            encryption_key,
         });
     }
 
@@ -676,13 +673,18 @@ impl FlowPersistence {
     ///
     /// The source lock is released before disk I/O to avoid holding it
     /// across potentially slow filesystem operations.
+    ///
+    /// The encryption key is always read from `inner.encryption_key` (not
+    /// the stale copy in `SnapshotSource`) so that key rotation takes
+    /// effect on the very next persist.
     fn persist_now(&self) {
         let state = {
             let source = self.inner.source.read();
             let Some(ref s) = *source else {
                 return;
             };
-            PersistedFlowState::snapshot(s)
+            let key = self.inner.encryption_key.read().clone();
+            PersistedFlowState::snapshot(s, key.as_deref().map(|v| v.as_slice()))
         };
         // source lock released — do disk I/O without holding it.
 

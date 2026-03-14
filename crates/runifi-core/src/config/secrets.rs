@@ -150,7 +150,7 @@ impl FileSecretsProvider {
             if let Some((key, value)) = trimmed.split_once('=') {
                 secrets.insert(
                     key.trim().to_string(),
-                    SensitiveString::new(value.trim().to_string()),
+                    SensitiveString::new(value.to_string()),
                 );
             }
         }
@@ -295,7 +295,7 @@ mod tests {
         let path = dir.path().join("secrets.env");
         std::fs::write(
             &path,
-            "# comment line\nDB_PASSWORD=s3cret\nAPI_KEY = tok-123\n\nEMPTY=\n",
+            "# comment line\nDB_PASSWORD=s3cret\nAPI_KEY=tok-123\n\nEMPTY=\n",
         )
         .unwrap();
 
