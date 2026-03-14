@@ -44,6 +44,9 @@ pub enum ApiError {
 
     #[error("Provenance event not found: {0}")]
     ProvenanceEventNotFound(u64),
+
+    #[error("Content no longer available for event {0} (expired or garbage collected)")]
+    ContentGone(u64),
 }
 
 impl ApiError {
@@ -62,6 +65,7 @@ impl ApiError {
             ApiError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
             ApiError::Forbidden => StatusCode::FORBIDDEN,
             ApiError::ProvenanceEventNotFound(_) => StatusCode::NOT_FOUND,
+            ApiError::ContentGone(_) => StatusCode::GONE,
         }
     }
 
@@ -81,6 +85,7 @@ impl ApiError {
             ApiError::TooManyRequests => "Too many requests",
             ApiError::Forbidden => "Forbidden",
             ApiError::ProvenanceEventNotFound(_) => "Provenance event not found",
+            ApiError::ContentGone(_) => "Content no longer available",
         }
     }
 

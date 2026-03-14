@@ -13,6 +13,10 @@ function stateBadgeClass(state: string): string {
       return 'state-badge paused';
     case 'circuit-open':
       return 'state-badge circuit-open';
+    case 'invalid':
+      return 'state-badge invalid';
+    case 'disabled':
+      return 'state-badge disabled';
     default:
       return 'state-badge stopped';
   }
@@ -93,10 +97,15 @@ function ProcessorNodeInner({ data }: NodeProps<ProcessorNodeType>) {
           )}
           {bulletin && (
             <span
-              className={`bulletin-dot ${bulletin.severity}`}
+              className={`bulletin-indicator ${bulletin.severity}`}
               title={bulletin.message}
-              aria-label={`${bulletin.severity} bulletin`}
-            />
+              aria-label={`${bulletin.severity} bulletin: ${bulletin.message}`}
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden="true">
+                <path d="M2 1h10l-2 2v8L2 11V1z" />
+                <path d="M10 1l2 2h-2V1z" opacity="0.6" />
+              </svg>
+            </span>
           )}
         </div>
       </div>

@@ -31,6 +31,16 @@ pub struct ProvenanceEvent {
     pub source_flowfile_id: Option<u64>,
     /// Human-readable details about the event.
     pub details: String,
+    /// Parent FlowFile IDs (for FORK/JOIN events).
+    pub parent_flowfile_ids: Vec<u64>,
+    /// Child FlowFile IDs (for FORK events).
+    pub child_flowfile_ids: Vec<u64>,
+    /// Transit URI for SEND/RECEIVE/FETCH events (e.g., "nifi://host:port").
+    pub transit_uri: Option<String>,
+    /// Content claim resource_id at event time (for content download/replay).
+    pub content_claim_id: Option<u64>,
+    /// Attribute snapshot before modification (for CONTENT_MODIFIED/ATTRIBUTES_MODIFIED).
+    pub previous_attributes: Vec<(String, String)>,
 }
 
 /// Types of provenance events, mirroring NiFi's provenance event types.
@@ -52,6 +62,20 @@ pub enum ProvenanceEventType {
     Route,
     /// FlowFile was removed/dropped.
     Drop,
+    /// FlowFile was split into multiple children.
+    Fork,
+    /// Multiple FlowFiles were merged into one.
+    Join,
+    /// Content was fetched from an external resource.
+    Fetch,
+    /// FlowFile expired from a connection queue.
+    Expire,
+    /// FlowFile was replayed from provenance.
+    Replay,
+    /// FlowFile content was downloaded via provenance.
+    Download,
+    /// Additional information was added to the FlowFile.
+    AddInfo,
 }
 
 impl ProvenanceEventType {
@@ -66,6 +90,56 @@ impl ProvenanceEventType {
             ProvenanceEventType::AttributesModified => "ATTRIBUTES_MODIFIED",
             ProvenanceEventType::Route => "ROUTE",
             ProvenanceEventType::Drop => "DROP",
+            ProvenanceEventType::Fork => "FORK",
+            ProvenanceEventType::Join => "JOIN",
+            ProvenanceEventType::Fetch => "FETCH",
+            ProvenanceEventType::Expire => "EXPIRE",
+            ProvenanceEventType::Replay => "REPLAY",
+            ProvenanceEventType::Download => "DOWNLOAD",
+            ProvenanceEventType::AddInfo => "ADDINFO",
+        }
+    }
+
+    /// Numeric tag for binary encoding (stable across versions).
+    pub fn to_tag(self) -> u8 {
+        match self {
+            ProvenanceEventType::Create => 0,
+            ProvenanceEventType::Receive => 1,
+            ProvenanceEventType::Send => 2,
+            ProvenanceEventType::Clone => 3,
+            ProvenanceEventType::ContentModified => 4,
+            ProvenanceEventType::AttributesModified => 5,
+            ProvenanceEventType::Route => 6,
+            ProvenanceEventType::Drop => 7,
+            ProvenanceEventType::Fork => 8,
+            ProvenanceEventType::Join => 9,
+            ProvenanceEventType::Fetch => 10,
+            ProvenanceEventType::Expire => 11,
+            ProvenanceEventType::Replay => 12,
+            ProvenanceEventType::Download => 13,
+            ProvenanceEventType::AddInfo => 14,
+        }
+    }
+
+    /// Parse from a numeric tag.
+    pub fn from_tag(tag: u8) -> Option<Self> {
+        match tag {
+            0 => Some(ProvenanceEventType::Create),
+            1 => Some(ProvenanceEventType::Receive),
+            2 => Some(ProvenanceEventType::Send),
+            3 => Some(ProvenanceEventType::Clone),
+            4 => Some(ProvenanceEventType::ContentModified),
+            5 => Some(ProvenanceEventType::AttributesModified),
+            6 => Some(ProvenanceEventType::Route),
+            7 => Some(ProvenanceEventType::Drop),
+            8 => Some(ProvenanceEventType::Fork),
+            9 => Some(ProvenanceEventType::Join),
+            10 => Some(ProvenanceEventType::Fetch),
+            11 => Some(ProvenanceEventType::Expire),
+            12 => Some(ProvenanceEventType::Replay),
+            13 => Some(ProvenanceEventType::Download),
+            14 => Some(ProvenanceEventType::AddInfo),
+            _ => None,
         }
     }
 
@@ -80,8 +154,36 @@ impl ProvenanceEventType {
             "ATTRIBUTES_MODIFIED" => Some(ProvenanceEventType::AttributesModified),
             "ROUTE" => Some(ProvenanceEventType::Route),
             "DROP" => Some(ProvenanceEventType::Drop),
+            "FORK" => Some(ProvenanceEventType::Fork),
+            "JOIN" => Some(ProvenanceEventType::Join),
+            "FETCH" => Some(ProvenanceEventType::Fetch),
+            "EXPIRE" => Some(ProvenanceEventType::Expire),
+            "REPLAY" => Some(ProvenanceEventType::Replay),
+            "DOWNLOAD" => Some(ProvenanceEventType::Download),
+            "ADDINFO" => Some(ProvenanceEventType::AddInfo),
             _ => None,
         }
+    }
+
+    /// Return all known event type variants.
+    pub fn all() -> &'static [ProvenanceEventType] {
+        &[
+            ProvenanceEventType::Create,
+            ProvenanceEventType::Receive,
+            ProvenanceEventType::Send,
+            ProvenanceEventType::Clone,
+            ProvenanceEventType::ContentModified,
+            ProvenanceEventType::AttributesModified,
+            ProvenanceEventType::Route,
+            ProvenanceEventType::Drop,
+            ProvenanceEventType::Fork,
+            ProvenanceEventType::Join,
+            ProvenanceEventType::Fetch,
+            ProvenanceEventType::Expire,
+            ProvenanceEventType::Replay,
+            ProvenanceEventType::Download,
+            ProvenanceEventType::AddInfo,
+        ]
     }
 }
 
@@ -123,6 +225,20 @@ pub struct ProvenanceQuery {
     pub max_results: usize,
     /// Offset for pagination.
     pub offset: usize,
+    /// Filter by processor type.
+    pub processor_type: Option<String>,
+    /// Filter by minimum content size.
+    pub min_size: Option<u64>,
+    /// Filter by maximum content size.
+    pub max_size: Option<u64>,
+}
+
+/// Summary statistics for the provenance repository.
+#[derive(Debug, Clone)]
+pub struct ProvenanceStats {
+    pub event_count: usize,
+    pub oldest_timestamp_nanos: Option<u64>,
+    pub newest_timestamp_nanos: Option<u64>,
 }
 
 /// Result of a provenance search.
@@ -158,6 +274,9 @@ pub trait ProvenanceRepository: Send + Sync {
 
     /// Prune events older than the configured retention.
     fn prune(&self);
+
+    /// Get summary statistics.
+    fn stats(&self) -> ProvenanceStats;
 }
 
 /// Thread-safe, bounded, in-memory provenance repository.
@@ -307,6 +426,21 @@ impl ProvenanceRepository for InMemoryProvenanceRepository {
                 {
                     continue;
                 }
+                if let Some(ref pt) = query.processor_type
+                    && event.processor_type != *pt
+                {
+                    continue;
+                }
+                if let Some(min) = query.min_size
+                    && event.content_size < min
+                {
+                    continue;
+                }
+                if let Some(max) = query.max_size
+                    && event.content_size > max
+                {
+                    continue;
+                }
 
                 matching.push(event.clone());
             }
@@ -404,6 +538,23 @@ impl ProvenanceRepository for InMemoryProvenanceRepository {
         }
         ordered.retain(|id| !to_remove.contains(id));
     }
+
+    fn stats(&self) -> ProvenanceStats {
+        let ordered = self.ordered_ids.read();
+        let oldest = ordered
+            .first()
+            .and_then(|id| self.events_by_id.get(id))
+            .map(|e| e.timestamp_nanos);
+        let newest = ordered
+            .last()
+            .and_then(|id| self.events_by_id.get(id))
+            .map(|e| e.timestamp_nanos);
+        ProvenanceStats {
+            event_count: self.events_by_id.len(),
+            oldest_timestamp_nanos: oldest,
+            newest_timestamp_nanos: newest,
+        }
+    }
 }
 
 /// A shared, thread-safe reference to a provenance repository.
@@ -436,6 +587,14 @@ impl ProvenanceRepository for NullProvenanceRepository {
     }
 
     fn prune(&self) {}
+
+    fn stats(&self) -> ProvenanceStats {
+        ProvenanceStats {
+            event_count: 0,
+            oldest_timestamp_nanos: None,
+            newest_timestamp_nanos: None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -468,6 +627,11 @@ mod tests {
             relationship: None,
             source_flowfile_id: None,
             details: String::new(),
+            parent_flowfile_ids: Vec::new(),
+            child_flowfile_ids: Vec::new(),
+            transit_uri: None,
+            content_claim_id: None,
+            previous_attributes: Vec::new(),
         }
     }
 
@@ -602,21 +766,14 @@ mod tests {
 
     #[test]
     fn event_type_parse_roundtrip() {
-        let types = [
-            ProvenanceEventType::Create,
-            ProvenanceEventType::Receive,
-            ProvenanceEventType::Send,
-            ProvenanceEventType::Clone,
-            ProvenanceEventType::ContentModified,
-            ProvenanceEventType::AttributesModified,
-            ProvenanceEventType::Route,
-            ProvenanceEventType::Drop,
-        ];
-
-        for et in &types {
+        for et in ProvenanceEventType::all() {
             let s = et.as_str();
             let parsed = ProvenanceEventType::parse(s).unwrap();
             assert_eq!(*et, parsed);
+            // Also verify tag roundtrip.
+            let tag = et.to_tag();
+            let from_tag = ProvenanceEventType::from_tag(tag).unwrap();
+            assert_eq!(*et, from_tag);
         }
     }
 

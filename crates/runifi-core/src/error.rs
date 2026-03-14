@@ -81,6 +81,12 @@ pub enum RuniFiError {
 
     #[error("cluster flow replication failed: version={version}, {reason}")]
     ClusterReplicationFailed { version: u64, reason: String },
+
+    #[error("provenance error: {path}: {reason}")]
+    ProvenanceError { path: String, reason: String },
+
+    #[error("provenance data corrupted at offset {offset}: {reason}")]
+    ProvenanceCorrupted { offset: u64, reason: String },
 }
 
 pub type Result<T> = std::result::Result<T, RuniFiError>;

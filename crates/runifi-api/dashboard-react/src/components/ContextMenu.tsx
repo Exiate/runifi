@@ -10,10 +10,16 @@ export interface ContextMenuState {
   selectedNodeIds?: string[];
 }
 
+export type AlignAction =
+  | 'align-left' | 'align-center' | 'align-right'
+  | 'align-top' | 'align-middle' | 'align-bottom'
+  | 'distribute-horizontal' | 'distribute-vertical';
+
 interface ContextMenuProps {
   menu: ContextMenuState;
   onDelete: () => void;
   onConfigure?: () => void;
+  onConfigureConnection?: () => void;
   onStart?: () => void;
   onStop?: () => void;
   onPause?: () => void;
@@ -25,6 +31,7 @@ interface ContextMenuProps {
   onStartSelected?: () => void;
   onStopSelected?: () => void;
   onDeleteSelected?: () => void;
+  onAlign?: (action: AlignAction) => void;
   onClose: () => void;
 }
 
@@ -32,6 +39,7 @@ function ContextMenuInner({
   menu,
   onDelete,
   onConfigure,
+  onConfigureConnection,
   onStart,
   onStop,
   onPause,
@@ -43,6 +51,7 @@ function ContextMenuInner({
   onStartSelected,
   onStopSelected,
   onDeleteSelected,
+  onAlign,
   onClose,
 }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
@@ -128,7 +137,7 @@ function ContextMenuInner({
         role="menu"
         aria-label="Multi-select context menu"
       >
-        <div className="context-menu-header">{count} processors selected</div>
+        <div className="context-menu-header">{count} components selected</div>
         <div className="context-menu-separator" aria-hidden="true" />
         {onStartSelected && (
           <button
@@ -147,6 +156,42 @@ function ContextMenuInner({
           >
             Stop Selected
           </button>
+        )}
+        {onAlign && count >= 2 && (
+          <>
+            <div className="context-menu-separator" aria-hidden="true" />
+            <div className="context-menu-header context-menu-subheader">Align Horizontally</div>
+            <button className="context-menu-item" onClick={() => { onAlign('align-left'); onClose(); }} role="menuitem">
+              Align Left
+            </button>
+            <button className="context-menu-item" onClick={() => { onAlign('align-center'); onClose(); }} role="menuitem">
+              Align Center
+            </button>
+            <button className="context-menu-item" onClick={() => { onAlign('align-right'); onClose(); }} role="menuitem">
+              Align Right
+            </button>
+            <div className="context-menu-header context-menu-subheader">Align Vertically</div>
+            <button className="context-menu-item" onClick={() => { onAlign('align-top'); onClose(); }} role="menuitem">
+              Align Top
+            </button>
+            <button className="context-menu-item" onClick={() => { onAlign('align-middle'); onClose(); }} role="menuitem">
+              Align Middle
+            </button>
+            <button className="context-menu-item" onClick={() => { onAlign('align-bottom'); onClose(); }} role="menuitem">
+              Align Bottom
+            </button>
+            {count >= 3 && (
+              <>
+                <div className="context-menu-header context-menu-subheader">Distribute</div>
+                <button className="context-menu-item" onClick={() => { onAlign('distribute-horizontal'); onClose(); }} role="menuitem">
+                  Distribute Horizontally
+                </button>
+                <button className="context-menu-item" onClick={() => { onAlign('distribute-vertical'); onClose(); }} role="menuitem">
+                  Distribute Vertically
+                </button>
+              </>
+            )}
+          </>
         )}
         <div className="context-menu-separator" aria-hidden="true" />
         {onDeleteSelected && (
@@ -172,6 +217,15 @@ function ContextMenuInner({
         role="menu"
         aria-label="Connection context menu"
       >
+        {onConfigureConnection && (
+          <button
+            className="context-menu-item"
+            onClick={() => { onConfigureConnection(); onClose(); }}
+            role="menuitem"
+          >
+            Configure
+          </button>
+        )}
         {onViewQueue && (
           <button
             className="context-menu-item"
