@@ -25,6 +25,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::config::ClusterConfig;
 use super::election::{ElectionRole, ElectionState, RaftState};
+use super::extract_node_id;
 use super::gossip::{GossipEvent, GossipState};
 use super::heartbeat::{HeartbeatEvent, HeartbeatManager};
 use super::load_balance::{LoadBalanceStrategy, LoadBalancer};
@@ -603,6 +604,9 @@ impl ClusterCoordinator {
         let new_size = nodes.len();
         self.coordinator_election.set_cluster_size(new_size);
         self.primary_election.set_cluster_size(new_size);
+
+        // Remove from gossip membership to prevent re-discovery.
+        self.gossip.remove_member(node_id);
 
         tracing::info!(node = %node_id, "Node force-removed from cluster");
         Ok(())
@@ -1382,14 +1386,12 @@ async fn read_message(stream: &mut TcpStream) -> io::Result<ClusterMessage> {
     ClusterMessage::decode(&data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
-/// Extract a node ID from an address string like "node-1:9443".
-fn extract_node_id(addr: &str) -> String {
-    addr.split(':').next().unwrap_or(addr).to_string()
-}
-
 /// Read the system load average from /proc/loadavg (Linux only).
 /// Returns the 1-minute load average as a fraction of available CPUs,
 /// or `None` if it cannot be read.
+///
+/// Uses synchronous I/O intentionally: `/proc/loadavg` is a procfs virtual
+/// file that never blocks on real disk I/O (kernel serves it from memory).
 fn read_system_load() -> Option<f64> {
     #[cfg(target_os = "linux")]
     {

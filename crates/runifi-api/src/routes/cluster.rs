@@ -11,9 +11,15 @@ use crate::rbac;
 use crate::state::ApiState;
 
 pub fn routes() -> Router<ApiState> {
-    Router::new()
+    // GET endpoints — ViewFlow (Viewer+)
+    let view_routes = Router::new()
         .route("/api/v1/cluster/nodes", get(list_nodes))
         .route("/api/v1/cluster/nodes/{id}", get(get_node))
+        .route("/api/v1/cluster/status", get(cluster_status))
+        .layer(middleware::from_fn(rbac::require_view_flow));
+
+    // Mutating endpoints — ModifyFlow (Operator+)
+    let write_routes = Router::new()
         .route(
             "/api/v1/cluster/nodes/{id}/disconnect",
             post(disconnect_node),
@@ -28,8 +34,9 @@ pub fn routes() -> Router<ApiState> {
             "/api/v1/cluster/nodes/{id}/primary",
             post(designate_primary),
         )
-        .route("/api/v1/cluster/status", get(cluster_status))
-        .layer(middleware::from_fn(rbac::require_view_flow))
+        .layer(middleware::from_fn(rbac::require_modify_flow));
+
+    view_routes.merge(write_routes)
 }
 
 /// Response for listing all cluster nodes.

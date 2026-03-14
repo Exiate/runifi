@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use super::extract_node_id;
 use super::node::ClusterNodeId;
 
 /// Gossip-level membership state (separate from NodeState to avoid coupling).
@@ -221,13 +222,6 @@ impl GossipState {
                         id: update.node_id.clone(),
                     });
                 }
-                // New member join
-                if old_state == MemberState::Dead && member.incarnation == 0 {
-                    return Some(GossipEvent::NodeJoined {
-                        id: update.node_id.clone(),
-                        address: update.address.clone(),
-                    });
-                }
             }
         }
 
@@ -384,6 +378,11 @@ impl GossipState {
         }
     }
 
+    /// Remove a member entirely from the gossip membership.
+    pub fn remove_member(&self, node_id: &ClusterNodeId) {
+        self.members.write().remove(node_id);
+    }
+
     /// Check if a node is alive in the gossip membership.
     pub fn is_alive(&self, node_id: &ClusterNodeId) -> bool {
         self.members
@@ -408,10 +407,11 @@ impl GossipState {
 
     /// Run the main gossip loop.
     ///
-    /// This implements the SWIM protocol cycle:
-    /// 1. Each tick, pick a random member and probe it (via the callback).
-    /// 2. Check for suspicion timeouts.
-    /// 3. Emit gossip events for membership changes.
+    /// Currently handles suspicion timeouts (declaring timed-out suspects dead).
+    /// Active SWIM probing (direct Ping, indirect PingReq, piggybacked
+    /// membership dissemination) will be added when the gossip layer is
+    /// integrated with the TCP transport for inter-node messaging.
+    /// Until then, failure detection relies on the existing heartbeat mechanism.
     pub async fn run_gossip_loop(
         &self,
         event_tx: mpsc::Sender<GossipEvent>,
@@ -446,11 +446,6 @@ fn state_severity(state: MemberState) -> u8 {
         MemberState::Dead => 2,
         MemberState::Left => 3,
     }
-}
-
-/// Extract a node ID from an address string like "node-1:9443".
-fn extract_node_id(addr: &str) -> String {
-    addr.split(':').next().unwrap_or(addr).to_string()
 }
 
 #[cfg(test)]
