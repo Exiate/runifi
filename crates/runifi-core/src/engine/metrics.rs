@@ -232,7 +232,11 @@ impl ProcessorMetrics {
         self.total_failures.store(total_failures, Ordering::Relaxed);
         self.consecutive_failures
             .store(consecutive_failures as u64, Ordering::Relaxed);
-        self.circuit_open.store(circuit_open, Ordering::Relaxed);
+        // Only SET circuit_open, never clear it — a sibling task may have tripped
+        // the circuit breaker. Only reset_requested should clear it.
+        if circuit_open {
+            self.circuit_open.store(true, Ordering::Relaxed);
+        }
     }
 
     /// Record a one-second tick: snapshot current counters, compute deltas,

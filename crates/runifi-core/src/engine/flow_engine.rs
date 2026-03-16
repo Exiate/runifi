@@ -496,6 +496,7 @@ impl FlowEngine {
                 name: node_builder.name.clone(),
                 type_name: node_builder.type_name.clone(),
                 scheduling_display: scheduling_display(&node_builder.scheduling),
+                scheduling: node_builder.scheduling.clone(),
                 metrics,
                 property_descriptors: prop_descriptors,
                 relationships,
@@ -507,6 +508,7 @@ impl FlowEngine {
                 yield_duration_ms: Arc::new(AtomicU64::new(1_000)),
                 bulletin_level: Arc::new(RwLock::new("WARN".to_string())),
                 concurrent_tasks: Arc::new(AtomicU64::new(1)),
+                spawned_task_count: Arc::new(AtomicU64::new(0)),
                 comments: Arc::new(RwLock::new(String::new())),
                 auto_terminated_relationships: Arc::new(RwLock::new(Vec::new())),
             });
@@ -701,6 +703,8 @@ impl FlowEngine {
             let flowfile_repo_mutation = self.flowfile_repo.clone();
             let audit_logger = self.audit_logger.clone();
             let provenance_repo_mutation = self.provenance_repo.clone();
+            let service_registry_mutation = self.service_registry.clone();
+            let state_provider_mutation = self.state_provider.clone();
             let mutation_handle = tokio::spawn(run_mutation_handler(
                 mutation_rx,
                 mutation_cancel,
@@ -715,6 +719,8 @@ impl FlowEngine {
                 flowfile_repo_mutation,
                 audit_logger,
                 provenance_repo_mutation,
+                service_registry_mutation,
+                state_provider_mutation,
             ));
             self.task_handles.push(mutation_handle);
         }
@@ -828,6 +834,8 @@ async fn run_mutation_handler(
     flowfile_repo: Arc<dyn FlowFileRepository>,
     audit_logger: Arc<dyn AuditLogger>,
     provenance_repo: SharedProvenanceRepository,
+    service_registry: SharedServiceRegistry,
+    state_provider: Option<SharedLocalStateProvider>,
 ) {
     let mut handler = DefaultMutationHandler {
         live_procs,
@@ -842,6 +850,8 @@ async fn run_mutation_handler(
         flowfile_repo,
         audit_logger,
         provenance_repo,
+        service_registry: Some(service_registry),
+        state_provider,
     };
 
     loop {
@@ -887,6 +897,11 @@ async fn run_mutation_handler(
 
                     MutationCommand::RemoveConnection { id, force, reply } => {
                         let result = handler.handle_remove_connection(&id, force);
+                        let _ = reply.send(result);
+                    }
+
+                    MutationCommand::SpawnConcurrentTasks { processor_name, count, reply } => {
+                        let result = handler.handle_spawn_concurrent_tasks(&processor_name, count);
                         let _ = reply.send(result);
                     }
                 }

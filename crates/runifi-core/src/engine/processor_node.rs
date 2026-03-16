@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::RwLock;
 use tokio::sync::Notify;
@@ -133,6 +133,9 @@ pub struct ProcessorNode {
     /// Lazily initialized load balancer for distributing FlowFiles across
     /// multiple output connections on the same relationship.
     load_balancer: OnceLock<LoadBalancer>,
+    task_index: u32,
+    concurrent_tasks: Arc<AtomicU64>,
+    timer_notify: Option<Arc<Notify>>,
 }
 
 impl ProcessorNode {
@@ -172,6 +175,9 @@ impl ProcessorNode {
             sensitive_property_names: Vec::new(),
             penalty_duration_ms: crate::session::process_session::DEFAULT_PENALTY_DURATION_MS,
             load_balancer: OnceLock::new(),
+            task_index: 0,
+            concurrent_tasks: Arc::new(AtomicU64::new(1)),
+            timer_notify: None,
         }
     }
 
@@ -213,6 +219,30 @@ impl ProcessorNode {
     /// Set the local state provider for processor state persistence.
     pub fn set_state_provider(&mut self, provider: SharedLocalStateProvider) {
         self.state_provider = Some(provider);
+    }
+
+    pub fn set_task_index(&mut self, idx: u32) {
+        self.task_index = idx;
+    }
+
+    pub fn set_concurrent_tasks(&mut self, ct: Arc<AtomicU64>) {
+        self.concurrent_tasks = ct;
+    }
+
+    pub fn set_timer_notify(&mut self, notify: Arc<Notify>) {
+        self.timer_notify = Some(notify);
+    }
+
+    pub fn set_input_connections(&mut self, conns: SharedInputConnections) {
+        self.input_connections = conns;
+    }
+
+    pub fn set_output_connections(&mut self, conns: SharedOutputConnections) {
+        self.output_connections = conns;
+    }
+
+    pub fn set_input_notifiers(&mut self, notifiers: SharedInputNotifiers) {
+        self.input_notifiers = notifiers;
     }
 
     /// Add an input connection and wire its notifier for event-driven wakeup.
@@ -296,6 +326,41 @@ impl ProcessorNode {
         };
 
         'lifecycle: loop {
+            if self.task_index > 0 {
+                let max_tasks = self.concurrent_tasks.load(Ordering::Relaxed);
+                if (self.task_index as u64) >= max_tasks {
+                    tracing::debug!(
+                        processor = %self.name,
+                        task_index = self.task_index,
+                        max_tasks = max_tasks,
+                        "Concurrent task dormant"
+                    );
+                    let mut dormant_ticks = 0u32;
+                    loop {
+                        tokio::select! {
+                            _ = self.cancel_token.cancelled() => {
+                                return;
+                            }
+                            _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
+                                let new_max = self.concurrent_tasks.load(Ordering::Relaxed);
+                                if (self.task_index as u64) < new_max {
+                                    break;
+                                }
+                                dormant_ticks += 1;
+                                if dormant_ticks >= 60 {
+                                    tracing::info!(
+                                        processor = %self.name,
+                                        task_index = self.task_index,
+                                        "Dormant task exiting after timeout"
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Re-read properties from shared store on each lifecycle iteration.
             // This picks up any config changes made via the API while stopped.
             let ctx = NodeProcessContext {
@@ -389,6 +454,7 @@ impl ProcessorNode {
                 // Check if the API requested a circuit reset.
                 if self.metrics.reset_requested.swap(false, Ordering::Relaxed) {
                     self.supervisor.reset_circuit();
+                    self.metrics.circuit_open.store(false, Ordering::Relaxed);
                     tracing::info!(processor = %self.name, "Circuit breaker reset via API");
                 }
 
@@ -399,6 +465,18 @@ impl ProcessorNode {
                         &self.name,
                         BulletinSeverity::Warn,
                         "Circuit breaker open, skipping trigger".to_string(),
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    continue;
+                }
+
+                if !self.supervisor.is_circuit_open()
+                    && self.metrics.circuit_open.load(Ordering::Relaxed)
+                {
+                    tracing::warn!(
+                        processor = %self.name,
+                        task_index = self.task_index,
+                        "Circuit breaker tripped by sibling task, pausing"
                     );
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                     continue;
@@ -604,7 +682,11 @@ impl ProcessorNode {
     async fn wait_for_trigger(&self) {
         match &self.scheduling {
             SchedulingStrategy::TimerDriven { interval_ms } => {
-                tokio::time::sleep(std::time::Duration::from_millis(*interval_ms)).await;
+                if let Some(ref notify) = self.timer_notify {
+                    notify.notified().await;
+                } else {
+                    tokio::time::sleep(std::time::Duration::from_millis(*interval_ms)).await;
+                }
             }
             SchedulingStrategy::EventDriven => {
                 // Snapshot the notifiers under a brief lock, then await outside

@@ -19,7 +19,7 @@ use super::persistence::{
 };
 use super::process_group::{PortInfo, PortType, ProcessGroupId, ProcessGroupInfo};
 use super::processor_node::{
-    SharedInputConnections, SharedInputNotifiers, SharedOutputConnections,
+    SchedulingStrategy, SharedInputConnections, SharedInputNotifiers, SharedOutputConnections,
 };
 /// Mask value used for sensitive properties in API responses.
 ///
@@ -86,6 +86,7 @@ pub struct ProcessorInfo {
     /// Human-readable scheduling description, e.g. "timer-driven (1000ms)" or "event-driven".
     /// The concrete `SchedulingStrategy` enum is kept internal to the engine.
     pub scheduling_display: String,
+    pub scheduling: SchedulingStrategy,
     pub metrics: Arc<ProcessorMetrics>,
     /// Property descriptors (static metadata from the processor type).
     pub property_descriptors: Vec<PropertyDescriptorInfo>,
@@ -107,8 +108,10 @@ pub struct ProcessorInfo {
     pub yield_duration_ms: Arc<AtomicU64>,
     /// Bulletin level threshold: DEBUG, INFO, WARN, ERROR (default WARN).
     pub bulletin_level: Arc<RwLock<String>>,
-    /// Number of concurrent tasks (default 1, currently enforced as max 1).
+    /// Number of concurrent tasks (default 1, max 64).
     pub concurrent_tasks: Arc<AtomicU64>,
+    /// Number of sibling tasks already spawned (excludes the primary task 0).
+    pub spawned_task_count: Arc<AtomicU64>,
     /// User comments (persisted with config).
     pub comments: Arc<RwLock<String>>,
     /// Auto-terminated relationship names (configurable at runtime).
@@ -347,6 +350,37 @@ impl EngineHandle {
                     AuditAction::ProcessorStarted,
                     AuditTarget::processor(name),
                 ));
+
+                let concurrent = info
+                    .concurrent_tasks
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let already_spawned = info
+                    .spawned_task_count
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                if concurrent > 1 && already_spawned < concurrent.saturating_sub(1) {
+                    let proc_name = name.to_string();
+                    let tx = self.mutation_tx.clone();
+                    tokio::spawn(async move {
+                        let (reply_tx, reply_rx) = oneshot::channel();
+                        if tx
+                            .send(MutationCommand::SpawnConcurrentTasks {
+                                processor_name: proc_name.clone(),
+                                count: concurrent,
+                                reply: reply_tx,
+                            })
+                            .await
+                            .is_ok()
+                            && let Ok(Err(e)) = reply_rx.await
+                        {
+                            tracing::error!(
+                                processor = %proc_name,
+                                error = %e,
+                                "Failed to spawn concurrent tasks"
+                            );
+                        }
+                    });
+                }
+
                 return Ok(());
             }
         }
@@ -354,6 +388,25 @@ impl EngineHandle {
             "Processor not found: {}",
             name
         )))
+    }
+
+    pub async fn spawn_concurrent_tasks(
+        &self,
+        processor_name: &str,
+        count: u64,
+    ) -> Result<(), ConfigUpdateError> {
+        let (tx, rx) = oneshot::channel();
+        self.mutation_tx
+            .send(MutationCommand::SpawnConcurrentTasks {
+                processor_name: processor_name.to_string(),
+                count,
+                reply: tx,
+            })
+            .await
+            .map_err(|_| ConfigUpdateError::NotFound("Engine not running".to_string()))?;
+        rx.await
+            .map_err(|_| ConfigUpdateError::NotFound("Mutation handler dropped".to_string()))?
+            .map_err(|e| ConfigUpdateError::NotFound(e.to_string()))
     }
 
     /// Pause a processor by name (set paused=true).
@@ -632,9 +685,9 @@ impl EngineHandle {
             }
         }
 
-        // Apply concurrent tasks (accept for forward compat, enforce max 1 for now).
+        // Apply concurrent tasks (1-64).
         if let Some(tasks) = concurrent_tasks {
-            let clamped = tasks.clamp(1, 1);
+            let clamped = tasks.clamp(1, 64);
             info.concurrent_tasks
                 .store(clamped, std::sync::atomic::Ordering::Relaxed);
         }
