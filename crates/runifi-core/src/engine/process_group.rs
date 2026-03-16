@@ -50,6 +50,8 @@ pub struct ProcessGroupInfo {
     pub default_flowfile_expiration_ms: Option<u64>,
     /// Execution mode: Standard (per-processor commits) or Stateless (group transaction).
     pub execution_mode: ExecutionMode,
+    /// IDs of controller services scoped to this process group.
+    pub controller_service_ids: Vec<String>,
 }
 
 /// Information about an input or output port on a process group.
@@ -98,6 +100,7 @@ impl ProcessGroupInfo {
             default_back_pressure_bytes: None,
             default_flowfile_expiration_ms: None,
             execution_mode: ExecutionMode::default(),
+            controller_service_ids: Vec::new(),
         }
     }
 

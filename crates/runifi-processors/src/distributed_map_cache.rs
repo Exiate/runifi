@@ -91,6 +91,7 @@ inventory::submit! {
         type_name: "DistributedMapCacheServer",
         description: "In-memory key-value cache service for cross-processor state sharing",
         factory: || Box::new(DistributedMapCacheServer::new()),
+        tags: &["Cache", "Distributed"],
     }
 }
 

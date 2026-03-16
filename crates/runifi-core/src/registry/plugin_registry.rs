@@ -135,6 +135,14 @@ impl PluginRegistry {
             .unwrap_or_default()
     }
 
+    /// Get tags for a controller service type.
+    pub fn service_tags(&self, type_name: &str) -> Vec<String> {
+        self.services
+            .get(type_name)
+            .map(|desc| desc.tags.iter().map(|t| t.to_string()).collect())
+            .unwrap_or_default()
+    }
+
     /// Create a new reporting task instance by type name.
     pub fn create_reporting_task(&self, type_name: &str) -> Option<Box<dyn ReportingTask>> {
         self.reporting_tasks

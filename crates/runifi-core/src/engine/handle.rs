@@ -1425,6 +1425,7 @@ impl EngineHandle {
             default_back_pressure_bytes: None,
             default_flowfile_expiration_ms: None,
             execution_mode: crate::engine::process_group::ExecutionMode::default(),
+            controller_service_ids: Vec::new(),
         };
 
         groups.push(group_info);
