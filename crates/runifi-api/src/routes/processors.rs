@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::dto::{
     CreateProcessorRequest, ProcessorConfigResponse, ProcessorConfigUpdateRequest,
-    ProcessorDetailResponse, ProcessorResponse, RelationshipResponse, UpdatePositionRequest,
+    ProcessorDetailResponse, ProcessorResponse, RelationshipResponse, RunOnceResponse,
+    UpdatePositionRequest,
 };
 use crate::error::ApiError;
 use crate::rbac;
@@ -40,6 +41,7 @@ pub fn routes() -> Router<ApiState> {
         .route("/api/v1/processors/{name}/disable", put(disable_processor))
         .route("/api/v1/processors/{name}/enable", put(enable_processor))
         .route("/api/v1/processors/{name}/validation", get(get_validation))
+        .route("/api/v1/processors/{name}/run-once", post(run_once))
         .route(
             "/api/v1/processors/{name}/state",
             delete_method(clear_processor_state),
@@ -487,6 +489,34 @@ async fn get_validation(
         "valid": errors.is_empty(),
         "errors": errors,
     })))
+}
+
+// ── Run-once ─────────────────────────────────────────────────────────────────
+
+/// POST /api/v1/processors/{name}/run-once
+///
+/// Trigger a single `on_trigger` invocation on a stopped processor.
+/// Returns execution result including duration, FlowFile counts, and any errors.
+async fn run_once(
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+) -> Result<Json<RunOnceResponse>, ApiError> {
+    let result = state
+        .handle
+        .run_once_processor(&name)
+        .await
+        .map_err(ApiError::from)?;
+
+    Ok(Json(RunOnceResponse {
+        processor: name,
+        success: result.success,
+        duration_ms: result.duration_ms,
+        flowfiles_in: result.flowfiles_in,
+        flowfiles_out: result.flowfiles_out,
+        bytes_in: result.bytes_in,
+        bytes_out: result.bytes_out,
+        error: result.error,
+    }))
 }
 
 // ── Processor State Endpoints ─────────────────────────────────────────────────

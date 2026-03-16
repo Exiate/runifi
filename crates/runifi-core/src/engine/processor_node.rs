@@ -15,7 +15,7 @@ use runifi_plugin_api::state::StateManager;
 use runifi_plugin_api::{FlowFile, Processor};
 
 use super::bulletin::{BulletinBoard, BulletinSeverity};
-use super::metrics::ProcessorMetrics;
+use super::metrics::{ProcessorMetrics, RunOnceResult};
 use super::supervisor::{InvocationResult, ProcessorSupervisor};
 use crate::cluster::load_balance::{LoadBalanceStrategy, LoadBalancer};
 use crate::connection::flow_connection::FlowConnection;
@@ -297,9 +297,15 @@ impl ProcessorNode {
     /// false, the inner processing loop breaks cleanly, and the task waits
     /// until `enabled` is set back to true (or the cancellation token fires).
     pub async fn run(mut self) {
+        // Clone Arc references so closures don't borrow `self`, allowing
+        // mutable borrows of `self` elsewhere in the lifecycle loop.
+        let service_registry_ref = self.service_registry.clone();
+        let state_provider_ref = self.state_provider.clone();
+        let processor_name = self.name.clone();
+
         // Last context, kept for on_stopped after lifecycle loop exits.
         let make_service_lookup = || -> Option<Box<dyn ServiceLookup>> {
-            self.service_registry
+            service_registry_ref
                 .as_ref()
                 .map(|r| -> Box<dyn ServiceLookup> {
                     Box::new(RegistryServiceLookup::new(r.clone()))
@@ -307,10 +313,10 @@ impl ProcessorNode {
         };
 
         let make_state_manager = || -> Option<Box<dyn StateManager>> {
-            self.state_provider.as_ref().map(|p| {
+            state_provider_ref.as_ref().map(|p| {
                 Box::new(crate::repository::state_provider::CoreStateManager::new(
                     p.clone(),
-                    self.name.clone(),
+                    processor_name.clone(),
                 )) as Box<dyn StateManager>
             })
         };
@@ -380,12 +386,24 @@ impl ProcessorNode {
                 state_manager: make_state_manager(),
             };
             // Wait until the processor is enabled and not disabled (or cancelled).
+            // While stopped, also check for run-once requests (only on primary task).
             loop {
                 let enabled = self.metrics.enabled.load(Ordering::Relaxed);
                 let disabled = self.metrics.disabled.load(Ordering::Relaxed);
                 if enabled && !disabled {
                     break;
                 }
+
+                // Check for run-once request (only primary task handles run-once).
+                if self.task_index == 0
+                    && self
+                        .metrics
+                        .run_once_requested
+                        .swap(false, Ordering::Relaxed)
+                {
+                    self.execute_run_once();
+                }
+
                 tokio::select! {
                     _ = self.cancel_token.cancelled() => {
                         tracing::info!(processor = %self.name, "Processor exiting (cancelled while stopped)");
@@ -677,6 +695,174 @@ impl ProcessorNode {
         self.metrics.active.store(false, Ordering::Relaxed);
         self.supervisor.on_stopped(&last_ctx);
         tracing::info!(processor = %self.name, "Processor stopped");
+    }
+
+    /// Execute a single run-once invocation on a stopped processor.
+    ///
+    /// This mirrors the normal trigger path (on_scheduled -> invoke -> route -> on_stopped)
+    /// but runs exactly once and sends the result back through the oneshot channel.
+    fn execute_run_once(&mut self) {
+        let start = std::time::Instant::now();
+
+        // Take the oneshot sender from metrics. If absent, someone else grabbed it.
+        let result_tx = self.metrics.run_once_result_tx.lock().take();
+        let Some(result_tx) = result_tx else {
+            tracing::warn!(processor = %self.name, "Run-once requested but no result channel found");
+            return;
+        };
+
+        let service_lookup: Option<Box<dyn ServiceLookup>> = self
+            .service_registry
+            .as_ref()
+            .map(|r| -> Box<dyn ServiceLookup> { Box::new(RegistryServiceLookup::new(r.clone())) });
+
+        let state_manager: Option<Box<dyn StateManager>> = self.state_provider.as_ref().map(|p| {
+            Box::new(crate::repository::state_provider::CoreStateManager::new(
+                p.clone(),
+                self.name.clone(),
+            )) as Box<dyn StateManager>
+        });
+
+        let ctx = NodeProcessContext {
+            name: self.name.clone(),
+            id: self.id.clone(),
+            properties: self.properties.read().clone(),
+            yield_duration_ms: 1000,
+            service_lookup,
+            state_manager,
+        };
+
+        // Call on_scheduled.
+        if let Err(e) = self.supervisor.on_scheduled(&ctx) {
+            let elapsed = start.elapsed().as_millis() as u64;
+            tracing::error!(processor = %self.name, error = %e, "Run-once on_scheduled failed");
+            let _ = result_tx.send(RunOnceResult {
+                success: false,
+                duration_ms: elapsed,
+                flowfiles_in: 0,
+                flowfiles_out: 0,
+                bytes_in: 0,
+                bytes_out: 0,
+                error: Some(format!("on_scheduled failed: {e}")),
+            });
+            return;
+        }
+
+        // Snapshot input connections for the session.
+        let input_conns_snapshot: Vec<Arc<FlowConnection>> = self.input_connections.read().clone();
+
+        // Create session.
+        let mut session = CoreProcessSession::new(
+            self.content_repo.clone(),
+            self.id_gen.clone(),
+            input_conns_snapshot,
+            ctx.yield_duration_ms,
+            self.penalty_duration_ms,
+        );
+        session.set_provenance(
+            self.provenance_repo.clone(),
+            self.name.clone(),
+            self.type_name.clone(),
+        );
+
+        // Invoke with fault isolation.
+        let result = self
+            .supervisor
+            .invoke(&ctx, &mut session as &mut dyn ProcessSession);
+
+        // Sync supervisor metrics.
+        self.metrics.sync_from_supervisor(
+            self.supervisor.total_invocations(),
+            self.supervisor.total_failures(),
+            self.supervisor.consecutive_failures(),
+            self.supervisor.is_circuit_open(),
+        );
+
+        // Track input metrics.
+        let acquired = session.acquired_count();
+        let acquired_bytes = session.acquired_bytes();
+        if acquired > 0 {
+            self.metrics
+                .flowfiles_in
+                .fetch_add(acquired as u64, Ordering::Relaxed);
+            self.metrics
+                .bytes_in
+                .fetch_add(acquired_bytes, Ordering::Relaxed);
+        }
+
+        let (success, error_msg, ff_out, bytes_out_total) = match &result {
+            InvocationResult::Success | InvocationResult::Yield => {
+                if session.is_committed() {
+                    let (ff_out, bytes_out, routed) = self.route_transfers(&mut session);
+                    self.metrics
+                        .flowfiles_out
+                        .fetch_add(ff_out, Ordering::Relaxed);
+                    self.metrics
+                        .bytes_out
+                        .fetch_add(bytes_out, Ordering::Relaxed);
+
+                    // WAL commit.
+                    let remove_ids = session.take_committed_remove_ids();
+                    if !routed.is_empty() || !remove_ids.is_empty() {
+                        let mut ops: Vec<FlowFileOp<'_>> = Vec::new();
+                        for (ff, conn_id) in &routed {
+                            ops.push(FlowFileOp::Upsert {
+                                flowfile: ff,
+                                queue_id: conn_id,
+                            });
+                        }
+                        for id in &remove_ids {
+                            ops.push(FlowFileOp::Delete { id: *id });
+                        }
+                        if let Err(e) = self.flowfile_repo.commit_batch(&ops) {
+                            tracing::error!(
+                                processor = %self.name,
+                                error = %e,
+                                "Run-once WAL commit_batch failed"
+                            );
+                        }
+                    }
+
+                    (true, None, ff_out, bytes_out)
+                } else {
+                    (true, None, 0, 0)
+                }
+            }
+            InvocationResult::Failed(e) => {
+                let redacted_err = self.redact_message(&e.to_string());
+                tracing::warn!(processor = %self.name, error = %redacted_err, "Run-once failed");
+                session.rollback();
+                (false, Some(redacted_err), 0, 0)
+            }
+            InvocationResult::Panic(msg) => {
+                let redacted_msg = self.redact_message(msg);
+                tracing::error!(processor = %self.name, panic = %redacted_msg, "Run-once panicked");
+                (false, Some(format!("panic: {redacted_msg}")), 0, 0)
+            }
+        };
+
+        // Call on_stopped.
+        self.supervisor.on_stopped(&ctx);
+
+        let elapsed = start.elapsed().as_millis() as u64;
+        tracing::info!(
+            processor = %self.name,
+            success = success,
+            duration_ms = elapsed,
+            ff_in = acquired,
+            ff_out = ff_out,
+            "Run-once completed"
+        );
+
+        let _ = result_tx.send(RunOnceResult {
+            success,
+            duration_ms: elapsed,
+            flowfiles_in: acquired as u64,
+            flowfiles_out: ff_out,
+            bytes_in: acquired_bytes,
+            bytes_out: bytes_out_total,
+            error: error_msg,
+        });
     }
 
     async fn wait_for_trigger(&self) {

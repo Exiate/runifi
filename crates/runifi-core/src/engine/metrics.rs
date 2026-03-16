@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use parking_lot::Mutex;
+use serde::Serialize;
 
 /// Number of one-second buckets in the rolling window (5 minutes).
 const WINDOW_SECS: usize = 300;
@@ -150,6 +151,25 @@ pub struct RollingSnapshot {
     pub bytes_out_rate: f64,
 }
 
+/// Result of a single run-once processor execution.
+#[derive(Debug, Clone, Serialize)]
+pub struct RunOnceResult {
+    /// Whether the invocation completed successfully.
+    pub success: bool,
+    /// Execution duration in milliseconds.
+    pub duration_ms: u64,
+    /// Number of FlowFiles acquired from input connections.
+    pub flowfiles_in: u64,
+    /// Number of FlowFiles routed to output connections.
+    pub flowfiles_out: u64,
+    /// Total bytes read from input FlowFiles.
+    pub bytes_in: u64,
+    /// Total bytes written to output FlowFiles.
+    pub bytes_out: u64,
+    /// Error message if the invocation failed.
+    pub error: Option<String>,
+}
+
 /// Shared processor metrics — atomics for zero-contention reads from the API.
 ///
 /// The processor loop writes to these atomics; the API reads them.
@@ -180,6 +200,10 @@ pub struct ProcessorMetrics {
     validation_errors: Mutex<Vec<String>>,
     /// 5-minute rolling window — guarded by a lightweight mutex (only held during tick).
     rolling: Mutex<RollingWindow>,
+    /// API sets this flag to request a single run-once invocation on a stopped processor.
+    pub run_once_requested: AtomicBool,
+    /// Channel sender for returning the run-once result to the API caller.
+    pub run_once_result_tx: Mutex<Option<tokio::sync::oneshot::Sender<RunOnceResult>>>,
 }
 
 impl ProcessorMetrics {
@@ -201,6 +225,8 @@ impl ProcessorMetrics {
             disabled: AtomicBool::new(false),
             validation_errors: Mutex::new(Vec::new()),
             rolling: Mutex::new(RollingWindow::new()),
+            run_once_requested: AtomicBool::new(false),
+            run_once_result_tx: Mutex::new(None),
         }
     }
 
@@ -472,5 +498,42 @@ mod tests {
         let snap = w.snapshot();
         assert_eq!(snap.flowfiles_in_5m, 100);
         assert_eq!(snap.flowfiles_out_5m, 50);
+    }
+
+    #[test]
+    fn run_once_result_fields() {
+        let result = RunOnceResult {
+            success: true,
+            duration_ms: 42,
+            flowfiles_in: 5,
+            flowfiles_out: 3,
+            bytes_in: 1024,
+            bytes_out: 512,
+            error: None,
+        };
+        assert!(result.success);
+        assert_eq!(result.duration_ms, 42);
+        assert_eq!(result.flowfiles_in, 5);
+        assert_eq!(result.flowfiles_out, 3);
+        assert!(result.error.is_none());
+
+        let failed = RunOnceResult {
+            success: false,
+            duration_ms: 10,
+            flowfiles_in: 0,
+            flowfiles_out: 0,
+            bytes_in: 0,
+            bytes_out: 0,
+            error: Some("test error".to_string()),
+        };
+        assert!(!failed.success);
+        assert_eq!(failed.error.as_deref(), Some("test error"));
+    }
+
+    #[test]
+    fn processor_metrics_run_once_fields_default() {
+        let m = ProcessorMetrics::new();
+        assert!(!m.run_once_requested.load(Ordering::Relaxed));
+        assert!(m.run_once_result_tx.lock().is_none());
     }
 }
