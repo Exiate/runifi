@@ -3,6 +3,16 @@ use std::collections::HashMap;
 /// Unique identifier for a process group.
 pub type ProcessGroupId = String;
 
+/// Execution mode for a process group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExecutionMode {
+    /// Each processor commits independently (current behavior).
+    #[default]
+    Standard,
+    /// All processors share a single transaction — all-or-nothing semantics.
+    Stateless,
+}
+
 /// Information about a process group, visible to the API and engine handle.
 ///
 /// Process Groups are hierarchical containers that organize processors,
@@ -38,6 +48,8 @@ pub struct ProcessGroupInfo {
     pub default_back_pressure_bytes: Option<u64>,
     /// Default FlowFile expiration in milliseconds for connections in this group.
     pub default_flowfile_expiration_ms: Option<u64>,
+    /// Execution mode: Standard (per-processor commits) or Stateless (group transaction).
+    pub execution_mode: ExecutionMode,
 }
 
 /// Information about an input or output port on a process group.
@@ -85,6 +97,7 @@ impl ProcessGroupInfo {
             default_back_pressure_count: None,
             default_back_pressure_bytes: None,
             default_flowfile_expiration_ms: None,
+            execution_mode: ExecutionMode::default(),
         }
     }
 
@@ -189,5 +202,20 @@ mod tests {
         };
         assert_eq!(port.port_type, PortType::Input);
         assert_eq!(port.name, "raw-data");
+    }
+
+    #[test]
+    fn test_execution_mode_default_is_standard() {
+        assert_eq!(ExecutionMode::default(), ExecutionMode::Standard);
+    }
+
+    #[test]
+    fn test_execution_mode_on_process_group() {
+        let pg = ProcessGroupInfo::new("pg-1", "Test Group");
+        assert_eq!(pg.execution_mode, ExecutionMode::Standard);
+
+        let mut pg2 = ProcessGroupInfo::new("pg-2", "Stateless Group");
+        pg2.execution_mode = ExecutionMode::Stateless;
+        assert_eq!(pg2.execution_mode, ExecutionMode::Stateless);
     }
 }
