@@ -9,6 +9,8 @@
 //! └──────────┴────────────────────────┘
 //! ```
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::election::ElectionRole;
@@ -93,6 +95,12 @@ pub enum MessagePayload {
     // ── Bulletins (Phase 2) ───────────────────────────────────────────
     /// Forward a bulletin from a remote node to the coordinator.
     BulletinForward(BulletinForwardData),
+
+    // ── State replication (Phase 3) ─────────────────────────────────
+    /// Cluster state update from coordinator.
+    StateUpdate(StateUpdateData),
+    /// Full state sync response (for joining nodes).
+    StateSync(StateSyncData),
 }
 
 // ── Heartbeat types ──────────────────────────────────────────────────────────
@@ -268,6 +276,24 @@ pub struct BulletinForwardData {
     pub message: String,
     /// Unix timestamp in milliseconds.
     pub timestamp_ms: u64,
+}
+
+// ── State replication types ──────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StateUpdateData {
+    /// The component (processor) whose state was updated.
+    pub component_id: String,
+    /// The key-value state entries.
+    pub entries: HashMap<String, String>,
+    /// Version of this state snapshot.
+    pub version: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StateSyncData {
+    /// Full state snapshot for all components, keyed by component ID.
+    pub states: HashMap<String, StateUpdateData>,
 }
 
 // ── Wire format helpers ──────────────────────────────────────────────────────

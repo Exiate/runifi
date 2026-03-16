@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use parking_lot::RwLock;
 use tokio::sync::Notify;
@@ -12,12 +12,13 @@ use runifi_plugin_api::relationship::Relationship;
 use runifi_plugin_api::service::ServiceLookup;
 use runifi_plugin_api::session::ProcessSession;
 use runifi_plugin_api::state::StateManager;
-use runifi_plugin_api::{FlowFile, Processor};
+use runifi_plugin_api::{ExecutionNode, FlowFile, Processor};
 
 use super::bulletin::{BulletinBoard, BulletinSeverity};
 use super::metrics::{ProcessorMetrics, RunOnceResult};
 use super::supervisor::{InvocationResult, ProcessorSupervisor};
 use crate::cluster::load_balance::{LoadBalanceStrategy, LoadBalancer};
+use crate::cluster::state::SharedClusterStateProvider;
 use crate::connection::flow_connection::FlowConnection;
 use crate::id::IdGenerator;
 use crate::registry::service_registry::{RegistryServiceLookup, SharedServiceRegistry};
@@ -136,6 +137,12 @@ pub struct ProcessorNode {
     task_index: u32,
     concurrent_tasks: Arc<AtomicU64>,
     timer_notify: Option<Arc<Notify>>,
+    /// Cluster-scoped state provider for shared processor state.
+    cluster_state_provider: Option<SharedClusterStateProvider>,
+    /// Whether this processor should run on all nodes or only the primary.
+    execution_node: ExecutionNode,
+    /// Shared flag indicating whether this node is the primary in the cluster.
+    is_primary_node: Arc<AtomicBool>,
 }
 
 impl ProcessorNode {
@@ -178,6 +185,9 @@ impl ProcessorNode {
             task_index: 0,
             concurrent_tasks: Arc::new(AtomicU64::new(1)),
             timer_notify: None,
+            cluster_state_provider: None,
+            execution_node: ExecutionNode::All,
+            is_primary_node: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -219,6 +229,21 @@ impl ProcessorNode {
     /// Set the local state provider for processor state persistence.
     pub fn set_state_provider(&mut self, provider: SharedLocalStateProvider) {
         self.state_provider = Some(provider);
+    }
+
+    /// Set the cluster-scoped state provider.
+    pub fn set_cluster_state_provider(&mut self, provider: SharedClusterStateProvider) {
+        self.cluster_state_provider = Some(provider);
+    }
+
+    /// Set which nodes should execute this processor.
+    pub fn set_execution_node(&mut self, exec: ExecutionNode) {
+        self.execution_node = exec;
+    }
+
+    /// Set the shared primary node flag.
+    pub fn set_primary_node_flag(&mut self, flag: Arc<AtomicBool>) {
+        self.is_primary_node = flag;
     }
 
     pub fn set_task_index(&mut self, idx: u32) {
@@ -264,6 +289,11 @@ impl ProcessorNode {
         self.supervisor.relationships()
     }
 
+    /// Get the processor's execution node requirement.
+    pub fn processor_execution_node(&self) -> ExecutionNode {
+        self.supervisor.execution_node()
+    }
+
     /// Check if the circuit breaker is open.
     pub fn is_circuit_open(&self) -> bool {
         self.supervisor.is_circuit_open()
@@ -301,6 +331,7 @@ impl ProcessorNode {
         // mutable borrows of `self` elsewhere in the lifecycle loop.
         let service_registry_ref = self.service_registry.clone();
         let state_provider_ref = self.state_provider.clone();
+        let cluster_state_provider_ref = self.cluster_state_provider.clone();
         let processor_name = self.name.clone();
 
         // Last context, kept for on_stopped after lifecycle loop exits.
@@ -314,10 +345,18 @@ impl ProcessorNode {
 
         let make_state_manager = || -> Option<Box<dyn StateManager>> {
             state_provider_ref.as_ref().map(|p| {
-                Box::new(crate::repository::state_provider::CoreStateManager::new(
-                    p.clone(),
-                    processor_name.clone(),
-                )) as Box<dyn StateManager>
+                let manager = match cluster_state_provider_ref.as_ref() {
+                    Some(cp) => crate::repository::state_provider::CoreStateManager::with_cluster(
+                        p.clone(),
+                        cp.clone(),
+                        processor_name.clone(),
+                    ),
+                    None => crate::repository::state_provider::CoreStateManager::new(
+                        p.clone(),
+                        processor_name.clone(),
+                    ),
+                };
+                Box::new(manager) as Box<dyn StateManager>
             })
         };
 
@@ -448,6 +487,21 @@ impl ProcessorNode {
                             break 'lifecycle;
                         }
                         _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+                    }
+                    continue;
+                }
+
+                // Primary-node-only check: if this processor requires the primary
+                // node and we are not the primary, sleep and re-check.
+                if self.execution_node == ExecutionNode::Primary
+                    && !self.is_primary_node.load(Ordering::Relaxed)
+                {
+                    tokio::select! {
+                        _ = self.cancel_token.cancelled() => {
+                            tracing::info!(processor = %self.name, "Processor stopping (cancelled while waiting for primary)");
+                            break 'lifecycle;
+                        }
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
                     }
                     continue;
                 }
@@ -717,10 +771,18 @@ impl ProcessorNode {
             .map(|r| -> Box<dyn ServiceLookup> { Box::new(RegistryServiceLookup::new(r.clone())) });
 
         let state_manager: Option<Box<dyn StateManager>> = self.state_provider.as_ref().map(|p| {
-            Box::new(crate::repository::state_provider::CoreStateManager::new(
-                p.clone(),
-                self.name.clone(),
-            )) as Box<dyn StateManager>
+            let manager = match self.cluster_state_provider.as_ref() {
+                Some(cp) => crate::repository::state_provider::CoreStateManager::with_cluster(
+                    p.clone(),
+                    cp.clone(),
+                    self.name.clone(),
+                ),
+                None => crate::repository::state_provider::CoreStateManager::new(
+                    p.clone(),
+                    self.name.clone(),
+                ),
+            };
+            Box::new(manager) as Box<dyn StateManager>
         });
 
         let ctx = NodeProcessContext {
