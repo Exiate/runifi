@@ -45,6 +45,13 @@ pub enum MutationCommand {
         force: bool,
         reply: oneshot::Sender<Result<(), MutationError>>,
     },
+
+    /// Spawn additional concurrent tasks for a processor.
+    SpawnConcurrentTasks {
+        processor_name: String,
+        count: u64,
+        reply: oneshot::Sender<Result<(), MutationError>>,
+    },
 }
 
 /// Error returned by engine mutation commands.

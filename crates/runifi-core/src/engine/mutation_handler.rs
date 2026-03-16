@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
 use parking_lot::RwLock;
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use runifi_plugin_api::Processor;
@@ -20,9 +21,11 @@ use crate::connection::flow_connection::FlowConnection;
 use crate::connection::query::FlowConnectionQuery;
 use crate::id::IdGenerator;
 use crate::registry::plugin_registry::PluginRegistry;
+use crate::registry::service_registry::SharedServiceRegistry;
 use crate::repository::content_repo::ContentRepository;
 use crate::repository::flowfile_repo::FlowFileRepository;
 use crate::repository::provenance_repo::SharedProvenanceRepository;
+use crate::repository::state_provider::SharedLocalStateProvider;
 
 use super::flow_engine::scheduling_display;
 
@@ -44,6 +47,8 @@ pub struct DefaultMutationHandler {
     pub flowfile_repo: Arc<dyn FlowFileRepository>,
     pub audit_logger: Arc<dyn AuditLogger>,
     pub provenance_repo: SharedProvenanceRepository,
+    pub service_registry: Option<SharedServiceRegistry>,
+    pub state_provider: Option<SharedLocalStateProvider>,
 }
 
 impl DefaultMutationHandler {
@@ -166,6 +171,7 @@ impl DefaultMutationHandler {
             name: name.to_string(),
             type_name: type_name.to_string(),
             scheduling_display: scheduling_display(&scheduling),
+            scheduling: scheduling.clone(),
             metrics,
             property_descriptors: prop_descriptors,
             relationships,
@@ -177,6 +183,7 @@ impl DefaultMutationHandler {
             yield_duration_ms: Arc::new(AtomicU64::new(1_000)),
             bulletin_level: Arc::new(RwLock::new("WARN".to_string())),
             concurrent_tasks: Arc::new(AtomicU64::new(1)),
+            spawned_task_count: Arc::new(AtomicU64::new(0)),
             comments: Arc::new(RwLock::new(String::new())),
             auto_terminated_relationships: Arc::new(RwLock::new(Vec::new())),
         });
@@ -385,6 +392,133 @@ impl DefaultMutationHandler {
             AuditAction::ConnectionRemoved,
             AuditTarget::connection(id),
         ));
+        Ok(())
+    }
+
+    pub fn handle_spawn_concurrent_tasks(
+        &self,
+        processor_name: &str,
+        count: u64,
+    ) -> std::result::Result<(), MutationError> {
+        let reg = self
+            .registry
+            .as_ref()
+            .ok_or_else(|| MutationError::Internal("No plugin registry available".into()))?;
+
+        let procs = self.live_procs.read();
+        let info = procs
+            .iter()
+            .find(|p| p.name == processor_name)
+            .ok_or_else(|| MutationError::ProcessorNotFound(processor_name.to_string()))?;
+
+        let already_spawned = info
+            .spawned_task_count
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if already_spawned >= count.saturating_sub(1) {
+            return Ok(()); // Already have enough siblings.
+        }
+        let start_idx = already_spawned + 1;
+        let spawned_task_count = info.spawned_task_count.clone();
+
+        let type_name = info.type_name.clone();
+        let scheduling = info.scheduling.clone();
+        let properties = info.properties.clone();
+        let metrics = info.metrics.clone();
+        let input_connections = info.input_connections.clone();
+        let output_connections = info.output_connections.clone();
+        let input_notifiers = info.input_notifiers.clone();
+        let concurrent_tasks = info.concurrent_tasks.clone();
+        let sensitive_names: Vec<String> = info
+            .property_descriptors
+            .iter()
+            .filter(|d| d.sensitive)
+            .map(|d| d.name.clone())
+            .collect();
+
+        drop(procs);
+
+        let cancel_token = self
+            .proc_tokens
+            .lock()
+            .get(processor_name)
+            .cloned()
+            .ok_or_else(|| MutationError::ProcessorNotFound(processor_name.to_string()))?;
+
+        let timer_notify = if count > 1 {
+            if let SchedulingStrategy::TimerDriven { interval_ms } = &scheduling {
+                let notify = Arc::new(Notify::new());
+                let timer_token = cancel_token.child_token();
+                let interval = *interval_ms;
+                let notify_clone = notify.clone();
+                tokio::spawn(async move {
+                    loop {
+                        tokio::select! {
+                            _ = timer_token.cancelled() => break,
+                            _ = tokio::time::sleep(std::time::Duration::from_millis(interval)) => {
+                                notify_clone.notify_waiters();
+                            }
+                        }
+                    }
+                });
+                Some(notify)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        for task_idx in start_idx..count {
+            let proc_instance = reg.create_processor(&type_name).ok_or_else(|| {
+                MutationError::Internal(format!(
+                    "Failed to create processor instance for concurrent task {}",
+                    task_idx
+                ))
+            })?;
+
+            let mut pn = ProcessorNode::new(
+                processor_name.to_string(),
+                format!("runtime-{}/task-{}", processor_name, task_idx),
+                proc_instance,
+                scheduling.clone(),
+                properties.clone(),
+                self.content_repo.clone(),
+                self.id_gen.clone(),
+                cancel_token.clone(),
+                metrics.clone(),
+                self.bulletin_board.clone(),
+                self.flowfile_repo.clone(),
+            );
+            pn.set_type_name(type_name.clone());
+            pn.set_provenance_repo(self.provenance_repo.clone());
+            pn.set_task_index(task_idx as u32);
+            pn.set_concurrent_tasks(concurrent_tasks.clone());
+            if let Some(ref registry) = self.service_registry {
+                pn.set_service_registry(registry.clone());
+            }
+            if let Some(ref provider) = self.state_provider {
+                pn.set_state_provider(provider.clone());
+            }
+            if !sensitive_names.is_empty() {
+                pn.set_sensitive_property_names(sensitive_names.clone());
+            }
+            if let Some(ref tn) = timer_notify {
+                pn.set_timer_notify(tn.clone());
+            }
+
+            pn.set_input_connections(input_connections.clone());
+            pn.set_output_connections(output_connections.clone());
+            pn.set_input_notifiers(input_notifiers.clone());
+
+            tokio::spawn(pn.run());
+            spawned_task_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        tracing::info!(
+            processor = processor_name,
+            task_count = count,
+            "Spawned concurrent tasks"
+        );
         Ok(())
     }
 }

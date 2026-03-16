@@ -531,6 +531,23 @@ async fn main() -> Result<()> {
             }
         }
 
+        // Spawn concurrent tasks for processors with concurrent_tasks > 1.
+        for proc_state in &state.processors {
+            if let Some(concurrent) = proc_state.concurrent_tasks
+                && concurrent > 1
+                && let Err(e) = handle
+                    .spawn_concurrent_tasks(&proc_state.name, concurrent)
+                    .await
+            {
+                tracing::warn!(
+                    processor = %proc_state.name,
+                    concurrent_tasks = concurrent,
+                    error = %e,
+                    "Failed to spawn concurrent tasks on restore"
+                );
+            }
+        }
+
         // Restore process groups from persisted state.
         restore_process_groups(handle, &state.process_groups);
     }
