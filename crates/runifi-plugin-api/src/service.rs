@@ -61,6 +61,7 @@ pub struct ControllerServiceDescriptor {
     pub type_name: &'static str,
     pub description: &'static str,
     pub factory: fn() -> Box<dyn ControllerService>,
+    pub tags: &'static [&'static str],
 }
 
 inventory::collect!(ControllerServiceDescriptor);

@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 use runifi_plugin_api::property::PropertyDescriptor;
-use runifi_plugin_api::record::{Record, RecordSchema};
-use runifi_plugin_api::result::ProcessResult;
+use runifi_plugin_api::record::{Record, RecordFieldType, RecordSchema, SchemaField};
+use runifi_plugin_api::result::{PluginError, ProcessResult};
 use runifi_plugin_api::service::{ControllerService, ControllerServiceDescriptor};
 
 /// In-memory schema registry.
@@ -19,6 +19,16 @@ use runifi_plugin_api::service::{ControllerService, ControllerServiceDescriptor}
 pub struct SchemaRegistry {
     schemas: Arc<RwLock<HashMap<String, Arc<RecordSchema>>>>,
     enabled: bool,
+    schema_access_strategy: SchemaAccessStrategy,
+}
+
+/// How the registry resolves schemas for processors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchemaAccessStrategy {
+    /// Look up schemas by name from the registry.
+    Name,
+    /// Infer schema from the data at runtime.
+    Infer,
 }
 
 impl SchemaRegistry {
@@ -26,7 +36,13 @@ impl SchemaRegistry {
         Self {
             schemas: Arc::new(RwLock::new(HashMap::new())),
             enabled: false,
+            schema_access_strategy: SchemaAccessStrategy::Name,
         }
+    }
+
+    /// Get the configured schema access strategy.
+    pub fn schema_access_strategy(&self) -> SchemaAccessStrategy {
+        self.schema_access_strategy
     }
 
     /// Register a schema by name. Overwrites any existing schema with the same name.
@@ -86,8 +102,38 @@ impl Default for SchemaRegistry {
     }
 }
 
+const PROP_SCHEMA_ACCESS_STRATEGY: PropertyDescriptor = PropertyDescriptor::new(
+    "Schema Access Strategy",
+    "How the registry resolves schemas: 'Name' for explicit lookup, 'Infer' for runtime inference.",
+)
+.default_value("Name")
+.allowed_values(&["Name", "Infer"]);
+
 impl ControllerService for SchemaRegistry {
-    fn on_configure(&mut self, _properties: &HashMap<String, String>) -> ProcessResult {
+    fn on_configure(&mut self, properties: &HashMap<String, String>) -> ProcessResult {
+        // Parse schema access strategy.
+        if let Some(strategy) = properties.get("Schema Access Strategy") {
+            self.schema_access_strategy = match strategy.as_str() {
+                "Name" => SchemaAccessStrategy::Name,
+                "Infer" => SchemaAccessStrategy::Infer,
+                other => {
+                    return Err(PluginError::ProcessingFailed(format!(
+                        "invalid Schema Access Strategy: '{other}', expected 'Name' or 'Infer'"
+                    )));
+                }
+            };
+        }
+
+        // Parse dynamic schema definitions from properties with "schema." prefix.
+        // Each property value is a JSON array of field definitions:
+        // [{"name": "field_name", "type": "String", "nullable": false}, ...]
+        for (key, value) in properties {
+            if let Some(schema_name) = key.strip_prefix("schema.") {
+                let schema = parse_json_schema_definition(schema_name, value)?;
+                self.register(schema_name.to_string(), schema);
+            }
+        }
+
         Ok(())
     }
 
@@ -97,7 +143,12 @@ impl ControllerService for SchemaRegistry {
 
     fn enable(&mut self) -> ProcessResult {
         self.enabled = true;
-        tracing::info!("SchemaRegistry enabled");
+        let names = self.schema_names();
+        tracing::info!(
+            strategy = ?self.schema_access_strategy,
+            schema_count = names.len(),
+            "SchemaRegistry enabled"
+        );
         Ok(())
     }
 
@@ -112,7 +163,66 @@ impl ControllerService for SchemaRegistry {
     }
 
     fn property_descriptors(&self) -> Vec<PropertyDescriptor> {
-        Vec::new()
+        vec![PROP_SCHEMA_ACCESS_STRATEGY]
+    }
+}
+
+/// Parse a JSON schema definition string into a `RecordSchema`.
+///
+/// Expected format: `[{"name": "field_name", "type": "String", "nullable": false}, ...]`
+///
+/// Supported types: "String", "Int", "Float", "Boolean", "Array", "Record"
+fn parse_json_schema_definition(schema_name: &str, json: &str) -> ProcessResult<RecordSchema> {
+    let value: serde_json::Value = serde_json::from_str(json).map_err(|e| {
+        PluginError::ProcessingFailed(format!("failed to parse schema '{schema_name}': {e}"))
+    })?;
+
+    let arr = value.as_array().ok_or_else(|| {
+        PluginError::ProcessingFailed(format!(
+            "schema '{schema_name}' must be a JSON array of field definitions"
+        ))
+    })?;
+
+    let mut fields = Vec::with_capacity(arr.len());
+    for (i, field_def) in arr.iter().enumerate() {
+        let name = field_def["name"]
+            .as_str()
+            .ok_or_else(|| {
+                PluginError::ProcessingFailed(format!(
+                    "schema '{schema_name}' field {i}: missing 'name'"
+                ))
+            })?
+            .to_string();
+
+        let type_str = field_def["type"].as_str().unwrap_or("String");
+        let field_type = parse_field_type(type_str).map_err(|e| {
+            PluginError::ProcessingFailed(format!("schema '{schema_name}' field '{name}': {e}"))
+        })?;
+
+        let nullable = field_def["nullable"].as_bool().unwrap_or(true);
+
+        fields.push(SchemaField {
+            name,
+            field_type,
+            nullable,
+        });
+    }
+
+    Ok(RecordSchema::new(Some(schema_name.to_string()), fields))
+}
+
+fn parse_field_type(s: &str) -> Result<RecordFieldType, String> {
+    match s {
+        "String" => Ok(RecordFieldType::String),
+        "Int" => Ok(RecordFieldType::Int),
+        "Float" => Ok(RecordFieldType::Float),
+        "Boolean" => Ok(RecordFieldType::Boolean),
+        "Array" => Ok(RecordFieldType::Array(Box::new(RecordFieldType::String))),
+        "Record" => Ok(RecordFieldType::Record(Arc::new(RecordSchema::new(
+            None,
+            Vec::new(),
+        )))),
+        other => Err(format!("unsupported field type: '{other}'")),
     }
 }
 
@@ -121,6 +231,7 @@ inventory::submit! {
         type_name: "SchemaRegistry",
         description: "In-memory schema registry for record-oriented processing",
         factory: || Box::new(SchemaRegistry::new()),
+        tags: &["Record", "Schema"],
     }
 }
 
@@ -225,6 +336,82 @@ mod tests {
 
         registry.disable().unwrap();
         assert!(!registry.is_enabled());
+    }
+
+    #[test]
+    fn configure_schema_access_strategy() {
+        let mut registry = SchemaRegistry::new();
+        assert_eq!(
+            registry.schema_access_strategy(),
+            SchemaAccessStrategy::Name
+        );
+
+        let mut props = HashMap::new();
+        props.insert("Schema Access Strategy".to_string(), "Infer".to_string());
+        registry.on_configure(&props).unwrap();
+        assert_eq!(
+            registry.schema_access_strategy(),
+            SchemaAccessStrategy::Infer
+        );
+    }
+
+    #[test]
+    fn configure_invalid_strategy() {
+        let mut registry = SchemaRegistry::new();
+        let mut props = HashMap::new();
+        props.insert("Schema Access Strategy".to_string(), "Invalid".to_string());
+        assert!(registry.on_configure(&props).is_err());
+    }
+
+    #[test]
+    fn dynamic_schema_from_properties() {
+        let mut registry = SchemaRegistry::new();
+        let mut props = HashMap::new();
+        props.insert(
+            "schema.person".to_string(),
+            r#"[{"name":"name","type":"String","nullable":false},{"name":"age","type":"Int","nullable":false}]"#.to_string(),
+        );
+        registry.on_configure(&props).unwrap();
+
+        let schema = registry.get_schema("person").unwrap();
+        assert_eq!(schema.name, Some("person".to_string()));
+        assert_eq!(schema.fields.len(), 2);
+        assert_eq!(
+            schema.field("name").unwrap().field_type,
+            RecordFieldType::String
+        );
+        assert_eq!(
+            schema.field("age").unwrap().field_type,
+            RecordFieldType::Int
+        );
+        assert!(!schema.field("name").unwrap().nullable);
+    }
+
+    #[test]
+    fn dynamic_schema_invalid_json() {
+        let mut registry = SchemaRegistry::new();
+        let mut props = HashMap::new();
+        props.insert("schema.bad".to_string(), "not json".to_string());
+        assert!(registry.on_configure(&props).is_err());
+    }
+
+    #[test]
+    fn dynamic_schema_missing_field_name() {
+        let mut registry = SchemaRegistry::new();
+        let mut props = HashMap::new();
+        props.insert(
+            "schema.bad".to_string(),
+            r#"[{"type":"String"}]"#.to_string(),
+        );
+        assert!(registry.on_configure(&props).is_err());
+    }
+
+    #[test]
+    fn property_descriptors_include_strategy() {
+        let registry = SchemaRegistry::new();
+        let descriptors = registry.property_descriptors();
+        assert_eq!(descriptors.len(), 1);
+        assert_eq!(descriptors[0].name, "Schema Access Strategy");
     }
 
     #[test]

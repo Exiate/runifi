@@ -590,7 +590,7 @@ async fn main() -> Result<()> {
         plugin_types.push(PluginTypeInfo {
             type_name: name.to_string(),
             kind: PluginKind::Service,
-            tags: Vec::new(),
+            tags: registry.service_tags(name),
         });
     }
     for name in registry.reporting_task_types() {
@@ -1230,6 +1230,7 @@ fn restore_process_groups(
             default_back_pressure_bytes: pg.default_back_pressure_bytes,
             default_flowfile_expiration_ms: pg.default_flowfile_expiration_ms,
             execution_mode: runifi_core::engine::process_group::ExecutionMode::default(),
+            controller_service_ids: Vec::new(),
         });
     }
 

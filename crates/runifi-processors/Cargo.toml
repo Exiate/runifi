@@ -7,7 +7,7 @@ license.workspace = true
 
 [features]
 default = ["all"]
-all = ["filesystem", "routing", "debug", "transformation", "json", "extraction", "transport", "record", "reporting"]
+all = ["filesystem", "routing", "debug", "transformation", "json", "extraction", "transport", "record", "reporting", "tls", "database"]
 filesystem = []
 routing = []
 debug = []
@@ -17,6 +17,8 @@ extraction = ["dep:jsonpath-rust", "serde_json"]
 transport = ["dep:runifi-transport", "dep:tokio"]
 record = ["serde_json", "dep:csv"]
 reporting = []
+tls = ["dep:rustls", "dep:rustls-pemfile"]
+database = []
 
 [dependencies]
 runifi-plugin-api = { workspace = true }
@@ -33,3 +35,9 @@ jsonpath-rust = { workspace = true, optional = true }
 runifi-transport = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 csv = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true, features = ["ring", "std"] }
+rustls-pemfile = { workspace = true, optional = true }
+
+[dev-dependencies]
+rcgen = { workspace = true }
+tempfile = "3"

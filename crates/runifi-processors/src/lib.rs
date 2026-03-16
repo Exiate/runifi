@@ -45,6 +45,8 @@ pub mod log_reporting_task;
 #[cfg(feature = "reporting")]
 pub mod prometheus_reporting_task;
 
+pub mod services;
+
 pub mod funnel;
 
 pub mod distributed_map_cache;
