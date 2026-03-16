@@ -192,6 +192,18 @@ impl ContentRepository for EncryptedContentRepository {
 
         Ok(())
     }
+
+    fn entry_count(&self) -> usize {
+        self.inner.entry_count()
+    }
+
+    fn total_bytes(&self) -> u64 {
+        self.inner.total_bytes()
+    }
+
+    fn storage_type(&self) -> &str {
+        "encrypted"
+    }
 }
 
 #[cfg(test)]

@@ -539,6 +539,7 @@ impl FlowEngine {
             plugin_types: Arc::new(Vec::new()),
             bulletin_board: self.bulletin_board.clone(),
             content_repo: self.content_repo.clone(),
+            flowfile_repo: self.flowfile_repo.clone(),
             positions: positions.clone(),
             audit_logger: self.audit_logger.clone(),
             service_registry: self.service_registry.clone(),

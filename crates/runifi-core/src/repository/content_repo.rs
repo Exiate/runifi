@@ -23,4 +23,19 @@ pub trait ContentRepository: Send + Sync {
     /// Graceful shutdown — flush writers, cancel background tasks.
     /// Default is a no-op for simple implementations.
     fn shutdown(&self) {}
+
+    /// Number of content entries currently stored.
+    fn entry_count(&self) -> usize {
+        0
+    }
+
+    /// Total bytes of content currently stored.
+    fn total_bytes(&self) -> u64 {
+        0
+    }
+
+    /// Storage backend type name (e.g., "memory", "file", "encrypted").
+    fn storage_type(&self) -> &str {
+        "unknown"
+    }
 }

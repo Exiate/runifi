@@ -32,6 +32,7 @@ use crate::connection::back_pressure::BackPressureConfig;
 use crate::connection::query::ConnectionQuery;
 use crate::registry::service_registry::{ServiceError, ServiceInfo, SharedServiceRegistry};
 use crate::repository::content_repo::ContentRepository;
+use crate::repository::flowfile_repo::FlowFileRepository;
 use crate::repository::provenance_repo::SharedProvenanceRepository;
 use crate::repository::state_provider::SharedLocalStateProvider;
 
@@ -227,6 +228,8 @@ pub struct EngineHandle {
     pub plugin_types: Arc<Vec<PluginTypeInfo>>,
     pub bulletin_board: Arc<BulletinBoard>,
     pub content_repo: Arc<dyn ContentRepository>,
+    /// FlowFile persistence repository.
+    pub flowfile_repo: Arc<dyn FlowFileRepository>,
     /// Canvas position store (processor name -> position). UI metadata only.
     pub positions: Arc<DashMap<String, Position>>,
     /// Structured audit logger for compliance events.

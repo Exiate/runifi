@@ -255,6 +255,15 @@ impl FlowFileRepository for WalFlowFileRepository {
         let mut state = self.state.lock();
         let _ = state.writer.flush();
     }
+
+    fn stats(&self) -> super::flowfile_repo::FlowFileRepoStats {
+        let state = self.state.lock();
+        super::flowfile_repo::FlowFileRepoStats {
+            entry_count: state.entries.len(),
+            storage_bytes: 0,
+            storage_type: "wal",
+        }
+    }
 }
 
 impl WalFlowFileRepository {
