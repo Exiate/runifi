@@ -4,7 +4,7 @@ Thanks for your interest in contributing to RuniFi! This guide covers everything
 
 ## Prerequisites
 
-- **Rust 1.85+** — install via [rustup](https://rustup.rs/)
+- **Rust 1.94+** — install via [rustup](https://rustup.rs/)
 - **Linux** — RuniFi targets Linux exclusively
 - **Git** — for version control
 
@@ -56,28 +56,31 @@ We use [Conventional Commits](https://www.conventionalcommits.org/):
 
 ### Branching
 
-- Branch from `main`
+- Branch from `dev` for feature work; `dev` merges to `main` for releases
+- Name branches `issue-N/short-description` (e.g., `issue-42/add-split-json`)
+- PRs target `dev`, not `main`
 - Keep branches focused on a single change
 - Never commit `target/`, `.env`, or generated certs
 
 ## Pull Requests
 
-1. Fork the repo and create a branch from `main`
+1. Fork the repo and create a branch from `dev`
 2. Make your changes and add tests where appropriate
 3. Ensure all checks pass: `cargo test --workspace && cargo clippy --workspace -- -D warnings`
-4. Open a pull request with a clear description of the change
-5. Link any related issues
+4. Open a pull request targeting `dev` with a clear description of the change
+5. Link any related issues using `Closes #N` in the PR body
 
 ## Project Structure
 
 | Crate | Purpose |
 |---|---|
-| `runifi-plugin-api` | Stable plugin contract: Processor/Source/Sink traits, FlowFile |
-| `runifi-core` | Engine runtime: scheduler, supervisor, repositories, connections |
-| `runifi-processors` | Built-in processors: GenerateFlowFile, LogAttribute, GetFile, PutFile |
-| `runifi-transport` | QUIC/TCP transport, zero-copy IO |
-| `runifi-server` | Runtime binary, config loading |
-| `runifi-cli` | CLI tools for flow management |
+| `runifi-plugin-api` | Stable plugin contract: Processor/Source/Sink traits, FlowFile, PropertyDescriptor, ProcessSession |
+| `runifi-core` | Engine runtime: scheduler, supervisor, repositories, connections, auth, clustering, expression language |
+| `runifi-processors` | Built-in processors (20+): GenerateFlowFile, LogAttribute, GetFile, PutFile, RouteOnAttribute, UpdateAttribute, SplitJSON, EvaluateJsonPath, ValidateJSON, FlattenJSON, ParseSyslog, ExtractText, SplitContent, Funnel, ConvertRecord, PartitionRecord, UpdateRecord, and more |
+| `runifi-transport` | QUIC/TCP transport, zero-copy IO, io_uring |
+| `runifi-api` | REST API server, SSE real-time events, embedded React dashboard |
+| `runifi-server` | Runtime binary, config loading, orchestration |
+| `runifi-cli` | CLI tools for flow management and diagnostics |
 
 ## Questions?
 
