@@ -13,6 +13,64 @@ pub struct SystemResponse {
     pub version: String,
     pub processor_count: usize,
     pub connection_count: usize,
+    pub memory: MemoryInfo,
+    pub cpu: CpuInfo,
+    pub repositories: RepositoryStorageInfo,
+    pub runtime: RuntimeInfo,
+    pub connections_summary: ConnectionsSummary,
+}
+
+#[derive(Serialize)]
+pub struct MemoryInfo {
+    pub resident_bytes: u64,
+    pub virtual_bytes: u64,
+    pub total_system_bytes: u64,
+    pub used_system_bytes: u64,
+}
+
+#[derive(Serialize)]
+pub struct CpuInfo {
+    pub process_cpu_percent: f32,
+    pub available_cores: usize,
+}
+
+#[derive(Serialize)]
+pub struct ContentRepoInfo {
+    pub entry_count: usize,
+    pub total_bytes: u64,
+    pub storage_type: String,
+}
+
+#[derive(Serialize)]
+pub struct FlowFileRepoInfo {
+    pub entry_count: usize,
+    pub storage_bytes: u64,
+    pub storage_type: String,
+}
+
+#[derive(Serialize)]
+pub struct ProvenanceRepoInfo {
+    pub event_count: usize,
+}
+
+#[derive(Serialize)]
+pub struct RepositoryStorageInfo {
+    pub content: ContentRepoInfo,
+    pub flowfile: FlowFileRepoInfo,
+    pub provenance: ProvenanceRepoInfo,
+}
+
+#[derive(Serialize)]
+pub struct RuntimeInfo {
+    pub total_flowfiles_processed: u64,
+    pub total_bytes_processed: u64,
+}
+
+#[derive(Serialize)]
+pub struct ConnectionsSummary {
+    pub total_queued_flowfiles: usize,
+    pub total_queued_bytes: u64,
+    pub back_pressured_count: usize,
 }
 
 #[derive(Serialize)]

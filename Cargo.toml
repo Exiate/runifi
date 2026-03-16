@@ -93,6 +93,7 @@ include_dir = "0.7"
 subtle = "2"
 rand = "0.9"
 urlencoding = "2"
+sysinfo = "0.34"
 
 # Internal crates
 runifi-plugin-api = { path = "crates/runifi-plugin-api" }

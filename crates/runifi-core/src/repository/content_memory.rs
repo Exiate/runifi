@@ -91,6 +91,21 @@ impl ContentRepository for InMemoryContentRepository {
         }
         Ok(())
     }
+
+    fn entry_count(&self) -> usize {
+        self.store.len()
+    }
+
+    fn total_bytes(&self) -> u64 {
+        self.store
+            .iter()
+            .map(|entry| entry.value().0.len() as u64)
+            .sum()
+    }
+
+    fn storage_type(&self) -> &str {
+        "memory"
+    }
 }
 
 #[cfg(test)]

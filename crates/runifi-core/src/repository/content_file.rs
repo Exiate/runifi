@@ -311,6 +311,21 @@ impl ContentRepository for FileContentRepository {
             let _ = writer.flush();
         }
     }
+
+    fn entry_count(&self) -> usize {
+        self.index.len()
+    }
+
+    fn total_bytes(&self) -> u64 {
+        // Memory-tier bytes are tracked atomically; for a complete picture
+        // we'd need to track disk bytes too, but memory_bytes is the most
+        // useful metric for monitoring pressure.
+        self.memory_bytes.load(Ordering::Relaxed)
+    }
+
+    fn storage_type(&self) -> &str {
+        "file"
+    }
 }
 
 #[cfg(test)]
