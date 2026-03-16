@@ -508,6 +508,17 @@ impl EngineHandle {
                 name
             )));
         }
+
+        // Reject if processor has validation errors.
+        let validation_errors = info.metrics.validation_errors();
+        if !validation_errors.is_empty() {
+            return Err(ConfigUpdateError::ValidationError(format!(
+                "Cannot run-once processor '{}': validation errors: {}",
+                name,
+                validation_errors.join("; ")
+            )));
+        }
+
         if enabled || active {
             return Err(ConfigUpdateError::StateConflict(format!(
                 "Cannot run-once processor '{}': processor must be stopped",

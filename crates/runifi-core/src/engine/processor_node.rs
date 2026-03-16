@@ -831,12 +831,30 @@ impl ProcessorNode {
             InvocationResult::Failed(e) => {
                 let redacted_err = self.redact_message(&e.to_string());
                 tracing::warn!(processor = %self.name, error = %redacted_err, "Run-once failed");
+                self.bulletin_board.add(
+                    &self.name,
+                    BulletinSeverity::Warn,
+                    format!(
+                        "Run-once failed (consecutive: {}): {}",
+                        self.supervisor.consecutive_failures(),
+                        redacted_err
+                    ),
+                );
                 session.rollback();
                 (false, Some(redacted_err), 0, 0)
             }
             InvocationResult::Panic(msg) => {
                 let redacted_msg = self.redact_message(msg);
                 tracing::error!(processor = %self.name, panic = %redacted_msg, "Run-once panicked");
+                self.bulletin_board.add(
+                    &self.name,
+                    BulletinSeverity::Error,
+                    format!(
+                        "Run-once panicked (consecutive: {}): {}",
+                        self.supervisor.consecutive_failures(),
+                        redacted_msg
+                    ),
+                );
                 (false, Some(format!("panic: {redacted_msg}")), 0, 0)
             }
         };
