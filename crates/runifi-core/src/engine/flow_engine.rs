@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
@@ -25,6 +25,7 @@ use super::processor_node::{
     SharedOutputConnections,
 };
 use crate::audit::{AuditAction, AuditEvent, AuditLogger, AuditTarget, NullAuditLogger};
+use crate::cluster::state::SharedClusterStateProvider;
 use crate::connection::back_pressure::BackPressureConfig;
 use crate::connection::flow_connection::{FlowConnection, QueuePriority};
 use crate::connection::query::FlowConnectionQuery;
@@ -63,6 +64,9 @@ pub struct FlowEngine {
     service_registry: SharedServiceRegistry,
     provenance_repo: SharedProvenanceRepository,
     state_provider: Option<SharedLocalStateProvider>,
+    cluster_state_provider: Option<SharedClusterStateProvider>,
+    /// Shared flag indicating whether this node is the primary in the cluster.
+    is_primary_node: Arc<AtomicBool>,
 
     nodes: Vec<NodeBuilder>,
     connections: Vec<ConnBuilder>,
@@ -113,6 +117,8 @@ impl FlowEngine {
             service_registry: SharedServiceRegistry::new(),
             provenance_repo: Arc::new(InMemoryProvenanceRepository::new()),
             state_provider: None,
+            cluster_state_provider: None,
+            is_primary_node: Arc::new(AtomicBool::new(true)),
             nodes: Vec::new(),
             connections: Vec::new(),
             next_node_id: 0,
@@ -146,6 +152,17 @@ impl FlowEngine {
     /// Set the local state provider for processor state persistence.
     pub fn set_state_provider(&mut self, provider: SharedLocalStateProvider) {
         self.state_provider = Some(provider);
+    }
+
+    /// Set the cluster-scoped state provider.
+    pub fn set_cluster_state_provider(&mut self, provider: SharedClusterStateProvider) {
+        self.cluster_state_provider = Some(provider);
+    }
+
+    /// Set whether this node is the primary in the cluster.
+    pub fn set_primary_node(&mut self, is_primary: bool) {
+        self.is_primary_node
+            .store(is_primary, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Get a reference to the provenance repository.
@@ -449,6 +466,11 @@ impl FlowEngine {
             if let Some(ref provider) = self.state_provider {
                 pn.set_state_provider(provider.clone());
             }
+            if let Some(ref provider) = self.cluster_state_provider {
+                pn.set_cluster_state_provider(provider.clone());
+            }
+            pn.set_execution_node(pn.processor_execution_node());
+            pn.set_primary_node_flag(self.is_primary_node.clone());
 
             for (src, rel, dst, fc) in &flow_connections {
                 if *src == node_builder.id {

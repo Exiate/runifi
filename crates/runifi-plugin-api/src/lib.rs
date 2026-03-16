@@ -30,3 +30,13 @@ pub use sink::{Sink, SinkDescriptor};
 pub use source::{Source, SourceDescriptor};
 pub use state::{StateManager, StateMap, StateScope, StatefulSpec};
 pub use validation::ValidationResult;
+
+/// Which nodes in a cluster should execute this processor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExecutionNode {
+    /// Execute on all nodes (default behavior).
+    #[default]
+    All,
+    /// Execute only on the primary node.
+    Primary,
+}

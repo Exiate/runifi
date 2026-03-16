@@ -960,6 +960,11 @@ fn process_message(
             None
         }
 
+        MessagePayload::StateUpdate(_) | MessagePayload::StateSync(_) => {
+            // State replication messages — handled by the state replication layer (Phase 3).
+            None
+        }
+
         MessagePayload::FlowSyncResponse(_)
         | MessagePayload::JoinResponse(_)
         | MessagePayload::HeartbeatAck(_)

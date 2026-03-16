@@ -39,6 +39,7 @@ pub mod node;
 pub mod protocol;
 pub mod quorum;
 pub mod replication;
+pub mod state;
 
 pub use config::ClusterConfig;
 pub use coordinator::ClusterCoordinator;
@@ -49,6 +50,7 @@ pub use load_balance::LoadBalanceStrategy;
 pub use node::{ClusterNodeId, ClusterRole, NodeInfo, NodeState, NodeSummary};
 pub use quorum::QuorumState;
 pub use replication::FlowReplicator;
+pub use state::{ClusterStateProvider, SharedClusterStateProvider};
 
 /// Extract a node ID from an address string like "node-1:9443".
 pub(crate) fn extract_node_id(addr: &str) -> String {

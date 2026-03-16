@@ -1,3 +1,4 @@
+use crate::ExecutionNode;
 use crate::context::ProcessContext;
 use crate::property::PropertyDescriptor;
 use crate::relationship::Relationship;
@@ -61,6 +62,15 @@ pub trait Processor: Send + Sync + 'static {
     /// `StateManager` via `ProcessContext::state_manager()`.
     fn stateful(&self) -> Option<StatefulSpec> {
         None
+    }
+
+    /// Declare the execution node requirement for this processor.
+    ///
+    /// Returns `ExecutionNode::All` by default. Override to return
+    /// `ExecutionNode::Primary` for processors that should only run
+    /// on the primary node (e.g., ListFile, ListS3).
+    fn execution_node(&self) -> ExecutionNode {
+        ExecutionNode::All
     }
 }
 

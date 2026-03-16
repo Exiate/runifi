@@ -154,6 +154,11 @@ impl ProcessorSupervisor {
         self.processor.property_descriptors()
     }
 
+    /// Get the processor's execution node requirement.
+    pub fn execution_node(&self) -> runifi_plugin_api::ExecutionNode {
+        self.processor.execution_node()
+    }
+
     /// Validate the processor's configuration.
     pub fn validate(
         &self,

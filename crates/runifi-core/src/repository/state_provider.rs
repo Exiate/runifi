@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 use runifi_plugin_api::result::{PluginError, ProcessResult};
 use runifi_plugin_api::state::{StateManager, StateMap, StateScope};
 
+use crate::cluster::state::SharedClusterStateProvider;
+
 /// On-disk representation of processor state.
 #[derive(Debug, Serialize, Deserialize)]
 struct PersistedState {
@@ -205,16 +207,34 @@ pub type SharedLocalStateProvider = Arc<LocalStateProvider>;
 
 /// Per-processor state manager that wraps a shared LocalStateProvider
 /// with a fixed processor ID. Implements the plugin-api StateManager trait.
+///
+/// When a `SharedClusterStateProvider` is present, `StateScope::Cluster`
+/// operations are delegated to it. Otherwise they return an error.
 pub struct CoreStateManager {
     provider: SharedLocalStateProvider,
+    cluster_provider: Option<SharedClusterStateProvider>,
     processor_id: String,
 }
 
 impl CoreStateManager {
-    /// Create a new state manager for a specific processor instance.
+    /// Create a new state manager for a specific processor instance (local only).
     pub fn new(provider: SharedLocalStateProvider, processor_id: String) -> Self {
         Self {
             provider,
+            cluster_provider: None,
+            processor_id,
+        }
+    }
+
+    /// Create a state manager with both local and cluster state support.
+    pub fn with_cluster(
+        provider: SharedLocalStateProvider,
+        cluster_provider: SharedClusterStateProvider,
+        processor_id: String,
+    ) -> Self {
+        Self {
+            provider,
+            cluster_provider: Some(cluster_provider),
             processor_id,
         }
     }
@@ -224,18 +244,26 @@ impl StateManager for CoreStateManager {
     fn get_state(&self, scope: StateScope) -> ProcessResult<StateMap> {
         match scope {
             StateScope::Local => self.provider.get_state(&self.processor_id),
-            StateScope::Cluster => Err(PluginError::ProcessingFailed(
-                "Cluster state scope is not yet implemented".to_string(),
-            )),
+            StateScope::Cluster => match &self.cluster_provider {
+                Some(cp) => cp.get_state(&self.processor_id),
+                None => Err(PluginError::ProcessingFailed(
+                    "Cluster state scope is not available (no cluster state provider configured)"
+                        .to_string(),
+                )),
+            },
         }
     }
 
     fn set_state(&self, state: HashMap<String, String>, scope: StateScope) -> ProcessResult<()> {
         match scope {
             StateScope::Local => self.provider.set_state(&self.processor_id, state),
-            StateScope::Cluster => Err(PluginError::ProcessingFailed(
-                "Cluster state scope is not yet implemented".to_string(),
-            )),
+            StateScope::Cluster => match &self.cluster_provider {
+                Some(cp) => cp.set_state(&self.processor_id, state),
+                None => Err(PluginError::ProcessingFailed(
+                    "Cluster state scope is not available (no cluster state provider configured)"
+                        .to_string(),
+                )),
+            },
         }
     }
 
@@ -250,18 +278,26 @@ impl StateManager for CoreStateManager {
                 self.provider
                     .replace(&self.processor_id, old_state.version(), new_state)
             }
-            StateScope::Cluster => Err(PluginError::ProcessingFailed(
-                "Cluster state scope is not yet implemented".to_string(),
-            )),
+            StateScope::Cluster => match &self.cluster_provider {
+                Some(cp) => cp.replace(&self.processor_id, old_state.version(), new_state),
+                None => Err(PluginError::ProcessingFailed(
+                    "Cluster state scope is not available (no cluster state provider configured)"
+                        .to_string(),
+                )),
+            },
         }
     }
 
     fn clear(&self, scope: StateScope) -> ProcessResult<()> {
         match scope {
             StateScope::Local => self.provider.clear(&self.processor_id),
-            StateScope::Cluster => Err(PluginError::ProcessingFailed(
-                "Cluster state scope is not yet implemented".to_string(),
-            )),
+            StateScope::Cluster => match &self.cluster_provider {
+                Some(cp) => cp.clear(&self.processor_id),
+                None => Err(PluginError::ProcessingFailed(
+                    "Cluster state scope is not available (no cluster state provider configured)"
+                        .to_string(),
+                )),
+            },
         }
     }
 }
@@ -490,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn test_core_state_manager_cluster_not_implemented() {
+    fn test_core_state_manager_cluster_not_configured() {
         let dir = tempfile::tempdir().unwrap();
         let provider = Arc::new(LocalStateProvider::new(dir.path()).unwrap());
 
@@ -501,6 +537,48 @@ mod tests {
 
         let result = manager.set_state(HashMap::new(), StateScope::Cluster);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_core_state_manager_with_cluster() {
+        let local_dir = tempfile::tempdir().unwrap();
+        let cluster_dir = tempfile::tempdir().unwrap();
+        let local = Arc::new(LocalStateProvider::new(local_dir.path()).unwrap());
+        let cluster =
+            Arc::new(crate::cluster::state::ClusterStateProvider::new(cluster_dir.path()).unwrap());
+
+        let manager = CoreStateManager::with_cluster(local, cluster, "proc-1".to_string());
+
+        // Cluster scope works when provider is configured.
+        let state = manager.get_state(StateScope::Cluster).unwrap();
+        assert!(state.is_empty());
+
+        let entries = HashMap::from([("cursor".to_string(), "42".to_string())]);
+        manager.set_state(entries, StateScope::Cluster).unwrap();
+
+        let state = manager.get_state(StateScope::Cluster).unwrap();
+        assert_eq!(state.version(), 0);
+        assert_eq!(state.get("cursor"), Some("42"));
+
+        // Local scope is independent.
+        let local_state = manager.get_state(StateScope::Local).unwrap();
+        assert!(local_state.is_empty());
+
+        // Replace with CAS on cluster scope.
+        let new_entries = HashMap::from([("cursor".to_string(), "100".to_string())]);
+        let ok = manager
+            .replace(&state, new_entries, StateScope::Cluster)
+            .unwrap();
+        assert!(ok);
+
+        let state = manager.get_state(StateScope::Cluster).unwrap();
+        assert_eq!(state.version(), 1);
+        assert_eq!(state.get("cursor"), Some("100"));
+
+        // Clear cluster scope.
+        manager.clear(StateScope::Cluster).unwrap();
+        let state = manager.get_state(StateScope::Cluster).unwrap();
+        assert!(state.is_empty());
     }
 
     #[test]
