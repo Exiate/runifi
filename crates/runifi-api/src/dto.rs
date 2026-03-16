@@ -918,6 +918,30 @@ pub struct RevertResponse {
     pub message: String,
 }
 
+// ── Run-once DTOs ─────────────────────────────────────────────────────
+
+/// Response for `POST /api/v1/processors/{name}/run-once`.
+#[derive(Serialize)]
+pub struct RunOnceResponse {
+    /// Name of the processor that was triggered.
+    pub processor: String,
+    /// Whether the invocation completed successfully.
+    pub success: bool,
+    /// Execution duration in milliseconds.
+    pub duration_ms: u64,
+    /// Number of FlowFiles acquired from input connections.
+    pub flowfiles_in: u64,
+    /// Number of FlowFiles routed to output connections.
+    pub flowfiles_out: u64,
+    /// Total bytes read from input FlowFiles.
+    pub bytes_in: u64,
+    /// Total bytes written to output FlowFiles.
+    pub bytes_out: u64,
+    /// Error message if the invocation failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -97,6 +97,7 @@ pub enum AuditAction {
     ProcessorStopped,
     ProcessorPaused,
     ProcessorResumed,
+    ProcessorRunOnce,
     // Configuration
     ProcessorConfigured,
     // Data access

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 
 use super::bulletin::BulletinBoard;
-use super::metrics::ProcessorMetrics;
+use super::metrics::{ProcessorMetrics, RunOnceResult};
 use super::mutation::{MutationCommand, MutationError};
 use super::persistence::{
     FlowPersistence, PersistedBackPressure, PersistedConnection, PersistedFlowState,
@@ -479,6 +479,87 @@ impl EngineHandle {
             }
         }
         Err(format!("Processor '{}' not found", name))
+    }
+
+    // ── Run-once ──────────────────────────────────────────────────────────────
+
+    /// Trigger a single `on_trigger` invocation on a stopped processor.
+    ///
+    /// The processor must be stopped (not enabled, not active, not disabled).
+    /// Returns a `RunOnceResult` with execution details, or an error if the
+    /// request cannot be fulfilled.
+    pub async fn run_once_processor(&self, name: &str) -> Result<RunOnceResult, ConfigUpdateError> {
+        let info = self
+            .processors
+            .read()
+            .iter()
+            .find(|p| p.name == name)
+            .cloned()
+            .ok_or_else(|| ConfigUpdateError::NotFound(format!("Processor not found: {}", name)))?;
+
+        // Validate the processor is stopped.
+        let enabled = info.metrics.enabled.load(Ordering::Relaxed);
+        let active = info.metrics.active.load(Ordering::Relaxed);
+        let disabled = info.metrics.disabled.load(Ordering::Relaxed);
+
+        if disabled {
+            return Err(ConfigUpdateError::StateConflict(format!(
+                "Cannot run-once processor '{}': processor is disabled",
+                name
+            )));
+        }
+        if enabled || active {
+            return Err(ConfigUpdateError::StateConflict(format!(
+                "Cannot run-once processor '{}': processor must be stopped",
+                name
+            )));
+        }
+
+        // Check that no other run-once is in flight and set up the channel.
+        let rx = {
+            let mut tx_guard = info.metrics.run_once_result_tx.lock();
+            if tx_guard.is_some() {
+                return Err(ConfigUpdateError::StateConflict(format!(
+                    "Cannot run-once processor '{}': another run-once is already in progress",
+                    name
+                )));
+            }
+            let (tx, rx) = oneshot::channel();
+            *tx_guard = Some(tx);
+            rx
+            // tx_guard dropped here
+        };
+
+        // Signal the processor task to execute.
+        info.metrics
+            .run_once_requested
+            .store(true, Ordering::Relaxed);
+
+        // Log audit event.
+        self.audit_logger.log(&AuditEvent::success(
+            AuditAction::ProcessorRunOnce,
+            AuditTarget::processor(name),
+        ));
+
+        // Await result with 60-second timeout.
+        match tokio::time::timeout(std::time::Duration::from_secs(60), rx).await {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(_)) => Err(ConfigUpdateError::StateConflict(format!(
+                "Run-once for processor '{}': result channel closed unexpectedly",
+                name
+            ))),
+            Err(_) => {
+                // Timeout — clear the flag and channel.
+                info.metrics
+                    .run_once_requested
+                    .store(false, Ordering::Relaxed);
+                let _ = info.metrics.run_once_result_tx.lock().take();
+                Err(ConfigUpdateError::StateConflict(format!(
+                    "Run-once for processor '{}' timed out after 60 seconds",
+                    name
+                )))
+            }
+        }
     }
 
     // ── Reads ────────────────────────────────────────────────────────────────
