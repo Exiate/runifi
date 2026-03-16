@@ -1329,6 +1329,7 @@ impl EngineHandle {
             default_back_pressure_count: None,
             default_back_pressure_bytes: None,
             default_flowfile_expiration_ms: None,
+            execution_mode: crate::engine::process_group::ExecutionMode::default(),
         };
 
         groups.push(group_info);

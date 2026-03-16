@@ -9,5 +9,6 @@ pub mod process_group;
 pub mod processor_node;
 pub mod reporting_supervisor;
 pub mod reporting_task_manager;
+pub mod stateless_executor;
 pub mod supervisor;
 pub mod validation;

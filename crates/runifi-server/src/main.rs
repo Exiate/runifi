@@ -1229,6 +1229,7 @@ fn restore_process_groups(
             default_back_pressure_count: pg.default_back_pressure_count,
             default_back_pressure_bytes: pg.default_back_pressure_bytes,
             default_flowfile_expiration_ms: pg.default_flowfile_expiration_ms,
+            execution_mode: runifi_core::engine::process_group::ExecutionMode::default(),
         });
     }
 
