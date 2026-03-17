@@ -85,6 +85,8 @@ struct NodeBuilder {
     processor: Option<Box<dyn Processor>>,
     scheduling: SchedulingStrategy,
     properties: HashMap<String, String>,
+    run_duration_ms: u64,
+    batch_commit_count: u64,
 }
 
 struct ConnBuilder {
@@ -188,8 +190,23 @@ impl FlowEngine {
             processor: Some(processor),
             scheduling,
             properties,
+            run_duration_ms: 0,
+            batch_commit_count: 0,
         });
         id
+    }
+
+    /// Set batch config for a processor node that has been added.
+    pub fn set_batch_config(
+        &mut self,
+        node_id: NodeId,
+        run_duration_ms: u64,
+        batch_commit_count: u64,
+    ) {
+        if let Some(node) = self.nodes.iter_mut().find(|n| n.id == node_id) {
+            node.run_duration_ms = run_duration_ms;
+            node.batch_commit_count = batch_commit_count;
+        }
     }
 
     /// Connect two processors via a relationship.
@@ -485,6 +502,10 @@ impl FlowEngine {
             pn.set_service_registry(self.service_registry.clone());
             pn.set_provenance_repo(self.provenance_repo.clone());
             pn.set_type_name(node_builder.type_name.clone());
+            pn.set_batch_config(
+                node_builder.run_duration_ms,
+                node_builder.batch_commit_count,
+            );
 
             // Set sensitive property names for bulletin redaction.
             if let Some((descriptors, _, _, _, _, _)) = static_meta_by_node.get(&node_builder.id) {
@@ -568,6 +589,8 @@ impl FlowEngine {
                 spawned_task_count: Arc::new(AtomicU64::new(0)),
                 comments: Arc::new(RwLock::new(String::new())),
                 auto_terminated_relationships: Arc::new(RwLock::new(Vec::new())),
+                run_duration_ms: Arc::new(AtomicU64::new(node_builder.run_duration_ms)),
+                batch_commit_count: Arc::new(AtomicU64::new(node_builder.batch_commit_count)),
                 input_requirement: input_req,
                 trigger_when_empty: trigger_empty,
                 side_effect_free: side_effect,

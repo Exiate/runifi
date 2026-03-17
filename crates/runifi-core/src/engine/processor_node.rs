@@ -28,6 +28,24 @@ use crate::repository::provenance_repo::SharedProvenanceRepository;
 use crate::repository::state_provider::SharedLocalStateProvider;
 use crate::session::process_session::CoreProcessSession;
 
+/// Result of a single trigger execution.
+enum SingleTriggerResult {
+    Success,
+    Yield(u64),
+    Failed,
+}
+
+/// Reason the batch execution loop exited.
+enum BatchExitReason {
+    TimeExpired,
+    CountReached,
+    Yield(u64),
+    Failed,
+    BackPressured,
+    Stopped,
+    Cancelled,
+}
+
 /// Scheduling strategy for a processor node.
 #[derive(Debug, Clone)]
 pub enum SchedulingStrategy {
@@ -143,6 +161,12 @@ pub struct ProcessorNode {
     execution_node: ExecutionNode,
     /// Shared flag indicating whether this node is the primary in the cluster.
     is_primary_node: Arc<AtomicBool>,
+    /// Run duration in milliseconds for batch processing (0 = disabled).
+    run_duration_ms: u64,
+    /// Batch commit count for deferred WAL fsync (0 = disabled).
+    batch_commit_count: u64,
+    /// Whether the processor supports batching (from the Processor trait).
+    supports_batching: bool,
 }
 
 impl ProcessorNode {
@@ -160,6 +184,7 @@ impl ProcessorNode {
         bulletin_board: Arc<BulletinBoard>,
         flowfile_repo: Arc<dyn FlowFileRepository>,
     ) -> Self {
+        let supports_batching = processor.supports_batching();
         Self {
             name,
             id,
@@ -188,6 +213,9 @@ impl ProcessorNode {
             cluster_state_provider: None,
             execution_node: ExecutionNode::All,
             is_primary_node: Arc::new(AtomicBool::new(true)),
+            run_duration_ms: 0,
+            batch_commit_count: 0,
+            supports_batching,
         }
     }
 
@@ -256,6 +284,11 @@ impl ProcessorNode {
 
     pub fn set_timer_notify(&mut self, notify: Arc<Notify>) {
         self.timer_notify = Some(notify);
+    }
+
+    pub fn set_batch_config(&mut self, run_duration_ms: u64, batch_commit_count: u64) {
+        self.run_duration_ms = run_duration_ms;
+        self.batch_commit_count = batch_commit_count;
     }
 
     pub fn set_input_connections(&mut self, conns: SharedInputConnections) {
@@ -561,178 +594,39 @@ impl ProcessorNode {
                     continue;
                 }
 
-                // Record trigger timestamp.
-                let now_nanos = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos() as u64;
-                self.metrics
-                    .last_trigger_nanos
-                    .store(now_nanos, Ordering::Relaxed);
+                // Determine if batch mode is active.
+                let batch_active = self.supports_batching
+                    && (self.run_duration_ms > 0 || self.batch_commit_count > 0);
 
-                // Snapshot the current input connections for this session.
-                // We snapshot rather than holding the lock across session lifetime
-                // so the mutation handler is never blocked on the lock.
-                let input_conns_snapshot: Vec<Arc<FlowConnection>> =
-                    self.input_connections.read().clone();
-
-                // Create session directly — CoreProcessSession handles content repo,
-                // ID generation, connection routing, and WAL tracking.
-                let mut session = CoreProcessSession::new(
-                    self.content_repo.clone(),
-                    self.id_gen.clone(),
-                    input_conns_snapshot,
-                    ctx.yield_duration_ms,
-                    self.penalty_duration_ms,
-                );
-                session.set_provenance(
-                    self.provenance_repo.clone(),
-                    self.name.clone(),
-                    self.type_name.clone(),
-                );
-
-                // Invoke with fault isolation via spawn_blocking.
-                let result = {
-                    self.supervisor
-                        .invoke(&ctx, &mut session as &mut dyn ProcessSession)
-                };
-
-                // Sync supervisor metrics to shared atomics.
-                self.metrics.sync_from_supervisor(
-                    self.supervisor.total_invocations(),
-                    self.supervisor.total_failures(),
-                    self.supervisor.consecutive_failures(),
-                    self.supervisor.is_circuit_open(),
-                );
-
-                // Track input metrics.
-                let acquired = session.acquired_count();
-                let acquired_bytes = session.acquired_bytes();
-                if acquired > 0 {
-                    self.metrics
-                        .flowfiles_in
-                        .fetch_add(acquired as u64, Ordering::Relaxed);
-                    self.metrics
-                        .bytes_in
-                        .fetch_add(acquired_bytes, Ordering::Relaxed);
-                }
-
-                match &result {
-                    InvocationResult::Success => {
-                        if session.is_committed() {
-                            let (ff_out, bytes_out, routed) = self.route_transfers(&mut session);
-                            self.metrics
-                                .flowfiles_out
-                                .fetch_add(ff_out, Ordering::Relaxed);
-                            self.metrics
-                                .bytes_out
-                                .fetch_add(bytes_out, Ordering::Relaxed);
-
-                            // Build WAL batch: Upsert for routed, Delete for removed.
-                            let remove_ids = session.take_committed_remove_ids();
-                            if !routed.is_empty() || !remove_ids.is_empty() {
-                                let mut ops: Vec<FlowFileOp<'_>> = Vec::new();
-                                for (ff, conn_id) in &routed {
-                                    ops.push(FlowFileOp::Upsert {
-                                        flowfile: ff,
-                                        queue_id: conn_id,
-                                    });
-                                }
-                                for id in &remove_ids {
-                                    ops.push(FlowFileOp::Delete { id: *id });
-                                }
-                                if let Err(e) = self.flowfile_repo.commit_batch(&ops) {
-                                    tracing::error!(
-                                        processor = %self.name,
-                                        error = %e,
-                                        "WAL commit_batch failed"
-                                    );
-                                }
+                if batch_active {
+                    // Batch execution: trigger repeatedly, defer WAL fsync.
+                    let batch_result = self.execute_batch(&ctx).await;
+                    match batch_result {
+                        BatchExitReason::Yield(yield_ms) => {
+                            tokio::time::sleep(std::time::Duration::from_millis(yield_ms)).await;
+                        }
+                        BatchExitReason::Failed => {
+                            let backoff = self.supervisor.current_backoff();
+                            if !backoff.is_zero() {
+                                tokio::time::sleep(backoff).await;
                             }
                         }
+                        _ => {}
                     }
-                    InvocationResult::Yield => {
-                        // Yield is not an error — commit the session and sleep
-                        // for the configured yield duration before re-triggering.
-                        if session.is_committed() {
-                            let (ff_out, bytes_out, routed) = self.route_transfers(&mut session);
-                            self.metrics
-                                .flowfiles_out
-                                .fetch_add(ff_out, Ordering::Relaxed);
-                            self.metrics
-                                .bytes_out
-                                .fetch_add(bytes_out, Ordering::Relaxed);
-
-                            let remove_ids = session.take_committed_remove_ids();
-                            if !routed.is_empty() || !remove_ids.is_empty() {
-                                let mut ops: Vec<FlowFileOp<'_>> = Vec::new();
-                                for (ff, conn_id) in &routed {
-                                    ops.push(FlowFileOp::Upsert {
-                                        flowfile: ff,
-                                        queue_id: conn_id,
-                                    });
-                                }
-                                for id in &remove_ids {
-                                    ops.push(FlowFileOp::Delete { id: *id });
-                                }
-                                if let Err(e) = self.flowfile_repo.commit_batch(&ops) {
-                                    tracing::error!(
-                                        processor = %self.name,
-                                        error = %e,
-                                        "WAL commit_batch failed"
-                                    );
-                                }
+                } else {
+                    // Single trigger (original behavior).
+                    let trigger_result = self.execute_single_trigger(&ctx);
+                    match trigger_result {
+                        SingleTriggerResult::Yield(yield_ms) => {
+                            tokio::time::sleep(std::time::Duration::from_millis(yield_ms)).await;
+                        }
+                        SingleTriggerResult::Failed => {
+                            let backoff = self.supervisor.current_backoff();
+                            if !backoff.is_zero() {
+                                tokio::time::sleep(backoff).await;
                             }
                         }
-                        tracing::debug!(
-                            processor = %self.name,
-                            yield_ms = ctx.yield_duration_ms,
-                            "Processor yielded, sleeping"
-                        );
-                        tokio::time::sleep(std::time::Duration::from_millis(ctx.yield_duration_ms))
-                            .await;
-                    }
-                    InvocationResult::Failed(e) => {
-                        let redacted_err = self.redact_message(&e.to_string());
-                        tracing::warn!(
-                            processor = %self.name,
-                            error = %redacted_err,
-                            consecutive = self.supervisor.consecutive_failures(),
-                            "Processor failed"
-                        );
-                        self.bulletin_board.add(
-                            &self.name,
-                            BulletinSeverity::Warn,
-                            format!(
-                                "Processor failed (consecutive: {}): {}",
-                                self.supervisor.consecutive_failures(),
-                                redacted_err
-                            ),
-                        );
-                        session.rollback();
-                        let backoff = self.supervisor.current_backoff();
-                        if !backoff.is_zero() {
-                            tokio::time::sleep(backoff).await;
-                        }
-                    }
-                    InvocationResult::Panic(msg) => {
-                        let redacted_msg = self.redact_message(msg);
-                        tracing::error!(
-                            processor = %self.name,
-                            panic = %redacted_msg,
-                            consecutive = self.supervisor.consecutive_failures(),
-                            "Processor panicked"
-                        );
-                        self.bulletin_board.add(
-                            &self.name,
-                            BulletinSeverity::Error,
-                            format!(
-                                "Processor panicked (consecutive: {}): {}",
-                                self.supervisor.consecutive_failures(),
-                                redacted_msg
-                            ),
-                        );
-                        // Session is automatically rolled back on drop.
+                        _ => {}
                     }
                 }
             }
@@ -749,6 +643,363 @@ impl ProcessorNode {
         self.metrics.active.store(false, Ordering::Relaxed);
         self.supervisor.on_stopped(&last_ctx);
         tracing::info!(processor = %self.name, "Processor stopped");
+    }
+
+    /// Execute a single trigger + commit cycle (the original behavior).
+    fn execute_single_trigger(&mut self, ctx: &NodeProcessContext) -> SingleTriggerResult {
+        // Record trigger timestamp.
+        let now_nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        self.metrics
+            .last_trigger_nanos
+            .store(now_nanos, Ordering::Relaxed);
+
+        let input_conns_snapshot: Vec<Arc<FlowConnection>> = self.input_connections.read().clone();
+
+        let mut session = CoreProcessSession::new(
+            self.content_repo.clone(),
+            self.id_gen.clone(),
+            input_conns_snapshot,
+            ctx.yield_duration_ms,
+            self.penalty_duration_ms,
+        );
+        session.set_provenance(
+            self.provenance_repo.clone(),
+            self.name.clone(),
+            self.type_name.clone(),
+        );
+
+        let result = self
+            .supervisor
+            .invoke(ctx, &mut session as &mut dyn ProcessSession);
+
+        self.metrics.sync_from_supervisor(
+            self.supervisor.total_invocations(),
+            self.supervisor.total_failures(),
+            self.supervisor.consecutive_failures(),
+            self.supervisor.is_circuit_open(),
+        );
+
+        let acquired = session.acquired_count();
+        let acquired_bytes = session.acquired_bytes();
+        if acquired > 0 {
+            self.metrics
+                .flowfiles_in
+                .fetch_add(acquired as u64, Ordering::Relaxed);
+            self.metrics
+                .bytes_in
+                .fetch_add(acquired_bytes, Ordering::Relaxed);
+        }
+
+        match &result {
+            InvocationResult::Success => {
+                if session.is_committed() {
+                    self.commit_and_route(&mut session);
+                }
+                SingleTriggerResult::Success
+            }
+            InvocationResult::Yield => {
+                if session.is_committed() {
+                    self.commit_and_route(&mut session);
+                }
+                tracing::debug!(
+                    processor = %self.name,
+                    yield_ms = ctx.yield_duration_ms,
+                    "Processor yielded, sleeping"
+                );
+                SingleTriggerResult::Yield(ctx.yield_duration_ms)
+            }
+            InvocationResult::Failed(e) => {
+                let redacted_err = self.redact_message(&e.to_string());
+                tracing::warn!(
+                    processor = %self.name,
+                    error = %redacted_err,
+                    consecutive = self.supervisor.consecutive_failures(),
+                    "Processor failed"
+                );
+                self.bulletin_board.add(
+                    &self.name,
+                    BulletinSeverity::Warn,
+                    format!(
+                        "Processor failed (consecutive: {}): {}",
+                        self.supervisor.consecutive_failures(),
+                        redacted_err
+                    ),
+                );
+                session.rollback();
+                SingleTriggerResult::Failed
+            }
+            InvocationResult::Panic(msg) => {
+                let redacted_msg = self.redact_message(msg);
+                tracing::error!(
+                    processor = %self.name,
+                    panic = %redacted_msg,
+                    consecutive = self.supervisor.consecutive_failures(),
+                    "Processor panicked"
+                );
+                self.bulletin_board.add(
+                    &self.name,
+                    BulletinSeverity::Error,
+                    format!(
+                        "Processor panicked (consecutive: {}): {}",
+                        self.supervisor.consecutive_failures(),
+                        redacted_msg
+                    ),
+                );
+                SingleTriggerResult::Failed
+            }
+        }
+    }
+
+    /// Route committed transfers and write WAL ops.
+    fn commit_and_route(&self, session: &mut CoreProcessSession) {
+        let (ff_out, bytes_out, routed) = self.route_transfers(session);
+        self.metrics
+            .flowfiles_out
+            .fetch_add(ff_out, Ordering::Relaxed);
+        self.metrics
+            .bytes_out
+            .fetch_add(bytes_out, Ordering::Relaxed);
+
+        let remove_ids = session.take_committed_remove_ids();
+        if !routed.is_empty() || !remove_ids.is_empty() {
+            let mut ops: Vec<FlowFileOp<'_>> = Vec::new();
+            for (ff, conn_id) in &routed {
+                ops.push(FlowFileOp::Upsert {
+                    flowfile: ff,
+                    queue_id: conn_id,
+                });
+            }
+            for id in &remove_ids {
+                ops.push(FlowFileOp::Delete { id: *id });
+            }
+            if let Err(e) = self.flowfile_repo.commit_batch(&ops) {
+                tracing::error!(
+                    processor = %self.name,
+                    error = %e,
+                    "WAL commit_batch failed"
+                );
+            }
+        }
+    }
+
+    /// Route committed transfers with deferred WAL fsync (for batch mode).
+    fn commit_and_route_deferred(&self, session: &mut CoreProcessSession) {
+        let (ff_out, bytes_out, routed) = self.route_transfers(session);
+        self.metrics
+            .flowfiles_out
+            .fetch_add(ff_out, Ordering::Relaxed);
+        self.metrics
+            .bytes_out
+            .fetch_add(bytes_out, Ordering::Relaxed);
+
+        let remove_ids = session.take_committed_remove_ids();
+        if !routed.is_empty() || !remove_ids.is_empty() {
+            let mut ops: Vec<FlowFileOp<'_>> = Vec::new();
+            for (ff, conn_id) in &routed {
+                ops.push(FlowFileOp::Upsert {
+                    flowfile: ff,
+                    queue_id: conn_id,
+                });
+            }
+            for id in &remove_ids {
+                ops.push(FlowFileOp::Delete { id: *id });
+            }
+            if let Err(e) = self.flowfile_repo.commit_batch_deferred(&ops) {
+                tracing::error!(
+                    processor = %self.name,
+                    error = %e,
+                    "WAL commit_batch_deferred failed"
+                );
+            }
+        }
+    }
+
+    /// Execute a batch of triggers in a tight loop, deferring WAL fsync until
+    /// the batch completes. Exits when time exceeds `run_duration_ms`, count
+    /// reaches `batch_commit_count`, or on failure/yield/back-pressure/cancel.
+    async fn execute_batch(&mut self, ctx: &NodeProcessContext) -> BatchExitReason {
+        let batch_start = std::time::Instant::now();
+        let run_duration = if self.run_duration_ms > 0 {
+            std::time::Duration::from_millis(self.run_duration_ms)
+        } else {
+            std::time::Duration::from_secs(3600) // effectively unlimited
+        };
+        let max_count = if self.batch_commit_count > 0 {
+            self.batch_commit_count
+        } else {
+            u64::MAX
+        };
+
+        let mut batch_count: u64 = 0;
+        #[allow(unused_assignments)]
+        let mut exit_reason = BatchExitReason::CountReached;
+
+        loop {
+            // Check time limit.
+            if batch_start.elapsed() >= run_duration {
+                exit_reason = BatchExitReason::TimeExpired;
+                break;
+            }
+
+            // Check count limit.
+            if batch_count >= max_count {
+                exit_reason = BatchExitReason::CountReached;
+                break;
+            }
+
+            // Check cancellation.
+            if self.cancel_token.is_cancelled() {
+                exit_reason = BatchExitReason::Cancelled;
+                break;
+            }
+
+            // Check enabled/disabled.
+            if !self.metrics.enabled.load(Ordering::Relaxed)
+                || self.metrics.disabled.load(Ordering::Relaxed)
+            {
+                exit_reason = BatchExitReason::Stopped;
+                break;
+            }
+
+            // Check back-pressure.
+            if self.any_output_back_pressured() {
+                exit_reason = BatchExitReason::BackPressured;
+                break;
+            }
+
+            // Record trigger timestamp.
+            let now_nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64;
+            self.metrics
+                .last_trigger_nanos
+                .store(now_nanos, Ordering::Relaxed);
+
+            let input_conns_snapshot: Vec<Arc<FlowConnection>> =
+                self.input_connections.read().clone();
+
+            let mut session = CoreProcessSession::new(
+                self.content_repo.clone(),
+                self.id_gen.clone(),
+                input_conns_snapshot,
+                ctx.yield_duration_ms,
+                self.penalty_duration_ms,
+            );
+            session.set_provenance(
+                self.provenance_repo.clone(),
+                self.name.clone(),
+                self.type_name.clone(),
+            );
+
+            let result = self
+                .supervisor
+                .invoke(ctx, &mut session as &mut dyn ProcessSession);
+
+            self.metrics.sync_from_supervisor(
+                self.supervisor.total_invocations(),
+                self.supervisor.total_failures(),
+                self.supervisor.consecutive_failures(),
+                self.supervisor.is_circuit_open(),
+            );
+
+            let acquired = session.acquired_count();
+            let acquired_bytes = session.acquired_bytes();
+            if acquired > 0 {
+                self.metrics
+                    .flowfiles_in
+                    .fetch_add(acquired as u64, Ordering::Relaxed);
+                self.metrics
+                    .bytes_in
+                    .fetch_add(acquired_bytes, Ordering::Relaxed);
+            }
+
+            match &result {
+                InvocationResult::Success => {
+                    if session.is_committed() {
+                        self.commit_and_route_deferred(&mut session);
+                        batch_count += 1;
+                    }
+                }
+                InvocationResult::Yield => {
+                    if session.is_committed() {
+                        self.commit_and_route_deferred(&mut session);
+                        batch_count += 1;
+                    }
+                    exit_reason = BatchExitReason::Yield(ctx.yield_duration_ms);
+                    break;
+                }
+                InvocationResult::Failed(e) => {
+                    let redacted_err = self.redact_message(&e.to_string());
+                    tracing::warn!(
+                        processor = %self.name,
+                        error = %redacted_err,
+                        consecutive = self.supervisor.consecutive_failures(),
+                        batch_count,
+                        "Processor failed during batch"
+                    );
+                    self.bulletin_board.add(
+                        &self.name,
+                        BulletinSeverity::Warn,
+                        format!(
+                            "Processor failed during batch (consecutive: {}): {}",
+                            self.supervisor.consecutive_failures(),
+                            redacted_err
+                        ),
+                    );
+                    session.rollback();
+                    exit_reason = BatchExitReason::Failed;
+                    break;
+                }
+                InvocationResult::Panic(msg) => {
+                    let redacted_msg = self.redact_message(msg);
+                    tracing::error!(
+                        processor = %self.name,
+                        panic = %redacted_msg,
+                        consecutive = self.supervisor.consecutive_failures(),
+                        batch_count,
+                        "Processor panicked during batch"
+                    );
+                    self.bulletin_board.add(
+                        &self.name,
+                        BulletinSeverity::Error,
+                        format!(
+                            "Processor panicked during batch (consecutive: {}): {}",
+                            self.supervisor.consecutive_failures(),
+                            redacted_msg
+                        ),
+                    );
+                    exit_reason = BatchExitReason::Failed;
+                    break;
+                }
+            }
+
+            // Yield the async task briefly to allow cancellation checks.
+            tokio::task::yield_now().await;
+        }
+
+        // Fsync once for the entire batch.
+        if batch_count > 0 {
+            if let Err(e) = self.flowfile_repo.flush_deferred() {
+                tracing::error!(
+                    processor = %self.name,
+                    error = %e,
+                    batch_count,
+                    "WAL flush_deferred failed after batch"
+                );
+            }
+            tracing::debug!(
+                processor = %self.name,
+                batch_count,
+                elapsed_ms = batch_start.elapsed().as_millis() as u64,
+                "Batch completed"
+            );
+        }
+
+        exit_reason
     }
 
     /// Execute a single run-once invocation on a stopped processor.

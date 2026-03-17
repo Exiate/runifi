@@ -410,6 +410,14 @@ pub struct SchedulingResponse {
     pub strategy: String,
     pub interval_ms: Option<u64>,
     pub concurrent_tasks: u64,
+    #[serde(skip_serializing_if = "is_zero_u64")]
+    pub run_duration_ms: u64,
+    #[serde(skip_serializing_if = "is_zero_u64")]
+    pub batch_commit_count: u64,
+}
+
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
 }
 
 #[derive(Serialize)]
@@ -441,6 +449,10 @@ pub struct ProcessorConfigUpdateRequest {
     pub auto_terminated_relationships: Option<Vec<String>>,
     #[serde(default)]
     pub comments: Option<String>,
+    #[serde(default)]
+    pub run_duration_ms: Option<u64>,
+    #[serde(default)]
+    pub batch_commit_count: Option<u64>,
 }
 
 impl ProcessorConfigResponse {
@@ -519,6 +531,12 @@ impl ProcessorConfigResponse {
                 interval_ms,
                 concurrent_tasks: info
                     .concurrent_tasks
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                run_duration_ms: info
+                    .run_duration_ms
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                batch_commit_count: info
+                    .batch_commit_count
                     .load(std::sync::atomic::Ordering::Relaxed),
             },
             relationships,

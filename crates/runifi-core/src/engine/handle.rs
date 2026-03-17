@@ -120,6 +120,10 @@ pub struct ProcessorInfo {
     pub comments: Arc<RwLock<String>>,
     /// Auto-terminated relationship names (configurable at runtime).
     pub auto_terminated_relationships: Arc<RwLock<Vec<String>>>,
+    /// Run duration in milliseconds for batch processing (default 0 = disabled).
+    pub run_duration_ms: Arc<AtomicU64>,
+    /// Batch commit count for deferred WAL fsync (default 0 = disabled).
+    pub batch_commit_count: Arc<AtomicU64>,
     /// Input requirement annotation.
     pub input_requirement: InputRequirement,
     /// Whether the processor runs when input queue is empty.
@@ -723,6 +727,8 @@ impl EngineHandle {
         concurrent_tasks: Option<u64>,
         auto_terminated_relationships: Option<Vec<String>>,
         comments: Option<String>,
+        run_duration_ms: Option<u64>,
+        batch_commit_count: Option<u64>,
     ) -> Result<(), ConfigUpdateError> {
         let processors = self.processors.read();
         let info = processors
@@ -816,6 +822,16 @@ impl EngineHandle {
         // Apply comments.
         if let Some(ref c) = comments {
             *info.comments.write() = c.clone();
+        }
+
+        // Apply batch scheduling config.
+        if let Some(rd) = run_duration_ms {
+            info.run_duration_ms
+                .store(rd, std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(bc) = batch_commit_count {
+            info.batch_commit_count
+                .store(bc, std::sync::atomic::Ordering::Relaxed);
         }
 
         drop(processors);

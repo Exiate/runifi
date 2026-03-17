@@ -528,6 +528,19 @@ async fn main() -> Result<()> {
                     if let Some(ref auto_term) = proc_state.auto_terminated_relationships {
                         *info.auto_terminated_relationships.write() = auto_term.clone();
                     }
+                    // Restore batch scheduling config from persisted scheduling.
+                    if proc_state.scheduling.run_duration_ms > 0 {
+                        info.run_duration_ms.store(
+                            proc_state.scheduling.run_duration_ms,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                    }
+                    if proc_state.scheduling.batch_commit_count > 0 {
+                        info.batch_commit_count.store(
+                            proc_state.scheduling.batch_commit_count,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                    }
                 }
             }
         }
@@ -936,6 +949,14 @@ fn load_from_persisted_state(
             scheduling,
             proc_state.properties.clone(),
         );
+        if proc_state.scheduling.run_duration_ms > 0 || proc_state.scheduling.batch_commit_count > 0
+        {
+            engine.set_batch_config(
+                node_id,
+                proc_state.scheduling.run_duration_ms,
+                proc_state.scheduling.batch_commit_count,
+            );
+        }
         node_ids.insert(proc_state.name.clone(), node_id);
 
         tracing::info!(
@@ -1102,6 +1123,15 @@ fn load_from_seed_config(
             scheduling,
             properties,
         );
+        if proc_config.scheduling.run_duration_ms > 0
+            || proc_config.scheduling.batch_commit_count > 0
+        {
+            engine.set_batch_config(
+                node_id,
+                proc_config.scheduling.run_duration_ms,
+                proc_config.scheduling.batch_commit_count,
+            );
+        }
         node_ids.insert(proc_config.name.clone(), node_id);
 
         tracing::info!(

@@ -382,6 +382,8 @@ async fn update_processor_config(
         body.concurrent_tasks,
         body.auto_terminated_relationships,
         body.comments,
+        body.run_duration_ms,
+        body.batch_commit_count,
     )?;
 
     Ok(Json(

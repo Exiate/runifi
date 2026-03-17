@@ -82,6 +82,12 @@ pub struct PersistedScheduling {
     /// CRON expression (only present when strategy = "cron").
     #[serde(default)]
     pub expression: Option<String>,
+    /// Run duration in milliseconds for batch processing.
+    #[serde(default)]
+    pub run_duration_ms: u64,
+    /// Batch commit count for deferred WAL fsync.
+    #[serde(default)]
+    pub batch_commit_count: u64,
 }
 
 fn default_interval_ms() -> u64 {
@@ -340,10 +346,17 @@ impl PersistedFlowState {
                 let comments = p.comments.read().clone();
                 let auto_term = p.auto_terminated_relationships.read().clone();
 
+                let mut sched = scheduling_display_to_persisted(&p.scheduling_display);
+                sched.run_duration_ms =
+                    p.run_duration_ms.load(std::sync::atomic::Ordering::Relaxed);
+                sched.batch_commit_count = p
+                    .batch_commit_count
+                    .load(std::sync::atomic::Ordering::Relaxed);
+
                 PersistedProcessor {
                     name: p.name.clone(),
                     type_name: p.type_name.clone(),
-                    scheduling: scheduling_display_to_persisted(&p.scheduling_display),
+                    scheduling: sched,
                     properties,
                     sensitive_properties: sensitive_names,
                     penalty_duration_ms: if penalty != 30_000 {
@@ -653,6 +666,8 @@ pub fn scheduling_display_to_persisted(display: &str) -> PersistedScheduling {
             strategy: "timer".to_string(),
             interval_ms,
             expression: None,
+            run_duration_ms: 0,
+            batch_commit_count: 0,
         }
     } else if display.starts_with("cron-driven") {
         // Parse "cron-driven (0 */5 * * * *)" -> expression
@@ -665,12 +680,16 @@ pub fn scheduling_display_to_persisted(display: &str) -> PersistedScheduling {
             strategy: "cron".to_string(),
             interval_ms: 100,
             expression: Some(expression),
+            run_duration_ms: 0,
+            batch_commit_count: 0,
         }
     } else {
         PersistedScheduling {
             strategy: "event".to_string(),
             interval_ms: 100,
             expression: None,
+            run_duration_ms: 0,
+            batch_commit_count: 0,
         }
     }
 }
@@ -918,6 +937,8 @@ mod tests {
                     strategy: "timer".to_string(),
                     interval_ms: 500,
                     expression: None,
+                    run_duration_ms: 0,
+                    batch_commit_count: 0,
                 },
                 properties: HashMap::new(),
                 sensitive_properties: vec![],
@@ -950,6 +971,8 @@ mod tests {
                         strategy: "timer".to_string(),
                         interval_ms: 1000,
                         expression: None,
+                        run_duration_ms: 0,
+                        batch_commit_count: 0,
                     },
                     properties: HashMap::from([("File Size".to_string(), "5120".to_string())]),
                     sensitive_properties: vec![],
@@ -967,6 +990,8 @@ mod tests {
                         strategy: "event".to_string(),
                         interval_ms: 100,
                         expression: None,
+                        run_duration_ms: 0,
+                        batch_commit_count: 0,
                     },
                     properties: HashMap::new(),
                     sensitive_properties: vec![],
@@ -1270,6 +1295,8 @@ mod tests {
                     strategy: "timer".to_string(),
                     interval_ms: 1000,
                     expression: None,
+                    run_duration_ms: 0,
+                    batch_commit_count: 0,
                 },
                 properties: HashMap::from([
                     ("Password".to_string(), encrypted),
@@ -1320,6 +1347,8 @@ mod tests {
                     strategy: "timer".to_string(),
                     interval_ms: 100,
                     expression: None,
+                    run_duration_ms: 0,
+                    batch_commit_count: 0,
                 },
                 properties: HashMap::from([("Secret".to_string(), encrypted)]),
                 sensitive_properties: vec!["Secret".to_string()],
@@ -1344,6 +1373,54 @@ mod tests {
     }
 
     #[test]
+    fn test_batch_config_persistence_round_trip() {
+        let state = PersistedProcessor {
+            name: "batch-proc".to_string(),
+            type_name: "GenerateFlowFile".to_string(),
+            scheduling: PersistedScheduling {
+                strategy: "timer".to_string(),
+                interval_ms: 10,
+                expression: None,
+                run_duration_ms: 50,
+                batch_commit_count: 200,
+            },
+            properties: HashMap::new(),
+            sensitive_properties: vec![],
+            penalty_duration_ms: None,
+            yield_duration_ms: None,
+            bulletin_level: None,
+            concurrent_tasks: None,
+            auto_terminated_relationships: None,
+            comments: None,
+        };
+
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(json.contains("\"run_duration_ms\":50"));
+        assert!(json.contains("\"batch_commit_count\":200"));
+
+        let deserialized: PersistedProcessor = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.scheduling.run_duration_ms, 50);
+        assert_eq!(deserialized.scheduling.batch_commit_count, 200);
+    }
+
+    #[test]
+    fn test_batch_config_defaults_on_deserialization() {
+        // Old format without batch fields should default to 0.
+        let json = r#"{
+            "name": "old-proc",
+            "type_name": "Test",
+            "scheduling": {
+                "strategy": "timer",
+                "interval_ms": 100
+            },
+            "properties": {}
+        }"#;
+        let deserialized: PersistedProcessor = serde_json::from_str(json).unwrap();
+        assert_eq!(deserialized.scheduling.run_duration_ms, 0);
+        assert_eq!(deserialized.scheduling.batch_commit_count, 0);
+    }
+
+    #[test]
     fn test_sensitive_properties_not_serialized_when_empty() {
         let state = PersistedProcessor {
             name: "test".to_string(),
@@ -1352,6 +1429,8 @@ mod tests {
                 strategy: "timer".to_string(),
                 interval_ms: 100,
                 expression: None,
+                run_duration_ms: 0,
+                batch_commit_count: 0,
             },
             properties: HashMap::new(),
             sensitive_properties: vec![],

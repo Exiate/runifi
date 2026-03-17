@@ -192,6 +192,8 @@ impl DefaultMutationHandler {
             spawned_task_count: Arc::new(AtomicU64::new(0)),
             comments: Arc::new(RwLock::new(String::new())),
             auto_terminated_relationships: Arc::new(RwLock::new(Vec::new())),
+            run_duration_ms: Arc::new(AtomicU64::new(0)),
+            batch_commit_count: Arc::new(AtomicU64::new(0)),
             input_requirement,
             trigger_when_empty,
             side_effect_free,
