@@ -243,6 +243,8 @@ mod tests {
                         strategy: "timer".to_string(),
                         interval_ms: 1000,
                         expression: None,
+                        run_duration_ms: 0,
+                        batch_commit_count: 0,
                     },
                     properties: HashMap::new(),
                     sensitive_properties: vec![],

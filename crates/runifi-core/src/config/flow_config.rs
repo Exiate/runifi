@@ -419,6 +419,14 @@ pub struct SchedulingConfig {
     /// CRON expression (for cron-driven), e.g. "0 */5 * * * *".
     #[serde(default)]
     pub expression: Option<String>,
+    /// Run duration in milliseconds. When > 0 and the processor supports batching,
+    /// the engine keeps triggering in a tight loop for this duration before yielding.
+    #[serde(default)]
+    pub run_duration_ms: u64,
+    /// Batch commit count. When > 0 and the processor supports batching,
+    /// the engine accumulates this many commits before fsyncing the WAL.
+    #[serde(default)]
+    pub batch_commit_count: u64,
 }
 
 impl Default for SchedulingConfig {
@@ -427,6 +435,8 @@ impl Default for SchedulingConfig {
             strategy: default_strategy(),
             interval_ms: default_interval(),
             expression: None,
+            run_duration_ms: 0,
+            batch_commit_count: 0,
         }
     }
 }
@@ -1128,5 +1138,52 @@ mod tests {
         );
         assert_eq!(parse_duration_str(""), None);
         assert_eq!(parse_duration_str("abc"), None);
+    }
+
+    #[test]
+    fn scheduling_config_batch_fields_default_to_zero() {
+        let config = SchedulingConfig::default();
+        assert_eq!(config.run_duration_ms, 0);
+        assert_eq!(config.batch_commit_count, 0);
+    }
+
+    #[test]
+    fn scheduling_config_batch_fields_from_toml() {
+        let toml_str = r#"
+            [flow]
+            name = "batch-flow"
+
+            [[flow.processors]]
+            name = "fast-gen"
+            type = "GenerateFlowFile"
+            [flow.processors.scheduling]
+            strategy = "timer"
+            interval_ms = 10
+            run_duration_ms = 50
+            batch_commit_count = 100
+        "#;
+        let config: FlowConfig = toml::from_str(toml_str).unwrap();
+        let proc = &config.flow.processors[0];
+        assert_eq!(proc.scheduling.run_duration_ms, 50);
+        assert_eq!(proc.scheduling.batch_commit_count, 100);
+    }
+
+    #[test]
+    fn scheduling_config_batch_fields_optional() {
+        let toml_str = r#"
+            [flow]
+            name = "no-batch-flow"
+
+            [[flow.processors]]
+            name = "normal-gen"
+            type = "GenerateFlowFile"
+            [flow.processors.scheduling]
+            strategy = "timer"
+            interval_ms = 1000
+        "#;
+        let config: FlowConfig = toml::from_str(toml_str).unwrap();
+        let proc = &config.flow.processors[0];
+        assert_eq!(proc.scheduling.run_duration_ms, 0);
+        assert_eq!(proc.scheduling.batch_commit_count, 0);
     }
 }

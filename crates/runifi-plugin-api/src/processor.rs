@@ -72,6 +72,16 @@ pub trait Processor: Send + Sync + 'static {
     fn execution_node(&self) -> ExecutionNode {
         ExecutionNode::All
     }
+
+    /// Declare that this processor supports batch commit optimization.
+    ///
+    /// When `true` and the scheduling config has `run_duration_ms > 0` or
+    /// `batch_commit_count > 0`, the engine will keep triggering this processor
+    /// in a tight loop, batching WAL commits for improved throughput.
+    /// Default is `false` (single-trigger, single-commit behavior).
+    fn supports_batching(&self) -> bool {
+        false
+    }
 }
 
 /// Describes a processor type for plugin registration.

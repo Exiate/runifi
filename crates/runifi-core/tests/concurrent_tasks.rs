@@ -105,7 +105,18 @@ async fn concurrent_tasks_clamp_accepts_up_to_64() {
 
     // Setting concurrent_tasks to 4 should be accepted (not clamped to 1).
     handle
-        .update_processor_config("clamped", None, None, None, None, Some(4), None, None)
+        .update_processor_config(
+            "clamped",
+            None,
+            None,
+            None,
+            None,
+            Some(4),
+            None,
+            None,
+            None,
+            None,
+        )
         .expect("config update failed");
 
     let procs = handle.processors.read();
@@ -135,7 +146,18 @@ async fn concurrent_tasks_clamp_enforces_max_64() {
 
     // Setting concurrent_tasks to 100 should be clamped to 64.
     handle
-        .update_processor_config("overclamped", None, None, None, None, Some(100), None, None)
+        .update_processor_config(
+            "overclamped",
+            None,
+            None,
+            None,
+            None,
+            Some(100),
+            None,
+            None,
+            None,
+            None,
+        )
         .expect("config update failed");
 
     let procs = handle.processors.read();
@@ -165,7 +187,18 @@ async fn concurrent_tasks_clamp_enforces_min_1() {
 
     // Setting concurrent_tasks to 0 should be clamped to 1.
     handle
-        .update_processor_config("underclamped", None, None, None, None, Some(0), None, None)
+        .update_processor_config(
+            "underclamped",
+            None,
+            None,
+            None,
+            None,
+            Some(0),
+            None,
+            None,
+            None,
+            None,
+        )
         .expect("config update failed");
 
     let procs = handle.processors.read();
@@ -200,7 +233,18 @@ async fn spawn_concurrent_tasks_creates_sibling_tasks() {
 
     // Set concurrent_tasks to 4 before starting.
     handle
-        .update_processor_config("multi", None, None, None, None, Some(4), None, None)
+        .update_processor_config(
+            "multi",
+            None,
+            None,
+            None,
+            None,
+            Some(4),
+            None,
+            None,
+            None,
+            None,
+        )
         .expect("config update failed");
 
     // Start the processor (which will spawn concurrent tasks via mutation channel).
@@ -353,7 +397,18 @@ async fn event_driven_concurrent_tasks_share_input_connections() {
 
     // Set concurrent_tasks on the consumer and spawn siblings.
     handle
-        .update_processor_config("consumer", None, None, None, None, Some(3), None, None)
+        .update_processor_config(
+            "consumer",
+            None,
+            None,
+            None,
+            None,
+            Some(3),
+            None,
+            None,
+            None,
+            None,
+        )
         .expect("config update failed");
     handle
         .spawn_concurrent_tasks("consumer", 3)

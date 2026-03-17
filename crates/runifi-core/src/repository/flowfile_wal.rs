@@ -180,6 +180,82 @@ impl FlowFileRepository for WalFlowFileRepository {
         Ok(())
     }
 
+    fn commit_batch_deferred(&self, ops: &[FlowFileOp<'_>]) -> Result<()> {
+        if ops.is_empty() {
+            return Ok(());
+        }
+
+        let mut state = self.state.lock();
+        let mut op_count: u32 = 0;
+
+        for op in ops {
+            match op {
+                FlowFileOp::Upsert { flowfile, queue_id } => {
+                    let payload = encode_upsert(flowfile, queue_id);
+                    write_record(&mut state.writer, TAG_UPSERT, &payload).map_err(|e| {
+                        RuniFiError::WalError {
+                            path: self.wal_path().display().to_string(),
+                            reason: format!("write upsert failed: {e}"),
+                        }
+                    })?;
+                    if flowfile.id > state.max_id {
+                        state.max_id = flowfile.id;
+                    }
+                    state
+                        .entries
+                        .insert(flowfile.id, ((*flowfile).clone(), queue_id.to_string()));
+                }
+                FlowFileOp::Delete { id } => {
+                    let payload = encode_delete(*id);
+                    write_record(&mut state.writer, TAG_DELETE, &payload).map_err(|e| {
+                        RuniFiError::WalError {
+                            path: self.wal_path().display().to_string(),
+                            reason: format!("write delete failed: {e}"),
+                        }
+                    })?;
+                    state.entries.remove(id);
+                }
+            }
+            op_count += 1;
+        }
+
+        // Write BATCH_END marker.
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        let batch_payload = encode_batch_end(timestamp, op_count);
+        write_record(&mut state.writer, TAG_BATCH_END, &batch_payload).map_err(|e| {
+            RuniFiError::WalError {
+                path: self.wal_path().display().to_string(),
+                reason: format!("write batch_end failed: {e}"),
+            }
+        })?;
+
+        // Flush the BufWriter to OS buffers, but skip fsync.
+        state.writer.flush().map_err(|e| RuniFiError::WalError {
+            path: self.wal_path().display().to_string(),
+            reason: format!("flush failed: {e}"),
+        })?;
+
+        Ok(())
+    }
+
+    fn flush_deferred(&self) -> Result<()> {
+        if self.config.fsync_mode == FsyncMode::Always {
+            let state = self.state.lock();
+            state
+                .writer
+                .get_ref()
+                .sync_all()
+                .map_err(|e| RuniFiError::WalError {
+                    path: self.wal_path().display().to_string(),
+                    reason: format!("deferred fsync failed: {e}"),
+                })?;
+        }
+        Ok(())
+    }
+
     fn recover(&self) -> Result<RecoveryState> {
         let checkpoint_path = self.checkpoint_path();
         let wal_path = self.wal_path();
@@ -572,5 +648,129 @@ mod tests {
 
         let state = repo.recover().unwrap();
         assert!(state.queued.is_empty());
+    }
+
+    #[test]
+    fn commit_batch_deferred_writes_without_fsync() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // Use FsyncMode::Always so we can verify deferred skips the sync.
+        let repo = WalFlowFileRepository::new(WalFlowFileRepoConfig {
+            dir: dir.path().to_path_buf(),
+            fsync_mode: FsyncMode::Always,
+            checkpoint_interval_secs: 60,
+        })
+        .unwrap();
+
+        let ff1 = test_ff(1);
+        let ff2 = test_ff(2);
+        repo.commit_batch_deferred(&[
+            FlowFileOp::Upsert {
+                flowfile: &ff1,
+                queue_id: "q",
+            },
+            FlowFileOp::Upsert {
+                flowfile: &ff2,
+                queue_id: "q",
+            },
+        ])
+        .unwrap();
+
+        // Data should be recoverable even without explicit fsync (OS buffers).
+        let repo2 = make_repo(dir.path());
+        let state = repo2.recover().unwrap();
+        assert_eq!(state.queued["q"].len(), 2);
+        assert_eq!(state.max_id, 2);
+    }
+
+    #[test]
+    fn flush_deferred_fsyncs_data() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = WalFlowFileRepository::new(WalFlowFileRepoConfig {
+            dir: dir.path().to_path_buf(),
+            fsync_mode: FsyncMode::Always,
+            checkpoint_interval_secs: 60,
+        })
+        .unwrap();
+
+        let ff1 = test_ff(1);
+        repo.commit_batch_deferred(&[FlowFileOp::Upsert {
+            flowfile: &ff1,
+            queue_id: "q",
+        }])
+        .unwrap();
+
+        // Flush deferred should succeed.
+        repo.flush_deferred().unwrap();
+
+        // Verify recovery works.
+        let repo2 = make_repo(dir.path());
+        let state = repo2.recover().unwrap();
+        assert_eq!(state.queued["q"].len(), 1);
+        assert_eq!(state.queued["q"][0].id, 1);
+    }
+
+    #[test]
+    fn multiple_deferred_batches_then_flush() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = WalFlowFileRepository::new(WalFlowFileRepoConfig {
+            dir: dir.path().to_path_buf(),
+            fsync_mode: FsyncMode::Always,
+            checkpoint_interval_secs: 60,
+        })
+        .unwrap();
+
+        // Write multiple deferred batches.
+        for i in 1..=5 {
+            let ff = test_ff(i);
+            repo.commit_batch_deferred(&[FlowFileOp::Upsert {
+                flowfile: &ff,
+                queue_id: "q",
+            }])
+            .unwrap();
+        }
+
+        // Single flush for all.
+        repo.flush_deferred().unwrap();
+
+        let repo2 = make_repo(dir.path());
+        let state = repo2.recover().unwrap();
+        assert_eq!(state.queued["q"].len(), 5);
+        assert_eq!(state.max_id, 5);
+    }
+
+    #[test]
+    fn deferred_empty_batch_is_noop() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = make_repo(dir.path());
+        repo.commit_batch_deferred(&[]).unwrap();
+        repo.flush_deferred().unwrap();
+
+        let state = repo.recover().unwrap();
+        assert!(state.queued.is_empty());
+    }
+
+    #[test]
+    fn flush_deferred_noop_when_never_fsync() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = WalFlowFileRepository::new(WalFlowFileRepoConfig {
+            dir: dir.path().to_path_buf(),
+            fsync_mode: FsyncMode::Never,
+            checkpoint_interval_secs: 60,
+        })
+        .unwrap();
+
+        let ff1 = test_ff(1);
+        repo.commit_batch_deferred(&[FlowFileOp::Upsert {
+            flowfile: &ff1,
+            queue_id: "q",
+        }])
+        .unwrap();
+
+        // flush_deferred should be a no-op with Never fsync mode.
+        repo.flush_deferred().unwrap();
+
+        let repo2 = make_repo(dir.path());
+        let state = repo2.recover().unwrap();
+        assert_eq!(state.queued["q"].len(), 1);
     }
 }
