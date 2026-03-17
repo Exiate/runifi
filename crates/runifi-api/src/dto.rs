@@ -145,7 +145,7 @@ impl ProcessorResponse {
         Self {
             name: info.name.clone(),
             type_name: info.type_name.clone(),
-            scheduling: info.scheduling_display.clone(),
+            scheduling: info.scheduling_display.read().clone(),
             state,
             metrics: snapshot.into(),
             validation_errors,
@@ -412,6 +412,7 @@ pub struct SchedulingResponse {
     pub strategy: String,
     pub interval_ms: Option<u64>,
     pub concurrent_tasks: u64,
+    pub execution_node: String,
     #[serde(skip_serializing_if = "is_zero_u64")]
     pub run_duration_ms: u64,
     #[serde(skip_serializing_if = "is_zero_u64")]
@@ -431,7 +432,6 @@ pub struct RelationshipResponse {
 
 /// Request body for `PUT /api/v1/processors/{name}/config`.
 #[derive(Deserialize)]
-#[allow(dead_code)]
 pub struct ProcessorConfigUpdateRequest {
     #[serde(default)]
     pub properties: Option<HashMap<String, String>>,
@@ -455,18 +455,23 @@ pub struct ProcessorConfigUpdateRequest {
     pub run_duration_ms: Option<u64>,
     #[serde(default)]
     pub batch_commit_count: Option<u64>,
+    #[serde(default)]
+    pub execution_node: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 impl ProcessorConfigResponse {
     pub fn from_info(info: &ProcessorInfo) -> Self {
         // Parse the display string to extract strategy/interval for the config response.
         // Format is "timer-driven (Nms)", "cron-driven (expr)", or "event-driven".
+        let sched_display = info.scheduling_display.read().clone();
         let (strategy, interval_ms) =
-            if let Some(rest) = info.scheduling_display.strip_prefix("timer-driven (") {
+            if let Some(rest) = sched_display.strip_prefix("timer-driven (") {
                 let ms_str = rest.trim_end_matches("ms)");
                 let interval = ms_str.parse::<u64>().unwrap_or(1000);
                 ("timer".to_string(), Some(interval))
-            } else if info.scheduling_display.starts_with("cron-driven") {
+            } else if sched_display.starts_with("cron-driven") {
                 ("cron".to_string(), None)
             } else {
                 ("event".to_string(), None)
@@ -556,6 +561,10 @@ impl ProcessorConfigResponse {
                 concurrent_tasks: info
                     .concurrent_tasks
                     .load(std::sync::atomic::Ordering::Relaxed),
+                execution_node: match *info.execution_node.read() {
+                    runifi_plugin_api::ExecutionNode::All => "all".to_string(),
+                    runifi_plugin_api::ExecutionNode::Primary => "primary".to_string(),
+                },
                 run_duration_ms: info
                     .run_duration_ms
                     .load(std::sync::atomic::Ordering::Relaxed),

@@ -7,7 +7,7 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use runifi_plugin_api::relationship::Relationship;
-use runifi_plugin_api::{InputRequirement, Processor};
+use runifi_plugin_api::{ExecutionNode, InputRequirement, Processor};
 
 use super::bulletin::BulletinBoard;
 use super::handle::{ConnectionInfo, ProcessorInfo, PropertyDescriptorInfo, RelationshipInfo};
@@ -143,11 +143,15 @@ impl DefaultMutationHandler {
         let shared_props = Arc::new(RwLock::new(properties));
         let child_token = self.parent_cancel.child_token();
 
+        // Create shared scheduling and execution node arcs.
+        let shared_scheduling = Arc::new(RwLock::new(scheduling.clone()));
+        let shared_exec_node = Arc::new(RwLock::new(ExecutionNode::All));
+
         let mut pn = ProcessorNode::new(
             name.to_string(),
             format!("runtime-{}", name),
             processor,
-            scheduling.clone(),
+            shared_scheduling.clone(),
             shared_props.clone(),
             self.content_repo.clone(),
             self.id_gen.clone(),
@@ -166,6 +170,9 @@ impl DefaultMutationHandler {
         if !sensitive_names.is_empty() {
             pn.set_sensitive_property_names(sensitive_names);
         }
+        // Set execution node from processor annotation, shared with ProcessorInfo.
+        *shared_exec_node.write() = pn.processor_execution_node();
+        pn.set_execution_node_shared(shared_exec_node.clone());
 
         let input_h = pn.input_connections_handle();
         let output_h = pn.output_connections_handle();
@@ -179,8 +186,9 @@ impl DefaultMutationHandler {
         self.live_procs.write().push(ProcessorInfo {
             name: name.to_string(),
             type_name: type_name.to_string(),
-            scheduling_display: scheduling_display(&scheduling),
-            scheduling: scheduling.clone(),
+            scheduling_display: Arc::new(RwLock::new(scheduling_display(&scheduling))),
+            scheduling: shared_scheduling,
+            execution_node: shared_exec_node,
             metrics,
             property_descriptors: prop_descriptors,
             relationships,
@@ -471,8 +479,9 @@ impl DefaultMutationHandler {
             .cloned()
             .ok_or_else(|| MutationError::ProcessorNotFound(processor_name.to_string()))?;
 
+        let scheduling_snapshot = scheduling.read().clone();
         let timer_notify = if count > 1 {
-            if let SchedulingStrategy::TimerDriven { interval_ms } = &scheduling {
+            if let SchedulingStrategy::TimerDriven { interval_ms } = &scheduling_snapshot {
                 let notify = Arc::new(Notify::new());
                 let timer_token = cancel_token.child_token();
                 let interval = *interval_ms;

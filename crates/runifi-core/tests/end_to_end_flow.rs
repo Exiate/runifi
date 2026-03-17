@@ -180,7 +180,8 @@ async fn fault_tolerance_panic_recovery() {
     engine.start().await.unwrap();
 
     // Wait for the panic processor to trip its circuit breaker.
-    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    // The 5 failures with exponential backoff (100ms base) need ~3.5s total.
+    tokio::time::sleep(std::time::Duration::from_millis(4000)).await;
 
     // The engine should still be running (panic was caught).
     assert!(engine.is_running());

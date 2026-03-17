@@ -295,7 +295,7 @@ async fn create_processor(
 
     let snapshot = info.metrics.snapshot();
     let state_str = snapshot.state.as_str().to_string();
-    let scheduling_str = info.scheduling_display.clone();
+    let scheduling_str = info.scheduling_display.read().clone();
 
     let relationships: Vec<RelationshipResponse> = info
         .relationships
@@ -399,10 +399,20 @@ async fn update_processor_config(
         body.comments,
         body.run_duration_ms,
         body.batch_commit_count,
+        body.scheduling_strategy,
+        body.scheduling_interval_ms,
+        body.execution_node,
+        body.name.clone(),
     )?;
 
+    // Use new name if renamed, otherwise the path name.
+    let effective_name = body
+        .name
+        .filter(|n| !n.is_empty() && n != &name)
+        .unwrap_or(name);
+
     Ok(Json(
-        serde_json::json!({ "status": "updated", "processor": name }),
+        serde_json::json!({ "status": "updated", "processor": effective_name }),
     ))
 }
 

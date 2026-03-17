@@ -346,7 +346,7 @@ impl PersistedFlowState {
                 let comments = p.comments.read().clone();
                 let auto_term = p.auto_terminated_relationships.read().clone();
 
-                let mut sched = scheduling_display_to_persisted(&p.scheduling_display);
+                let mut sched = scheduling_display_to_persisted(&p.scheduling_display.read());
                 sched.run_duration_ms =
                     p.run_duration_ms.load(std::sync::atomic::Ordering::Relaxed);
                 sched.batch_commit_count = p

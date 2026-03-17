@@ -255,6 +255,7 @@ export interface SchedulingConfig {
   strategy: string;
   interval_ms: number | null;
   concurrent_tasks: number;
+  execution_node: string;
 }
 
 export interface ProcessorConfigResponse {
