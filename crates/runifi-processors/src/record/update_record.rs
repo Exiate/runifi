@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use runifi_plugin_api::context::ProcessContext;
-use runifi_plugin_api::processor::{Processor, ProcessorDescriptor};
+use runifi_plugin_api::processor::{InputRequirement, Processor, ProcessorDescriptor};
 use runifi_plugin_api::property::PropertyDescriptor;
 use runifi_plugin_api::record::{RecordReader, RecordValue, RecordWriter};
 use runifi_plugin_api::relationship::Relationship;
@@ -197,6 +197,10 @@ inventory::submit! {
         description: "Modifies record fields within FlowFile content using dynamic properties",
         factory: || Box::new(UpdateRecord::new()),
         tags: &["Record", "Transformation", "Update"],
+        input_requirement: InputRequirement::Allowed,
+        trigger_when_empty: false,
+        side_effect_free: false,
+        supports_batching: false,
     }
 }
 

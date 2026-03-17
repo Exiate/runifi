@@ -1,5 +1,5 @@
 use runifi_plugin_api::context::ProcessContext;
-use runifi_plugin_api::processor::{Processor, ProcessorDescriptor};
+use runifi_plugin_api::processor::{InputRequirement, Processor, ProcessorDescriptor};
 use runifi_plugin_api::property::PropertyDescriptor;
 use runifi_plugin_api::relationship::Relationship;
 use runifi_plugin_api::result::{PluginError, ProcessResult};
@@ -153,6 +153,10 @@ impl Processor for PutFile {
     fn property_descriptors(&self) -> Vec<PropertyDescriptor> {
         vec![PROP_OUTPUT_DIR, PROP_CONFLICT_STRATEGY]
     }
+
+    fn input_requirement(&self) -> InputRequirement {
+        InputRequirement::Required
+    }
 }
 
 inventory::submit! {
@@ -161,6 +165,10 @@ inventory::submit! {
         description: "Writes FlowFile content to files in a directory",
         factory: || Box::new(PutFile::new()),
         tags: &["File System", "Output"],
+        input_requirement: InputRequirement::Required,
+        trigger_when_empty: false,
+        side_effect_free: false,
+        supports_batching: false,
     }
 }
 

@@ -119,6 +119,14 @@ impl PluginRegistry {
             .unwrap_or_default()
     }
 
+    /// Get the descriptor for a processor type (for annotation metadata).
+    pub fn processor_descriptor(
+        &self,
+        type_name: &str,
+    ) -> Option<dashmap::mapref::one::Ref<'_, &'static str, &'static ProcessorDescriptor>> {
+        self.processors.get(type_name)
+    }
+
     /// Get tags for a source type.
     pub fn source_tags(&self, type_name: &str) -> Vec<String> {
         self.sources

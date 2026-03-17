@@ -13,6 +13,7 @@ use zeroize::Zeroizing;
 
 use super::handle::{ConnectionInfo, LabelInfo, Position, ProcessorInfo};
 use super::process_group::ProcessGroupInfo;
+use super::remote_process_group::RemoteProcessGroup;
 
 /// File names for persisted flow state.
 const FLOW_STATE_FILE: &str = "flow.json";
@@ -46,6 +47,8 @@ pub struct PersistedFlowState {
     pub labels: Vec<PersistedLabel>,
     #[serde(default)]
     pub process_groups: Vec<PersistedProcessGroup>,
+    #[serde(default)]
+    pub remote_process_groups: Vec<PersistedRemoteProcessGroup>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,6 +200,76 @@ pub struct PersistedPort {
     pub port_type: String,
 }
 
+/// Persisted Remote Process Group data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedRemoteProcessGroup {
+    pub id: String,
+    pub name: String,
+    pub target_uris: Vec<String>,
+    #[serde(default = "default_transport_protocol")]
+    pub transport_protocol: String,
+    #[serde(default = "default_communications_timeout_ms")]
+    pub communications_timeout_ms: u64,
+    #[serde(default = "default_yield_duration_ms")]
+    pub yield_duration_ms: u64,
+    #[serde(default = "default_batch_count")]
+    pub batch_count: usize,
+    #[serde(default = "default_batch_size_bytes")]
+    pub batch_size_bytes: u64,
+    #[serde(default = "default_batch_duration_ms")]
+    pub batch_duration_ms: u64,
+    #[serde(default)]
+    pub proxy_host: Option<String>,
+    #[serde(default)]
+    pub proxy_port: Option<u16>,
+    #[serde(default)]
+    pub transmitting: bool,
+    #[serde(default)]
+    pub input_ports: Vec<PersistedRemotePort>,
+    #[serde(default)]
+    pub output_ports: Vec<PersistedRemotePort>,
+    #[serde(default)]
+    pub parent_group_id: Option<String>,
+    #[serde(default)]
+    pub position: Option<(f64, f64)>,
+    #[serde(default)]
+    pub comments: String,
+}
+
+/// Persisted remote port data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedRemotePort {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub target_id: Option<String>,
+    #[serde(default)]
+    pub connected: bool,
+    #[serde(default)]
+    pub transmitting: bool,
+    #[serde(default)]
+    pub exists_on_remote: bool,
+}
+
+fn default_transport_protocol() -> String {
+    "QUIC".to_string()
+}
+fn default_communications_timeout_ms() -> u64 {
+    30_000
+}
+fn default_yield_duration_ms() -> u64 {
+    1_000
+}
+fn default_batch_count() -> usize {
+    100
+}
+fn default_batch_size_bytes() -> u64 {
+    5_000_000
+}
+fn default_batch_duration_ms() -> u64 {
+    5_000
+}
+
 // ── Snapshot source — breaks the Arc cycle ────────────────────────────────────
 
 /// The subset of engine state needed for persistence snapshotting.
@@ -212,6 +285,7 @@ pub(crate) struct SnapshotSource {
     pub service_registry: crate::registry::service_registry::SharedServiceRegistry,
     pub labels: Arc<RwLock<Vec<LabelInfo>>>,
     pub process_groups: Arc<RwLock<Vec<ProcessGroupInfo>>>,
+    pub remote_process_groups: Arc<DashMap<String, RemoteProcessGroup>>,
 }
 
 // ── Snapshot from live engine state ───────────────────────────────────────────
@@ -450,6 +524,57 @@ impl PersistedFlowState {
             })
             .collect();
 
+        let remote_process_groups: Vec<PersistedRemoteProcessGroup> = source
+            .remote_process_groups
+            .iter()
+            .map(|entry| {
+                let rpg = entry.value();
+                let input_ports: Vec<PersistedRemotePort> = rpg
+                    .input_ports
+                    .iter()
+                    .map(|p| PersistedRemotePort {
+                        id: p.id.clone(),
+                        name: p.name.clone(),
+                        target_id: p.target_id.clone(),
+                        connected: p.connected,
+                        transmitting: p.transmitting,
+                        exists_on_remote: p.exists_on_remote,
+                    })
+                    .collect();
+                let output_ports: Vec<PersistedRemotePort> = rpg
+                    .output_ports
+                    .iter()
+                    .map(|p| PersistedRemotePort {
+                        id: p.id.clone(),
+                        name: p.name.clone(),
+                        target_id: p.target_id.clone(),
+                        connected: p.connected,
+                        transmitting: p.transmitting,
+                        exists_on_remote: p.exists_on_remote,
+                    })
+                    .collect();
+                PersistedRemoteProcessGroup {
+                    id: rpg.id.clone(),
+                    name: rpg.name.clone(),
+                    target_uris: rpg.target_uris.clone(),
+                    transport_protocol: rpg.transport_protocol.clone(),
+                    communications_timeout_ms: rpg.communications_timeout_ms,
+                    yield_duration_ms: rpg.yield_duration_ms,
+                    batch_count: rpg.batch_count,
+                    batch_size_bytes: rpg.batch_size_bytes,
+                    batch_duration_ms: rpg.batch_duration_ms,
+                    proxy_host: rpg.proxy_host.clone(),
+                    proxy_port: rpg.proxy_port,
+                    transmitting: rpg.transmitting,
+                    input_ports,
+                    output_ports,
+                    parent_group_id: rpg.parent_group_id.clone(),
+                    position: rpg.position,
+                    comments: rpg.comments.clone(),
+                }
+            })
+            .collect();
+
         Self {
             version: CURRENT_VERSION,
             flow_name: source.flow_name.clone(),
@@ -459,6 +584,7 @@ impl PersistedFlowState {
             services,
             labels,
             process_groups,
+            remote_process_groups,
         }
     }
 }
@@ -704,6 +830,7 @@ impl FlowPersistence {
         service_registry: crate::registry::service_registry::SharedServiceRegistry,
         labels: Arc<RwLock<Vec<LabelInfo>>>,
         process_groups: Arc<RwLock<Vec<ProcessGroupInfo>>>,
+        remote_process_groups: Arc<DashMap<String, RemoteProcessGroup>>,
     ) {
         *self.inner.source.write() = Some(SnapshotSource {
             flow_name,
@@ -713,6 +840,7 @@ impl FlowPersistence {
             service_registry,
             labels,
             process_groups,
+            remote_process_groups,
         });
     }
 
@@ -826,6 +954,7 @@ mod tests {
             services: vec![],
             labels: vec![],
             process_groups: vec![],
+            remote_process_groups: vec![],
         }
     }
 
@@ -907,6 +1036,7 @@ mod tests {
                 font_size: 14.0,
             }],
             process_groups: vec![],
+            remote_process_groups: vec![],
         };
 
         let json = serde_json::to_string_pretty(&state).unwrap();
@@ -958,6 +1088,7 @@ mod tests {
             services: vec![],
             labels: vec![],
             process_groups: vec![],
+            remote_process_groups: vec![],
         };
         atomic_write(&conf_dir, &state2).unwrap();
 
@@ -1058,6 +1189,7 @@ mod tests {
             services: vec![],
             labels: vec![],
             process_groups: vec![],
+            remote_process_groups: vec![],
         };
 
         atomic_write(&conf_dir, &state).unwrap();
@@ -1100,6 +1232,7 @@ mod tests {
         let service_registry = crate::registry::service_registry::SharedServiceRegistry::new();
         let labels = Arc::new(RwLock::new(Vec::new()));
         let process_groups = Arc::new(RwLock::new(Vec::new()));
+        let remote_process_groups = Arc::new(DashMap::new());
         persistence.set_source(
             "debounce-test".to_string(),
             processors,
@@ -1108,6 +1241,7 @@ mod tests {
             service_registry,
             labels,
             process_groups,
+            remote_process_groups,
         );
 
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -1181,6 +1315,7 @@ mod tests {
             services: vec![],
             labels: vec![],
             process_groups: vec![],
+            remote_process_groups: vec![],
         };
 
         // Decrypt with the correct key.
@@ -1229,6 +1364,7 @@ mod tests {
             services: vec![],
             labels: vec![],
             process_groups: vec![],
+            remote_process_groups: vec![],
         };
 
         // No key provided — should fail.

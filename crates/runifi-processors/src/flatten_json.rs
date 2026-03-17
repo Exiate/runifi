@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use runifi_plugin_api::context::ProcessContext;
-use runifi_plugin_api::processor::{Processor, ProcessorDescriptor};
+use runifi_plugin_api::processor::{InputRequirement, Processor, ProcessorDescriptor};
 use runifi_plugin_api::property::PropertyDescriptor;
 use runifi_plugin_api::relationship::Relationship;
 use runifi_plugin_api::result::ProcessResult;
@@ -191,6 +191,10 @@ inventory::submit! {
         description: "Flattens nested JSON objects into single-level with dot-notation keys",
         factory: || Box::new(FlattenJson::new()),
         tags: &["JSON", "Transform"],
+        input_requirement: InputRequirement::Allowed,
+        trigger_when_empty: false,
+        side_effect_free: false,
+        supports_batching: false,
     }
 }
 

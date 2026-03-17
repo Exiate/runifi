@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use regex_lite::Regex;
 use runifi_plugin_api::context::ProcessContext;
-use runifi_plugin_api::processor::{Processor, ProcessorDescriptor};
+use runifi_plugin_api::processor::{InputRequirement, Processor, ProcessorDescriptor};
 use runifi_plugin_api::property::PropertyDescriptor;
 use runifi_plugin_api::relationship::Relationship;
 use runifi_plugin_api::result::ProcessResult;
@@ -276,6 +276,10 @@ inventory::submit! {
         description: "Extracts text from FlowFile content using regex capture groups and stores matches as attributes",
         factory: || Box::new(ExtractText::new()),
         tags: &["Text", "Extraction", "Regex"],
+        input_requirement: InputRequirement::Allowed,
+        trigger_when_empty: false,
+        side_effect_free: false,
+        supports_batching: false,
     }
 }
 

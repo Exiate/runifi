@@ -273,6 +273,7 @@ mod tests {
             services: vec![],
             labels: vec![],
             process_groups: vec![],
+            remote_process_groups: vec![],
         }
     }
 
