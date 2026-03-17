@@ -33,6 +33,7 @@ interface ContextMenuProps {
   onStartSelected?: () => void;
   onStopSelected?: () => void;
   onDeleteSelected?: () => void;
+  onGroupSelected?: () => void;
   onAlign?: (action: AlignAction) => void;
   onEnterGroup?: () => void;
   onConfigureGroup?: () => void;
@@ -55,6 +56,7 @@ function ContextMenuInner({
   onStartSelected,
   onStopSelected,
   onDeleteSelected,
+  onGroupSelected,
   onAlign,
   onEnterGroup,
   onConfigureGroup,
@@ -162,6 +164,18 @@ function ContextMenuInner({
           >
             Stop Selected
           </button>
+        )}
+        {onGroupSelected && (
+          <>
+            <div className="context-menu-separator" aria-hidden="true" />
+            <button
+              className="context-menu-item"
+              onClick={() => { onGroupSelected(); onClose(); }}
+              role="menuitem"
+            >
+              Group
+            </button>
+          </>
         )}
         {onAlign && count >= 2 && (
           <>

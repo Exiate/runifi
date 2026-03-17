@@ -30,6 +30,7 @@ import { ProcessGroupNode } from './ProcessGroupNode';
 import { PortNode } from './PortNode';
 import { ConnectionEdge } from './ConnectionEdge';
 import { AddProcessorModal } from './AddProcessorModal';
+import { NamePromptDialog } from './NamePromptDialog';
 import { ConnectionModal } from './ConnectionModal';
 import { ConfirmDialog } from './ConfirmDialog';
 import { ContextMenu, type ContextMenuState, type AlignAction } from './ContextMenu';
@@ -355,6 +356,8 @@ function FlowCanvasInner({
   useEffect(() => { nodesRef.current = nodes; }, [nodes]);
 
   const [pendingDrop, setPendingDrop] = useState<PendingDrop | null>(null);
+  const [pendingGroupDrop, setPendingGroupDrop] = useState<{ x: number; y: number } | null>(null);
+  const [pendingGroupSelection, setPendingGroupSelection] = useState<string[] | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [pendingConnectionContext, setPendingConnectionContext] = useState<{
@@ -722,6 +725,12 @@ function FlowCanvasInner({
           return;
         }
 
+        if (componentType === 'process-group') {
+          const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+          setPendingGroupDrop(position);
+          return;
+        }
+
         if (componentType === 'input-port' || componentType === 'output-port') {
           const portLabel = componentType === 'input-port' ? 'Input' : 'Output';
           onToast('info', `${portLabel} ports require process groups (not yet implemented).`);
@@ -798,6 +807,206 @@ function FlowCanvasInner({
         });
     },
     [pendingDrop, setNodes, onToast, currentGroupId],
+  );
+
+  const handleCreateProcessGroup = useCallback(
+    (name: string) => {
+      if (!pendingGroupDrop) return;
+      const position = pendingGroupDrop;
+      setPendingGroupDrop(null);
+
+      const tempId = `pg-pending-${Date.now()}`;
+      const newNode: GroupFlowNode = {
+        id: tempId,
+        type: 'processGroupNode' as const,
+        position,
+        data: {
+          groupId: '',
+          name,
+          processorCount: 0,
+          inputPortCount: 0,
+          outputPortCount: 0,
+          pending: true,
+        },
+        draggable: true,
+        selectable: true,
+      };
+
+      setNodes((prev) => [...prev, newNode]);
+
+      fetch('/api/v1/process-groups', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name,
+          parent_group_id: currentGroupId ?? undefined,
+        }),
+      })
+        .then((res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.json() as Promise<{ id: string; name: string }>;
+        })
+        .then((created) => {
+          // Save position for the new group
+          fetch(`/api/v1/process-groups/${encodeURIComponent(created.id)}/position`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ x: position.x, y: position.y }),
+          }).catch(() => { /* best effort */ });
+
+          setNodes((prev) =>
+            prev.map((n): AnyNode =>
+              n.id === tempId
+                ? {
+                    ...n,
+                    id: created.id,
+                    data: {
+                      ...(n.data as ProcessGroupNodeData),
+                      groupId: created.id,
+                      pending: false,
+                    },
+                  } as AnyNode
+                : n,
+            ),
+          );
+          onToast('success', `Process group "${name}" created.`);
+        })
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          setNodes((prev) => prev.filter((n) => n.id !== tempId));
+          onToast('error', `Failed to create process group: ${msg}`);
+        });
+    },
+    [pendingGroupDrop, setNodes, onToast, currentGroupId],
+  );
+
+  const handleGroupSelected = useCallback(() => {
+    if (!contextMenu?.selectedNodeIds || contextMenu.selectedNodeIds.length < 1) return;
+    // Filter to only processor/funnel nodes (not labels, ports, or existing groups)
+    const processorNodeIds = contextMenu.selectedNodeIds.filter((id) => {
+      const node = nodes.find((n) => n.id === id);
+      return node && (node.type === 'processorNode' || node.type === 'funnelNode');
+    });
+    if (processorNodeIds.length === 0) {
+      onToast('warning', 'No processors selected to group.');
+      return;
+    }
+    setPendingGroupSelection(processorNodeIds);
+  }, [contextMenu, nodes, onToast]);
+
+  const handleConfirmGroupSelection = useCallback(
+    (name: string) => {
+      if (!pendingGroupSelection || pendingGroupSelection.length === 0) return;
+      const selectedIds = pendingGroupSelection;
+      setPendingGroupSelection(null);
+
+      // Calculate position as average of selected node positions
+      const selectedNodes = nodes.filter((n) => selectedIds.includes(n.id));
+      const avgX = selectedNodes.reduce((sum, n) => sum + n.position.x, 0) / selectedNodes.length;
+      const avgY = selectedNodes.reduce((sum, n) => sum + n.position.y, 0) / selectedNodes.length;
+
+      // Find connections between selected nodes and connections crossing the boundary
+      const internalConnections: string[] = [];
+      const inboundEdges: ConnEdge[] = [];
+      const outboundEdges: ConnEdge[] = [];
+      const selectedSet = new Set(selectedIds);
+      for (const edge of edges) {
+        const srcInGroup = selectedSet.has(edge.source);
+        const tgtInGroup = selectedSet.has(edge.target);
+        if (srcInGroup && tgtInGroup) {
+          if (edge.data?.connectionId) internalConnections.push(edge.data.connectionId);
+        } else if (!srcInGroup && tgtInGroup) {
+          inboundEdges.push(edge);
+        } else if (srcInGroup && !tgtInGroup) {
+          outboundEdges.push(edge);
+        }
+      }
+
+      // Build port names from crossing connections
+      const inputPortNames = inboundEdges.map((e) => `${e.target}-in`);
+      const outputPortNames = outboundEdges.map((e) => `${e.source}-out`);
+      // Deduplicate
+      const uniqueInputPorts = [...new Set(inputPortNames)];
+      const uniqueOutputPorts = [...new Set(outputPortNames)];
+
+      fetch('/api/v1/process-groups', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name,
+          parent_group_id: currentGroupId ?? undefined,
+          input_ports: uniqueInputPorts,
+          output_ports: uniqueOutputPorts,
+        }),
+      })
+        .then((res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.json() as Promise<{ id: string; name: string }>;
+        })
+        .then(async (created) => {
+          const groupId = created.id;
+
+          // Save position
+          fetch(`/api/v1/process-groups/${encodeURIComponent(groupId)}/position`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ x: avgX, y: avgY }),
+          }).catch(() => {});
+
+          // Move processors into the group
+          const movePromises = selectedIds.map((procName) =>
+            fetch(`/api/v1/process-groups/${encodeURIComponent(groupId)}/processors/${encodeURIComponent(procName)}`, {
+              method: 'PUT',
+            }),
+          );
+          // Move internal connections into the group
+          const connPromises = internalConnections.map((connId) =>
+            fetch(`/api/v1/process-groups/${encodeURIComponent(groupId)}/connections/${encodeURIComponent(connId)}`, {
+              method: 'PUT',
+            }),
+          );
+          await Promise.all([...movePromises, ...connPromises]);
+
+          // Remove grouped nodes and their internal edges from canvas,
+          // replace with the group node
+          const newGroupNode: GroupFlowNode = {
+            id: groupId,
+            type: 'processGroupNode' as const,
+            position: { x: avgX, y: avgY },
+            data: {
+              groupId,
+              name,
+              processorCount: selectedIds.length,
+              inputPortCount: uniqueInputPorts.length,
+              outputPortCount: uniqueOutputPorts.length,
+              pending: false,
+            },
+            draggable: true,
+            selectable: true,
+          };
+
+          setNodes((prev) => [
+            ...prev.filter((n) => !selectedSet.has(n.id)),
+            newGroupNode,
+          ]);
+
+          // Remove internal edges and edges crossing the boundary
+          const removedEdgeIds = new Set<string>();
+          for (const edge of edges) {
+            const srcIn = selectedSet.has(edge.source);
+            const tgtIn = selectedSet.has(edge.target);
+            if (srcIn || tgtIn) removedEdgeIds.add(edge.id);
+          }
+          setEdges((prev) => prev.filter((e) => !removedEdgeIds.has(e.id)));
+
+          onToast('success', `Grouped ${selectedIds.length} components into "${name}".`);
+        })
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          onToast('error', `Failed to create group: ${msg}`);
+        });
+    },
+    [pendingGroupSelection, nodes, edges, setNodes, setEdges, onToast, currentGroupId],
   );
 
   const handleConnect: OnConnect = useCallback(
@@ -1377,8 +1586,8 @@ function FlowCanvasInner({
 
   // --- Check if any modal/dialog is open ---
   const isModalOpen = useCallback(() => {
-    return !!(pendingDrop || deleteTarget || pendingConnectionContext || configTarget || colorPickerTarget || queueInspectTarget || groupConfigTarget || connConfigTarget);
-  }, [pendingDrop, deleteTarget, pendingConnectionContext, configTarget, colorPickerTarget, queueInspectTarget, groupConfigTarget, connConfigTarget]);
+    return !!(pendingDrop || pendingGroupDrop || pendingGroupSelection || deleteTarget || pendingConnectionContext || configTarget || colorPickerTarget || queueInspectTarget || groupConfigTarget || connConfigTarget);
+  }, [pendingDrop, pendingGroupDrop, pendingGroupSelection, deleteTarget, pendingConnectionContext, configTarget, colorPickerTarget, queueInspectTarget, groupConfigTarget, connConfigTarget]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -1713,6 +1922,26 @@ function FlowCanvasInner({
         />
       )}
 
+      {pendingGroupDrop && (
+        <NamePromptDialog
+          title="Create Process Group"
+          label="Process Group Name"
+          placeholder="e.g. my-process-group"
+          onConfirm={handleCreateProcessGroup}
+          onCancel={() => setPendingGroupDrop(null)}
+        />
+      )}
+
+      {pendingGroupSelection && (
+        <NamePromptDialog
+          title="Group Selected Components"
+          label="Process Group Name"
+          placeholder="e.g. data-processing"
+          onConfirm={handleConfirmGroupSelection}
+          onCancel={() => setPendingGroupSelection(null)}
+        />
+      )}
+
       {pendingConnectionContext && (
         <ConnectionModal
           sourceId={pendingConnectionContext.sourceId}
@@ -1790,6 +2019,7 @@ function FlowCanvasInner({
             onStartSelected={handleStartSelected}
             onStopSelected={handleStopSelected}
             onDeleteSelected={handleDeleteSelected}
+            onGroupSelected={handleGroupSelected}
             onAlign={handleAlign}
             onEnterGroup={isGroupCtx && contextMenu.groupId ? () => onEnterGroup?.(contextMenu.groupId!) : undefined}
             onConfigureGroup={isGroupCtx && contextMenu.groupId ? () => setGroupConfigTarget(contextMenu.groupId!) : undefined}
