@@ -11,6 +11,7 @@ import { BulletinBoard } from './components/BulletinBoard';
 import { DataProvenance } from './components/DataProvenance';
 import { SystemDiagnosticsModal } from './components/SystemDiagnosticsModal';
 import { ClusterManagement } from './components/ClusterManagement';
+import { UsersGroupsPanel } from './components/UsersGroupsPanel';
 import { useFlowTopology } from './hooks/useFlowTopology';
 import { useGroupNavigation } from './hooks/useGroupNavigation';
 import { useSseMetrics } from './hooks/useSseMetrics';
@@ -40,6 +41,7 @@ export function App() {
   const [provenanceOpen, setProvenanceOpen] = useState(false);
   const [systemDiagnosticsOpen, setSystemDiagnosticsOpen] = useState(false);
   const [clusterOpen, setClusterOpen] = useState(false);
+  const [usersGroupsOpen, setUsersGroupsOpen] = useState(false);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [colorRequestNodeIds, setColorRequestNodeIds] = useState<string[] | null>(null);
 
@@ -97,6 +99,7 @@ export function App() {
         onOpenDataProvenance={() => setProvenanceOpen(true)}
         onOpenSystemDiagnostics={() => setSystemDiagnosticsOpen(true)}
         onOpenCluster={() => setClusterOpen(true)}
+        onOpenUsersGroups={() => setUsersGroupsOpen(true)}
       />
       <ComponentToolbar
         plugins={plugins}
@@ -201,6 +204,13 @@ export function App() {
         <ClusterManagement
           onToast={pushToast}
           onClose={() => setClusterOpen(false)}
+        />
+      )}
+
+      {usersGroupsOpen && (
+        <UsersGroupsPanel
+          onToast={pushToast}
+          onClose={() => setUsersGroupsOpen(false)}
         />
       )}
     </div>

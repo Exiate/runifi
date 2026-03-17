@@ -425,3 +425,79 @@ export interface ClusterStatusResponse {
   coordinator_id?: string;
   primary_id?: string;
 }
+
+// ── User and group management types ───────────────────────────
+export interface UserResponse {
+  id: string;
+  username: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UserGroupResponse {
+  id: string;
+  name: string;
+  members: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateUserRequest {
+  username: string;
+  password: string;
+}
+
+export interface UpdateUserRequest {
+  username?: string;
+  enabled?: boolean;
+  password?: string;
+}
+
+export interface CreateGroupRequest {
+  name: string;
+  members?: string[];
+}
+
+export interface UpdateGroupRequest {
+  name?: string;
+  members?: string[];
+}
+
+// ── User and group management types ───────────────────────────
+export interface UserResponse {
+  id: string;
+  username: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UserGroupResponse {
+  id: string;
+  name: string;
+  members: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateUserRequest {
+  username: string;
+  password: string;
+}
+
+export interface UpdateUserRequest {
+  username?: string;
+  enabled?: boolean;
+  password?: string;
+}
+
+export interface CreateGroupRequest {
+  name: string;
+  members?: string[];
+}
+
+export interface UpdateGroupRequest {
+  name?: string;
+  members?: string[];
+}
