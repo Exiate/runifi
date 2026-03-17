@@ -19,7 +19,6 @@ export function useSystemDiagnostics(open: boolean): UseSystemDiagnosticsResult 
 
   const fetchDiagnostics = useCallback(async () => {
     try {
-      setLoading((prev) => !prev && !data ? true : prev);
       const token = localStorage.getItem('runifi-token');
       const headers: Record<string, string> = {};
       if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -33,7 +32,7 @@ export function useSystemDiagnostics(open: boolean): UseSystemDiagnosticsResult 
     } finally {
       setLoading(false);
     }
-  }, [data]);
+  }, []);
 
   // Initial fetch when opened
   useEffect(() => {
