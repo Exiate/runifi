@@ -10,6 +10,7 @@ import { ControllerServicesPanel } from './components/ControllerServicesPanel';
 import { BulletinBoard } from './components/BulletinBoard';
 import { DataProvenance } from './components/DataProvenance';
 import { SystemDiagnosticsModal } from './components/SystemDiagnosticsModal';
+import { ClusterManagement } from './components/ClusterManagement';
 import { useFlowTopology } from './hooks/useFlowTopology';
 import { useGroupNavigation } from './hooks/useGroupNavigation';
 import { useSseMetrics } from './hooks/useSseMetrics';
@@ -38,6 +39,7 @@ export function App() {
   const [controllerServicesOpen, setControllerServicesOpen] = useState(false);
   const [provenanceOpen, setProvenanceOpen] = useState(false);
   const [systemDiagnosticsOpen, setSystemDiagnosticsOpen] = useState(false);
+  const [clusterOpen, setClusterOpen] = useState(false);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [colorRequestNodeIds, setColorRequestNodeIds] = useState<string[] | null>(null);
 
@@ -94,6 +96,7 @@ export function App() {
         onOpenControllerServices={() => setControllerServicesOpen(true)}
         onOpenDataProvenance={() => setProvenanceOpen(true)}
         onOpenSystemDiagnostics={() => setSystemDiagnosticsOpen(true)}
+        onOpenCluster={() => setClusterOpen(true)}
       />
       <ComponentToolbar
         plugins={plugins}
@@ -191,6 +194,13 @@ export function App() {
       {systemDiagnosticsOpen && (
         <SystemDiagnosticsModal
           onClose={() => setSystemDiagnosticsOpen(false)}
+        />
+      )}
+
+      {clusterOpen && (
+        <ClusterManagement
+          onToast={pushToast}
+          onClose={() => setClusterOpen(false)}
         />
       )}
     </div>
