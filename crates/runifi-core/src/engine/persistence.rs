@@ -13,6 +13,7 @@ use zeroize::Zeroizing;
 
 use super::handle::{ConnectionInfo, LabelInfo, Position, ProcessorInfo};
 use super::process_group::ProcessGroupInfo;
+use super::remote_process_group::RemoteProcessGroup;
 
 /// File names for persisted flow state.
 const FLOW_STATE_FILE: &str = "flow.json";
@@ -46,6 +47,8 @@ pub struct PersistedFlowState {
     pub labels: Vec<PersistedLabel>,
     #[serde(default)]
     pub process_groups: Vec<PersistedProcessGroup>,
+    #[serde(default)]
+    pub remote_process_groups: Vec<PersistedRemoteProcessGroup>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +82,12 @@ pub struct PersistedScheduling {
     /// CRON expression (only present when strategy = "cron").
     #[serde(default)]
     pub expression: Option<String>,
+    /// Run duration in milliseconds for batch processing.
+    #[serde(default)]
+    pub run_duration_ms: u64,
+    /// Batch commit count for deferred WAL fsync.
+    #[serde(default)]
+    pub batch_commit_count: u64,
 }
 
 fn default_interval_ms() -> u64 {
@@ -191,6 +200,76 @@ pub struct PersistedPort {
     pub port_type: String,
 }
 
+/// Persisted Remote Process Group data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedRemoteProcessGroup {
+    pub id: String,
+    pub name: String,
+    pub target_uris: Vec<String>,
+    #[serde(default = "default_transport_protocol")]
+    pub transport_protocol: String,
+    #[serde(default = "default_communications_timeout_ms")]
+    pub communications_timeout_ms: u64,
+    #[serde(default = "default_yield_duration_ms")]
+    pub yield_duration_ms: u64,
+    #[serde(default = "default_batch_count")]
+    pub batch_count: usize,
+    #[serde(default = "default_batch_size_bytes")]
+    pub batch_size_bytes: u64,
+    #[serde(default = "default_batch_duration_ms")]
+    pub batch_duration_ms: u64,
+    #[serde(default)]
+    pub proxy_host: Option<String>,
+    #[serde(default)]
+    pub proxy_port: Option<u16>,
+    #[serde(default)]
+    pub transmitting: bool,
+    #[serde(default)]
+    pub input_ports: Vec<PersistedRemotePort>,
+    #[serde(default)]
+    pub output_ports: Vec<PersistedRemotePort>,
+    #[serde(default)]
+    pub parent_group_id: Option<String>,
+    #[serde(default)]
+    pub position: Option<(f64, f64)>,
+    #[serde(default)]
+    pub comments: String,
+}
+
+/// Persisted remote port data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedRemotePort {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub target_id: Option<String>,
+    #[serde(default)]
+    pub connected: bool,
+    #[serde(default)]
+    pub transmitting: bool,
+    #[serde(default)]
+    pub exists_on_remote: bool,
+}
+
+fn default_transport_protocol() -> String {
+    "QUIC".to_string()
+}
+fn default_communications_timeout_ms() -> u64 {
+    30_000
+}
+fn default_yield_duration_ms() -> u64 {
+    1_000
+}
+fn default_batch_count() -> usize {
+    100
+}
+fn default_batch_size_bytes() -> u64 {
+    5_000_000
+}
+fn default_batch_duration_ms() -> u64 {
+    5_000
+}
+
 // ── Snapshot source — breaks the Arc cycle ────────────────────────────────────
 
 /// The subset of engine state needed for persistence snapshotting.
@@ -206,6 +285,7 @@ pub(crate) struct SnapshotSource {
     pub service_registry: crate::registry::service_registry::SharedServiceRegistry,
     pub labels: Arc<RwLock<Vec<LabelInfo>>>,
     pub process_groups: Arc<RwLock<Vec<ProcessGroupInfo>>>,
+    pub remote_process_groups: Arc<DashMap<String, RemoteProcessGroup>>,
 }
 
 // ── Snapshot from live engine state ───────────────────────────────────────────
@@ -266,10 +346,17 @@ impl PersistedFlowState {
                 let comments = p.comments.read().clone();
                 let auto_term = p.auto_terminated_relationships.read().clone();
 
+                let mut sched = scheduling_display_to_persisted(&p.scheduling_display);
+                sched.run_duration_ms =
+                    p.run_duration_ms.load(std::sync::atomic::Ordering::Relaxed);
+                sched.batch_commit_count = p
+                    .batch_commit_count
+                    .load(std::sync::atomic::Ordering::Relaxed);
+
                 PersistedProcessor {
                     name: p.name.clone(),
                     type_name: p.type_name.clone(),
-                    scheduling: scheduling_display_to_persisted(&p.scheduling_display),
+                    scheduling: sched,
                     properties,
                     sensitive_properties: sensitive_names,
                     penalty_duration_ms: if penalty != 30_000 {
@@ -437,6 +524,57 @@ impl PersistedFlowState {
             })
             .collect();
 
+        let remote_process_groups: Vec<PersistedRemoteProcessGroup> = source
+            .remote_process_groups
+            .iter()
+            .map(|entry| {
+                let rpg = entry.value();
+                let input_ports: Vec<PersistedRemotePort> = rpg
+                    .input_ports
+                    .iter()
+                    .map(|p| PersistedRemotePort {
+                        id: p.id.clone(),
+                        name: p.name.clone(),
+                        target_id: p.target_id.clone(),
+                        connected: p.connected,
+                        transmitting: p.transmitting,
+                        exists_on_remote: p.exists_on_remote,
+                    })
+                    .collect();
+                let output_ports: Vec<PersistedRemotePort> = rpg
+                    .output_ports
+                    .iter()
+                    .map(|p| PersistedRemotePort {
+                        id: p.id.clone(),
+                        name: p.name.clone(),
+                        target_id: p.target_id.clone(),
+                        connected: p.connected,
+                        transmitting: p.transmitting,
+                        exists_on_remote: p.exists_on_remote,
+                    })
+                    .collect();
+                PersistedRemoteProcessGroup {
+                    id: rpg.id.clone(),
+                    name: rpg.name.clone(),
+                    target_uris: rpg.target_uris.clone(),
+                    transport_protocol: rpg.transport_protocol.clone(),
+                    communications_timeout_ms: rpg.communications_timeout_ms,
+                    yield_duration_ms: rpg.yield_duration_ms,
+                    batch_count: rpg.batch_count,
+                    batch_size_bytes: rpg.batch_size_bytes,
+                    batch_duration_ms: rpg.batch_duration_ms,
+                    proxy_host: rpg.proxy_host.clone(),
+                    proxy_port: rpg.proxy_port,
+                    transmitting: rpg.transmitting,
+                    input_ports,
+                    output_ports,
+                    parent_group_id: rpg.parent_group_id.clone(),
+                    position: rpg.position,
+                    comments: rpg.comments.clone(),
+                }
+            })
+            .collect();
+
         Self {
             version: CURRENT_VERSION,
             flow_name: source.flow_name.clone(),
@@ -446,6 +584,7 @@ impl PersistedFlowState {
             services,
             labels,
             process_groups,
+            remote_process_groups,
         }
     }
 }
@@ -527,6 +666,8 @@ pub fn scheduling_display_to_persisted(display: &str) -> PersistedScheduling {
             strategy: "timer".to_string(),
             interval_ms,
             expression: None,
+            run_duration_ms: 0,
+            batch_commit_count: 0,
         }
     } else if display.starts_with("cron-driven") {
         // Parse "cron-driven (0 */5 * * * *)" -> expression
@@ -539,12 +680,16 @@ pub fn scheduling_display_to_persisted(display: &str) -> PersistedScheduling {
             strategy: "cron".to_string(),
             interval_ms: 100,
             expression: Some(expression),
+            run_duration_ms: 0,
+            batch_commit_count: 0,
         }
     } else {
         PersistedScheduling {
             strategy: "event".to_string(),
             interval_ms: 100,
             expression: None,
+            run_duration_ms: 0,
+            batch_commit_count: 0,
         }
     }
 }
@@ -685,6 +830,7 @@ impl FlowPersistence {
         service_registry: crate::registry::service_registry::SharedServiceRegistry,
         labels: Arc<RwLock<Vec<LabelInfo>>>,
         process_groups: Arc<RwLock<Vec<ProcessGroupInfo>>>,
+        remote_process_groups: Arc<DashMap<String, RemoteProcessGroup>>,
     ) {
         *self.inner.source.write() = Some(SnapshotSource {
             flow_name,
@@ -694,6 +840,7 @@ impl FlowPersistence {
             service_registry,
             labels,
             process_groups,
+            remote_process_groups,
         });
     }
 
@@ -790,6 +937,8 @@ mod tests {
                     strategy: "timer".to_string(),
                     interval_ms: 500,
                     expression: None,
+                    run_duration_ms: 0,
+                    batch_commit_count: 0,
                 },
                 properties: HashMap::new(),
                 sensitive_properties: vec![],
@@ -805,6 +954,7 @@ mod tests {
             services: vec![],
             labels: vec![],
             process_groups: vec![],
+            remote_process_groups: vec![],
         }
     }
 
@@ -821,6 +971,8 @@ mod tests {
                         strategy: "timer".to_string(),
                         interval_ms: 1000,
                         expression: None,
+                        run_duration_ms: 0,
+                        batch_commit_count: 0,
                     },
                     properties: HashMap::from([("File Size".to_string(), "5120".to_string())]),
                     sensitive_properties: vec![],
@@ -838,6 +990,8 @@ mod tests {
                         strategy: "event".to_string(),
                         interval_ms: 100,
                         expression: None,
+                        run_duration_ms: 0,
+                        batch_commit_count: 0,
                     },
                     properties: HashMap::new(),
                     sensitive_properties: vec![],
@@ -882,6 +1036,7 @@ mod tests {
                 font_size: 14.0,
             }],
             process_groups: vec![],
+            remote_process_groups: vec![],
         };
 
         let json = serde_json::to_string_pretty(&state).unwrap();
@@ -933,6 +1088,7 @@ mod tests {
             services: vec![],
             labels: vec![],
             process_groups: vec![],
+            remote_process_groups: vec![],
         };
         atomic_write(&conf_dir, &state2).unwrap();
 
@@ -1033,6 +1189,7 @@ mod tests {
             services: vec![],
             labels: vec![],
             process_groups: vec![],
+            remote_process_groups: vec![],
         };
 
         atomic_write(&conf_dir, &state).unwrap();
@@ -1075,6 +1232,7 @@ mod tests {
         let service_registry = crate::registry::service_registry::SharedServiceRegistry::new();
         let labels = Arc::new(RwLock::new(Vec::new()));
         let process_groups = Arc::new(RwLock::new(Vec::new()));
+        let remote_process_groups = Arc::new(DashMap::new());
         persistence.set_source(
             "debounce-test".to_string(),
             processors,
@@ -1083,6 +1241,7 @@ mod tests {
             service_registry,
             labels,
             process_groups,
+            remote_process_groups,
         );
 
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -1136,6 +1295,8 @@ mod tests {
                     strategy: "timer".to_string(),
                     interval_ms: 1000,
                     expression: None,
+                    run_duration_ms: 0,
+                    batch_commit_count: 0,
                 },
                 properties: HashMap::from([
                     ("Password".to_string(), encrypted),
@@ -1154,6 +1315,7 @@ mod tests {
             services: vec![],
             labels: vec![],
             process_groups: vec![],
+            remote_process_groups: vec![],
         };
 
         // Decrypt with the correct key.
@@ -1185,6 +1347,8 @@ mod tests {
                     strategy: "timer".to_string(),
                     interval_ms: 100,
                     expression: None,
+                    run_duration_ms: 0,
+                    batch_commit_count: 0,
                 },
                 properties: HashMap::from([("Secret".to_string(), encrypted)]),
                 sensitive_properties: vec!["Secret".to_string()],
@@ -1200,11 +1364,60 @@ mod tests {
             services: vec![],
             labels: vec![],
             process_groups: vec![],
+            remote_process_groups: vec![],
         };
 
         // No key provided — should fail.
         let result = state.decrypt_sensitive_properties(None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_batch_config_persistence_round_trip() {
+        let state = PersistedProcessor {
+            name: "batch-proc".to_string(),
+            type_name: "GenerateFlowFile".to_string(),
+            scheduling: PersistedScheduling {
+                strategy: "timer".to_string(),
+                interval_ms: 10,
+                expression: None,
+                run_duration_ms: 50,
+                batch_commit_count: 200,
+            },
+            properties: HashMap::new(),
+            sensitive_properties: vec![],
+            penalty_duration_ms: None,
+            yield_duration_ms: None,
+            bulletin_level: None,
+            concurrent_tasks: None,
+            auto_terminated_relationships: None,
+            comments: None,
+        };
+
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(json.contains("\"run_duration_ms\":50"));
+        assert!(json.contains("\"batch_commit_count\":200"));
+
+        let deserialized: PersistedProcessor = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.scheduling.run_duration_ms, 50);
+        assert_eq!(deserialized.scheduling.batch_commit_count, 200);
+    }
+
+    #[test]
+    fn test_batch_config_defaults_on_deserialization() {
+        // Old format without batch fields should default to 0.
+        let json = r#"{
+            "name": "old-proc",
+            "type_name": "Test",
+            "scheduling": {
+                "strategy": "timer",
+                "interval_ms": 100
+            },
+            "properties": {}
+        }"#;
+        let deserialized: PersistedProcessor = serde_json::from_str(json).unwrap();
+        assert_eq!(deserialized.scheduling.run_duration_ms, 0);
+        assert_eq!(deserialized.scheduling.batch_commit_count, 0);
     }
 
     #[test]
@@ -1216,6 +1429,8 @@ mod tests {
                 strategy: "timer".to_string(),
                 interval_ms: 100,
                 expression: None,
+                run_duration_ms: 0,
+                batch_commit_count: 0,
             },
             properties: HashMap::new(),
             sensitive_properties: vec![],

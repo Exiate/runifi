@@ -6,8 +6,8 @@ use parking_lot::RwLock;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-use runifi_plugin_api::Processor;
 use runifi_plugin_api::relationship::Relationship;
+use runifi_plugin_api::{InputRequirement, Processor};
 
 use super::bulletin::BulletinBoard;
 use super::handle::{ConnectionInfo, ProcessorInfo, PropertyDescriptorInfo, RelationshipInfo};
@@ -131,6 +131,11 @@ impl DefaultMutationHandler {
             })
             .collect();
 
+        // Read annotations before the processor is moved into ProcessorNode.
+        let input_requirement = processor.input_requirement();
+        let trigger_when_empty = processor.trigger_when_empty();
+        let side_effect_free = processor.side_effect_free();
+        let supports_batching = processor.supports_batching();
         let supports_dynamic = processor.supports_dynamic_properties();
         let supports_sensitive_dynamic = processor.supports_sensitive_dynamic_properties();
         let dynamic_creates_rel = processor.dynamic_property_creates_relationship();
@@ -190,6 +195,12 @@ impl DefaultMutationHandler {
             spawned_task_count: Arc::new(AtomicU64::new(0)),
             comments: Arc::new(RwLock::new(String::new())),
             auto_terminated_relationships: Arc::new(RwLock::new(Vec::new())),
+            run_duration_ms: Arc::new(AtomicU64::new(0)),
+            batch_commit_count: Arc::new(AtomicU64::new(0)),
+            input_requirement,
+            trigger_when_empty,
+            side_effect_free,
+            supports_batching,
             supports_dynamic_properties: supports_dynamic,
             supports_sensitive_dynamic_properties: supports_sensitive_dynamic,
             dynamic_property_creates_relationship: dynamic_creates_rel,
@@ -288,6 +299,14 @@ impl DefaultMutationHandler {
                 .iter()
                 .find(|p| p.name == dest_name)
                 .ok_or_else(|| MutationError::ProcessorNotFound(dest_name.to_string()))?;
+
+            // Validate InputRequirement — reject connections to Forbidden processors.
+            if dst.input_requirement == InputRequirement::Forbidden {
+                return Err(MutationError::InvalidConnection(format!(
+                    "Processor '{}' has InputRequirement::Forbidden and cannot accept incoming connections",
+                    dest_name
+                )));
+            }
 
             let rel = Relationship {
                 name: Box::leak(src_rel_info.name.clone().into_boxed_str()),

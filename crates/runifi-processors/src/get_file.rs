@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use runifi_plugin_api::context::ProcessContext;
-use runifi_plugin_api::processor::{Processor, ProcessorDescriptor};
+use runifi_plugin_api::processor::{InputRequirement, Processor, ProcessorDescriptor};
 use runifi_plugin_api::property::PropertyDescriptor;
 use runifi_plugin_api::relationship::Relationship;
 use runifi_plugin_api::result::{PluginError, ProcessResult};
@@ -207,6 +207,14 @@ impl Processor for GetFile {
             PROP_FILE_FILTER,
         ]
     }
+
+    fn input_requirement(&self) -> InputRequirement {
+        InputRequirement::Forbidden
+    }
+
+    fn trigger_when_empty(&self) -> bool {
+        true
+    }
 }
 
 inventory::submit! {
@@ -215,6 +223,10 @@ inventory::submit! {
         description: "Watches a directory and ingests files as FlowFiles",
         factory: || Box::new(GetFile::new()),
         tags: &["File System", "Ingestion"],
+        input_requirement: InputRequirement::Forbidden,
+        trigger_when_empty: true,
+        side_effect_free: false,
+        supports_batching: false,
     }
 }
 

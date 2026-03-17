@@ -52,6 +52,7 @@ use runifi_core::repository::flowfile_wal::{
 use runifi_core::repository::key_provider::KeyProvider;
 use runifi_core::repository::static_key_provider::StaticKeyProvider;
 use runifi_core::versioning::FlowVersionStore;
+use runifi_plugin_api::InputRequirement;
 
 // Ensure processor registrations are linked in.
 extern crate runifi_processors;
@@ -527,6 +528,19 @@ async fn main() -> Result<()> {
                     if let Some(ref auto_term) = proc_state.auto_terminated_relationships {
                         *info.auto_terminated_relationships.write() = auto_term.clone();
                     }
+                    // Restore batch scheduling config from persisted scheduling.
+                    if proc_state.scheduling.run_duration_ms > 0 {
+                        info.run_duration_ms.store(
+                            proc_state.scheduling.run_duration_ms,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                    }
+                    if proc_state.scheduling.batch_commit_count > 0 {
+                        info.batch_commit_count.store(
+                            proc_state.scheduling.batch_commit_count,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                    }
                 }
             }
         }
@@ -566,10 +580,25 @@ async fn main() -> Result<()> {
     // Set plugin types on the engine handle.
     let mut plugin_types: Vec<PluginTypeInfo> = Vec::new();
     for name in registry.processor_types() {
+        let (input_requirement, trigger_when_empty, side_effect_free, supports_batching) =
+            if let Some(desc) = registry.processor_descriptor(name) {
+                (
+                    desc.input_requirement,
+                    desc.trigger_when_empty,
+                    desc.side_effect_free,
+                    desc.supports_batching,
+                )
+            } else {
+                (InputRequirement::Allowed, false, false, false)
+            };
         plugin_types.push(PluginTypeInfo {
             type_name: name.to_string(),
             kind: PluginKind::Processor,
             tags: registry.processor_tags(name),
+            input_requirement,
+            trigger_when_empty,
+            side_effect_free,
+            supports_batching,
         });
     }
     for name in registry.source_types() {
@@ -577,6 +606,10 @@ async fn main() -> Result<()> {
             type_name: name.to_string(),
             kind: PluginKind::Source,
             tags: registry.source_tags(name),
+            input_requirement: InputRequirement::Forbidden,
+            trigger_when_empty: true,
+            side_effect_free: false,
+            supports_batching: false,
         });
     }
     for name in registry.sink_types() {
@@ -584,6 +617,10 @@ async fn main() -> Result<()> {
             type_name: name.to_string(),
             kind: PluginKind::Sink,
             tags: registry.sink_tags(name),
+            input_requirement: InputRequirement::Required,
+            trigger_when_empty: false,
+            side_effect_free: false,
+            supports_batching: false,
         });
     }
     for name in registry.service_types() {
@@ -591,6 +628,10 @@ async fn main() -> Result<()> {
             type_name: name.to_string(),
             kind: PluginKind::Service,
             tags: registry.service_tags(name),
+            input_requirement: InputRequirement::Allowed,
+            trigger_when_empty: false,
+            side_effect_free: false,
+            supports_batching: false,
         });
     }
     for name in registry.reporting_task_types() {
@@ -598,6 +639,10 @@ async fn main() -> Result<()> {
             type_name: name.to_string(),
             kind: PluginKind::ReportingTask,
             tags: registry.reporting_task_tags(name),
+            input_requirement: InputRequirement::Allowed,
+            trigger_when_empty: false,
+            side_effect_free: false,
+            supports_batching: false,
         });
     }
     engine.set_plugin_types(plugin_types);
@@ -904,6 +949,14 @@ fn load_from_persisted_state(
             scheduling,
             proc_state.properties.clone(),
         );
+        if proc_state.scheduling.run_duration_ms > 0 || proc_state.scheduling.batch_commit_count > 0
+        {
+            engine.set_batch_config(
+                node_id,
+                proc_state.scheduling.run_duration_ms,
+                proc_state.scheduling.batch_commit_count,
+            );
+        }
         node_ids.insert(proc_state.name.clone(), node_id);
 
         tracing::info!(
@@ -1070,6 +1123,15 @@ fn load_from_seed_config(
             scheduling,
             properties,
         );
+        if proc_config.scheduling.run_duration_ms > 0
+            || proc_config.scheduling.batch_commit_count > 0
+        {
+            engine.set_batch_config(
+                node_id,
+                proc_config.scheduling.run_duration_ms,
+                proc_config.scheduling.batch_commit_count,
+            );
+        }
         node_ids.insert(proc_config.name.clone(), node_id);
 
         tracing::info!(

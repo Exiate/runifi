@@ -329,6 +329,8 @@ mod tests {
                         strategy: "timer".to_string(),
                         interval_ms: 1000,
                         expression: None,
+                        run_duration_ms: 0,
+                        batch_commit_count: 0,
                     },
                     properties: HashMap::from([("File Size".to_string(), "5120".to_string())]),
                     sensitive_properties: vec![],
@@ -346,6 +348,8 @@ mod tests {
                         strategy: "event".to_string(),
                         interval_ms: 100,
                         expression: None,
+                        run_duration_ms: 0,
+                        batch_commit_count: 0,
                     },
                     properties: HashMap::new(),
                     sensitive_properties: vec![],
@@ -371,6 +375,7 @@ mod tests {
             services: vec![],
             labels: vec![],
             process_groups: vec![],
+            remote_process_groups: vec![],
         }
     }
 

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use runifi_plugin_api::REL_FAILURE;
 use runifi_plugin_api::context::ProcessContext;
-use runifi_plugin_api::processor::{Processor, ProcessorDescriptor};
+use runifi_plugin_api::processor::{InputRequirement, Processor, ProcessorDescriptor};
 use runifi_plugin_api::property::PropertyDescriptor;
 use runifi_plugin_api::relationship::Relationship;
 use runifi_plugin_api::result::ProcessResult;
@@ -252,6 +252,10 @@ inventory::submit! {
         description: "Validates FlowFile JSON content against a JSON Schema",
         factory: || Box::new(ValidateJson::new()),
         tags: &["JSON", "Validation", "Schema"],
+        input_requirement: InputRequirement::Allowed,
+        trigger_when_empty: false,
+        side_effect_free: false,
+        supports_batching: false,
     }
 }
 

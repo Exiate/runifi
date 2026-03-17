@@ -1,5 +1,5 @@
 use runifi_plugin_api::context::ProcessContext;
-use runifi_plugin_api::processor::{Processor, ProcessorDescriptor};
+use runifi_plugin_api::processor::{InputRequirement, Processor, ProcessorDescriptor};
 use runifi_plugin_api::property::PropertyDescriptor;
 use runifi_plugin_api::relationship::Relationship;
 use runifi_plugin_api::result::ProcessResult;
@@ -121,6 +121,14 @@ impl Processor for LogAttribute {
     fn property_descriptors(&self) -> Vec<PropertyDescriptor> {
         vec![PROP_LOG_LEVEL, PROP_LOG_PAYLOAD]
     }
+
+    fn input_requirement(&self) -> InputRequirement {
+        InputRequirement::Required
+    }
+
+    fn side_effect_free(&self) -> bool {
+        true
+    }
 }
 
 inventory::submit! {
@@ -129,6 +137,10 @@ inventory::submit! {
         description: "Logs FlowFile attributes and optionally content for debugging",
         factory: || Box::new(LogAttribute::new()),
         tags: &["Debug", "Logging"],
+        input_requirement: InputRequirement::Required,
+        trigger_when_empty: false,
+        side_effect_free: true,
+        supports_batching: false,
     }
 }
 

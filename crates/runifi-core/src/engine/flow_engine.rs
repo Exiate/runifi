@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use runifi_plugin_api::Processor;
+use runifi_plugin_api::{InputRequirement, Processor};
 
 use super::bulletin::BulletinBoard;
 use super::handle::{
@@ -85,6 +85,8 @@ struct NodeBuilder {
     processor: Option<Box<dyn Processor>>,
     scheduling: SchedulingStrategy,
     properties: HashMap<String, String>,
+    run_duration_ms: u64,
+    batch_commit_count: u64,
 }
 
 struct ConnBuilder {
@@ -188,8 +190,23 @@ impl FlowEngine {
             processor: Some(processor),
             scheduling,
             properties,
+            run_duration_ms: 0,
+            batch_commit_count: 0,
         });
         id
+    }
+
+    /// Set batch config for a processor node that has been added.
+    pub fn set_batch_config(
+        &mut self,
+        node_id: NodeId,
+        run_duration_ms: u64,
+        batch_commit_count: u64,
+    ) {
+        if let Some(node) = self.nodes.iter_mut().find(|n| n.id == node_id) {
+            node.run_duration_ms = run_duration_ms;
+            node.batch_commit_count = batch_commit_count;
+        }
     }
 
     /// Connect two processors via a relationship.
@@ -336,10 +353,17 @@ impl FlowEngine {
         let mut metrics_by_node: HashMap<NodeId, Arc<ProcessorMetrics>> = HashMap::new();
         let mut shared_props_by_node: HashMap<NodeId, Arc<RwLock<HashMap<String, String>>>> =
             HashMap::new();
-        // (descriptors, relationships, supports_dynamic, supports_sensitive_dynamic, dynamic_creates_rel)
+        // Tuple: (property_descriptors, relationships, input_requirement, trigger_when_empty,
+        //         side_effect_free, supports_batching, supports_dynamic, supports_sensitive_dynamic,
+        //         dynamic_creates_rel)
+        #[allow(clippy::type_complexity)]
         type StaticMeta = (
             Vec<PropertyDescriptorInfo>,
             Vec<RelationshipInfo>,
+            InputRequirement,
+            bool,
+            bool,
+            bool,
             bool,
             bool,
             bool,
@@ -355,6 +379,10 @@ impl FlowEngine {
             let (
                 prop_descriptors,
                 rels,
+                input_req,
+                trigger_empty,
+                side_effect,
+                batching,
                 supports_dynamic,
                 supports_sensitive_dynamic,
                 dynamic_creates_rel,
@@ -386,18 +414,36 @@ impl FlowEngine {
                 (
                     pds,
                     rs,
+                    proc.input_requirement(),
+                    proc.trigger_when_empty(),
+                    proc.side_effect_free(),
+                    proc.supports_batching(),
                     proc.supports_dynamic_properties(),
                     proc.supports_sensitive_dynamic_properties(),
                     proc.dynamic_property_creates_relationship(),
                 )
             } else {
-                (Vec::new(), Vec::new(), false, false, false)
+                (
+                    Vec::new(),
+                    Vec::new(),
+                    InputRequirement::Allowed,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                )
             };
             static_meta_by_node.insert(
                 node_builder.id,
                 (
                     prop_descriptors,
                     rels,
+                    input_req,
+                    trigger_empty,
+                    side_effect,
+                    batching,
                     supports_dynamic,
                     supports_sensitive_dynamic,
                     dynamic_creates_rel,
@@ -477,9 +523,15 @@ impl FlowEngine {
             pn.set_service_registry(self.service_registry.clone());
             pn.set_provenance_repo(self.provenance_repo.clone());
             pn.set_type_name(node_builder.type_name.clone());
+            pn.set_batch_config(
+                node_builder.run_duration_ms,
+                node_builder.batch_commit_count,
+            );
 
             // Set sensitive property names for bulletin redaction.
-            if let Some((descriptors, _, _, _, _)) = static_meta_by_node.get(&node_builder.id) {
+            if let Some((descriptors, _, _, _, _, _, _, _, _)) =
+                static_meta_by_node.get(&node_builder.id)
+            {
                 let sensitive_names: Vec<String> = descriptors
                     .iter()
                     .filter(|d| d.sensitive)
@@ -535,6 +587,10 @@ impl FlowEngine {
             let (
                 prop_descriptors,
                 relationships,
+                input_req,
+                trigger_empty,
+                side_effect,
+                batching,
                 supports_dynamic,
                 supports_sensitive_dynamic,
                 dynamic_creates_rel,
@@ -583,6 +639,12 @@ impl FlowEngine {
                 spawned_task_count: Arc::new(AtomicU64::new(0)),
                 comments: Arc::new(RwLock::new(String::new())),
                 auto_terminated_relationships: Arc::new(RwLock::new(Vec::new())),
+                run_duration_ms: Arc::new(AtomicU64::new(node_builder.run_duration_ms)),
+                batch_commit_count: Arc::new(AtomicU64::new(node_builder.batch_commit_count)),
+                input_requirement: input_req,
+                trigger_when_empty: trigger_empty,
+                side_effect_free: side_effect,
+                supports_batching: batching,
                 supports_dynamic_properties: supports_dynamic,
                 supports_sensitive_dynamic_properties: supports_sensitive_dynamic,
                 dynamic_property_creates_relationship: dynamic_creates_rel,
@@ -631,6 +693,7 @@ impl FlowEngine {
                     self.state_provider.clone(),
                 ),
             ))),
+            remote_process_groups: Arc::new(dashmap::DashMap::new()),
         };
 
         // Wire persistence: pass only the data collections it needs for
@@ -644,6 +707,7 @@ impl FlowEngine {
                 self.service_registry.clone(),
                 labels,
                 process_groups,
+                engine_handle.remote_process_groups.clone(),
             );
             let persist_token = self.cancel_token.child_token();
             let persist_clone = persistence.clone();

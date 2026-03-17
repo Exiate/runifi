@@ -45,6 +45,21 @@ pub enum FrameType {
     FlowFileBatch = 0x05,
     /// End of stream marker.
     EndOfStream = 0xFF,
+    // ── Site-to-Site protocol frames ─────────────────────────────────────────
+    /// S2S port enumeration request.
+    S2sPortEnumRequest = 0x10,
+    /// S2S port enumeration response.
+    S2sPortEnumResponse = 0x11,
+    /// S2S peer status request.
+    S2sPeerStatusRequest = 0x12,
+    /// S2S peer status response.
+    S2sPeerStatusResponse = 0x13,
+    /// S2S transaction begin.
+    S2sTxnBegin = 0x14,
+    /// S2S transaction commit.
+    S2sTxnCommit = 0x15,
+    /// S2S transaction rollback.
+    S2sTxnRollback = 0x16,
 }
 
 impl FrameType {
@@ -55,6 +70,13 @@ impl FrameType {
             0x03 => Ok(Self::Ack),
             0x04 => Ok(Self::BackPressure),
             0x05 => Ok(Self::FlowFileBatch),
+            0x10 => Ok(Self::S2sPortEnumRequest),
+            0x11 => Ok(Self::S2sPortEnumResponse),
+            0x12 => Ok(Self::S2sPeerStatusRequest),
+            0x13 => Ok(Self::S2sPeerStatusResponse),
+            0x14 => Ok(Self::S2sTxnBegin),
+            0x15 => Ok(Self::S2sTxnCommit),
+            0x16 => Ok(Self::S2sTxnRollback),
             0xFF => Ok(Self::EndOfStream),
             other => Err(TransportError::Protocol(format!(
                 "unknown frame type: 0x{other:02x}"
@@ -466,6 +488,17 @@ pub fn decode_frame(data: &[u8]) -> TransportResult<DecodedFrame> {
             Ok(DecodedFrame::BackPressure { available_capacity })
         }
         FrameType::EndOfStream => Ok(DecodedFrame::EndOfStream),
+        // S2S frames are handled by the s2s module's own decode functions.
+        FrameType::S2sPortEnumRequest
+        | FrameType::S2sPortEnumResponse
+        | FrameType::S2sPeerStatusRequest
+        | FrameType::S2sPeerStatusResponse
+        | FrameType::S2sTxnBegin
+        | FrameType::S2sTxnCommit
+        | FrameType::S2sTxnRollback => Err(TransportError::Protocol(format!(
+            "S2S frame type 0x{:02x} should be decoded via the s2s module",
+            frame_type as u8,
+        ))),
     }
 }
 

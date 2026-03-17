@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use runifi_plugin_api::context::ProcessContext;
-use runifi_plugin_api::processor::{Processor, ProcessorDescriptor};
+use runifi_plugin_api::processor::{InputRequirement, Processor, ProcessorDescriptor};
 use runifi_plugin_api::property::PropertyDescriptor;
 use runifi_plugin_api::relationship::Relationship;
 use runifi_plugin_api::result::ProcessResult;
@@ -208,6 +208,10 @@ inventory::submit! {
         description: "Splits a JSON array into individual FlowFiles, one per element",
         factory: || Box::new(SplitJson::new()),
         tags: &["JSON", "Transformation", "Split"],
+        input_requirement: InputRequirement::Allowed,
+        trigger_when_empty: false,
+        side_effect_free: false,
+        supports_batching: false,
     }
 }
 

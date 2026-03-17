@@ -93,6 +93,9 @@ pub enum MutationError {
     #[error("invalid CRON expression '{0}': {1}")]
     InvalidCronExpression(String, String),
 
+    #[error("invalid connection: {0}")]
+    InvalidConnection(String),
+
     #[error("{0}")]
     Internal(String),
 }

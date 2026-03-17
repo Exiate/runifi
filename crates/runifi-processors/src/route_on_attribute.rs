@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use regex_lite::Regex;
 use runifi_plugin_api::context::ProcessContext;
-use runifi_plugin_api::processor::{Processor, ProcessorDescriptor};
+use runifi_plugin_api::processor::{InputRequirement, Processor, ProcessorDescriptor};
 use runifi_plugin_api::property::PropertyDescriptor;
 use runifi_plugin_api::relationship::Relationship;
 use runifi_plugin_api::result::ProcessResult;
@@ -180,6 +180,14 @@ impl Processor for RouteOnAttribute {
     fn dynamic_property_creates_relationship(&self) -> bool {
         true
     }
+
+    fn input_requirement(&self) -> InputRequirement {
+        InputRequirement::Required
+    }
+
+    fn side_effect_free(&self) -> bool {
+        true
+    }
 }
 
 inventory::submit! {
@@ -188,6 +196,10 @@ inventory::submit! {
         description: "Routes FlowFiles based on dynamic property routing rules",
         factory: || Box::new(RouteOnAttribute::new()),
         tags: &["Routing"],
+        input_requirement: InputRequirement::Required,
+        trigger_when_empty: false,
+        side_effect_free: true,
+        supports_batching: false,
     }
 }
 

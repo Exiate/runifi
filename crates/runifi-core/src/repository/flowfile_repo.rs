@@ -43,6 +43,18 @@ pub trait FlowFileRepository: Send + Sync {
     /// Write a compacted checkpoint of current state and truncate the WAL.
     fn checkpoint(&self) -> Result<()>;
 
+    /// Write a batch of operations WITHOUT fsyncing (for batch optimization).
+    /// Data is flushed to OS buffers but not durably persisted until `flush_deferred()`.
+    fn commit_batch_deferred(&self, ops: &[FlowFileOp<'_>]) -> Result<()> {
+        // Default: delegate to commit_batch (maintains backward compat).
+        self.commit_batch(ops)
+    }
+
+    /// Fsync all deferred writes. Called at the end of a batch run.
+    fn flush_deferred(&self) -> Result<()> {
+        Ok(())
+    }
+
     /// Graceful shutdown hook (e.g. flush buffers).
     fn shutdown(&self) {}
 

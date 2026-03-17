@@ -9,6 +9,7 @@ pub mod plugins;
 pub mod process_groups;
 pub mod processors;
 pub mod provenance;
+pub mod remote_process_groups;
 pub mod reporting_tasks;
 pub mod secrets;
 pub mod services;

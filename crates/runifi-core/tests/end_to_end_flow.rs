@@ -12,7 +12,7 @@ use runifi_core::registry::plugin_registry::PluginRegistry;
 use runifi_core::repository::content_memory::InMemoryContentRepository;
 use runifi_core::repository::flowfile_repo::InMemoryFlowFileRepository;
 use runifi_plugin_api::context::ProcessContext;
-use runifi_plugin_api::processor::ProcessorDescriptor;
+use runifi_plugin_api::processor::{InputRequirement, ProcessorDescriptor};
 use runifi_plugin_api::relationship::Relationship;
 use runifi_plugin_api::result::{PluginError, ProcessResult};
 use runifi_plugin_api::session::ProcessSession;
@@ -462,6 +462,10 @@ inventory::submit!(ProcessorDescriptor {
     description: "Always panics — integration test only",
     factory: || Box::new(PanicProcessor),
     tags: &[],
+    input_requirement: InputRequirement::Allowed,
+    trigger_when_empty: false,
+    side_effect_free: false,
+    supports_batching: false,
 });
 
 inventory::submit!(ProcessorDescriptor {
@@ -469,6 +473,10 @@ inventory::submit!(ProcessorDescriptor {
     description: "Always errors — integration test only",
     factory: || Box::new(ErrorProcessor),
     tags: &[],
+    input_requirement: InputRequirement::Allowed,
+    trigger_when_empty: false,
+    side_effect_free: false,
+    supports_batching: false,
 });
 
 inventory::submit!(ProcessorDescriptor {
@@ -476,4 +484,8 @@ inventory::submit!(ProcessorDescriptor {
     description: "Pass-through — integration test only",
     factory: || Box::new(PassThroughProcessor),
     tags: &[],
+    input_requirement: InputRequirement::Allowed,
+    trigger_when_empty: false,
+    side_effect_free: false,
+    supports_batching: false,
 });
