@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use regex_lite::Regex;
 use runifi_plugin_api::context::ProcessContext;
-use runifi_plugin_api::processor::{Processor, ProcessorDescriptor};
+use runifi_plugin_api::processor::{InputRequirement, Processor, ProcessorDescriptor};
 use runifi_plugin_api::property::PropertyDescriptor;
 use runifi_plugin_api::relationship::Relationship;
 use runifi_plugin_api::result::ProcessResult;
@@ -108,6 +108,14 @@ impl Processor for UpdateAttribute {
     fn property_descriptors(&self) -> Vec<PropertyDescriptor> {
         vec![PROP_DELETE_ATTRIBUTES]
     }
+
+    fn input_requirement(&self) -> InputRequirement {
+        InputRequirement::Required
+    }
+
+    fn side_effect_free(&self) -> bool {
+        true
+    }
 }
 
 inventory::submit! {
@@ -116,6 +124,10 @@ inventory::submit! {
         description: "Sets or modifies FlowFile attributes based on configured properties",
         factory: || Box::new(UpdateAttribute::new()),
         tags: &["Attribute Manipulation"],
+        input_requirement: InputRequirement::Required,
+        trigger_when_empty: false,
+        side_effect_free: true,
+        supports_batching: false,
     }
 }
 

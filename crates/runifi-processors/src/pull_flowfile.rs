@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 
 use runifi_plugin_api::REL_SUCCESS;
 use runifi_plugin_api::context::ProcessContext;
-use runifi_plugin_api::processor::{Processor, ProcessorDescriptor};
+use runifi_plugin_api::processor::{InputRequirement, Processor, ProcessorDescriptor};
 use runifi_plugin_api::property::PropertyDescriptor;
 use runifi_plugin_api::relationship::Relationship;
 use runifi_plugin_api::result::{PluginError, ProcessResult};
@@ -191,5 +191,9 @@ inventory::submit! {
         description: "Receives FlowFiles from a remote RuniFi instance via QUIC transport",
         factory: || Box::new(PullFlowFile::new()),
         tags: &["Networking", "Transport", "Site-to-Site"],
+        input_requirement: InputRequirement::Allowed,
+        trigger_when_empty: false,
+        side_effect_free: false,
+        supports_batching: false,
     }
 }

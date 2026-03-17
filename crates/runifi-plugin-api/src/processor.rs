@@ -7,6 +7,22 @@ use crate::session::ProcessSession;
 use crate::state::StatefulSpec;
 use crate::validation::ValidationResult;
 
+/// Declares whether a processor requires, allows, or forbids incoming connections.
+///
+/// The engine uses this annotation to validate flow topology at design time,
+/// preventing invalid wiring (e.g., connecting to a source-only processor).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InputRequirement {
+    /// Processor requires at least one incoming connection (e.g., LogAttribute, PutFile).
+    Required,
+    /// Processor can optionally have incoming connections (default).
+    #[default]
+    Allowed,
+    /// Processor must not have incoming connections — it is a pure source
+    /// (e.g., GenerateFlowFile, GetFile).
+    Forbidden,
+}
+
 /// The core processor trait. Processors are synchronous — the engine wraps
 /// them in `spawn_blocking` + `catch_unwind` for fault isolation.
 ///
@@ -72,6 +88,42 @@ pub trait Processor: Send + Sync + 'static {
     fn execution_node(&self) -> ExecutionNode {
         ExecutionNode::All
     }
+
+    /// Declare the input requirement for this processor.
+    ///
+    /// Returns `InputRequirement::Allowed` by default. Override to return
+    /// `InputRequirement::Required` for processors that need incoming data,
+    /// or `InputRequirement::Forbidden` for source processors that generate
+    /// their own data.
+    fn input_requirement(&self) -> InputRequirement {
+        InputRequirement::Allowed
+    }
+
+    /// Whether this processor should be triggered even when no FlowFiles
+    /// are queued on its incoming connections.
+    ///
+    /// Defaults to `false`. Source processors (e.g., GenerateFlowFile, GetFile)
+    /// should return `true`.
+    fn trigger_when_empty(&self) -> bool {
+        false
+    }
+
+    /// Whether this processor is side-effect-free (idempotent, safe to retry).
+    ///
+    /// Defaults to `false`. Processors that only read/route FlowFiles without
+    /// modifying external state (e.g., LogAttribute, RouteOnAttribute) should
+    /// return `true`.
+    fn side_effect_free(&self) -> bool {
+        false
+    }
+
+    /// Whether this processor is compatible with run-duration batching.
+    ///
+    /// Defaults to `false`. Processors that can efficiently process multiple
+    /// FlowFiles in a single trigger invocation should return `true`.
+    fn supports_batching(&self) -> bool {
+        false
+    }
 }
 
 /// Describes a processor type for plugin registration.
@@ -81,6 +133,31 @@ pub struct ProcessorDescriptor {
     pub factory: fn() -> Box<dyn Processor>,
     /// Category tags for UI grouping (e.g., &["Routing", "Attribute Manipulation"]).
     pub tags: &'static [&'static str],
+    /// Input requirement annotation for this processor type.
+    pub input_requirement: InputRequirement,
+    /// Whether the processor runs when input queue is empty.
+    pub trigger_when_empty: bool,
+    /// Whether the processor is side-effect-free (idempotent).
+    pub side_effect_free: bool,
+    /// Whether the processor supports run-duration batching.
+    pub supports_batching: bool,
 }
 
 inventory::collect!(ProcessorDescriptor);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn input_requirement_default_is_allowed() {
+        assert_eq!(InputRequirement::default(), InputRequirement::Allowed);
+    }
+
+    #[test]
+    fn input_requirement_equality() {
+        assert_ne!(InputRequirement::Required, InputRequirement::Forbidden);
+        assert_ne!(InputRequirement::Required, InputRequirement::Allowed);
+        assert_ne!(InputRequirement::Allowed, InputRequirement::Forbidden);
+    }
+}

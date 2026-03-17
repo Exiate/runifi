@@ -16,7 +16,7 @@ pub mod validation;
 // Re-export key types at crate root for convenience.
 pub use context::ProcessContext;
 pub use flowfile::{ContentClaim, FlowFile};
-pub use processor::{Processor, ProcessorDescriptor};
+pub use processor::{InputRequirement, Processor, ProcessorDescriptor};
 pub use property::{PropertyDescriptor, PropertyValue};
 pub use record::{
     Record, RecordFieldType, RecordReader, RecordSchema, RecordValue, RecordWriter, SchemaField,
