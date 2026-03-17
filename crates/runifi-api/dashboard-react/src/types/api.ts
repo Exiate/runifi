@@ -130,12 +130,62 @@ export interface SseMetricsEvent {
   bulletins: BulletinResponse[];
 }
 
+export interface MemoryInfo {
+  resident_bytes: number;
+  virtual_bytes: number;
+  total_system_bytes: number;
+  used_system_bytes: number;
+}
+
+export interface CpuInfo {
+  process_cpu_percent: number;
+  available_cores: number;
+}
+
+export interface ContentRepoInfo {
+  entry_count: number;
+  total_bytes: number;
+  storage_type: string;
+}
+
+export interface FlowFileRepoInfo {
+  entry_count: number;
+  storage_bytes: number;
+  storage_type: string;
+}
+
+export interface ProvenanceRepoInfo {
+  event_count: number;
+}
+
+export interface RepositoryStorageInfo {
+  content: ContentRepoInfo;
+  flowfile: FlowFileRepoInfo;
+  provenance: ProvenanceRepoInfo;
+}
+
+export interface RuntimeInfo {
+  total_flowfiles_processed: number;
+  total_bytes_processed: number;
+}
+
+export interface ConnectionsSummary {
+  total_queued_flowfiles: number;
+  total_queued_bytes: number;
+  back_pressured_count: number;
+}
+
 export interface SystemResponse {
   flow_name: string;
   uptime_secs: number;
   version: string;
   processor_count: number;
   connection_count: number;
+  memory: MemoryInfo;
+  cpu: CpuInfo;
+  repositories: RepositoryStorageInfo;
+  runtime: RuntimeInfo;
+  connections_summary: ConnectionsSummary;
 }
 
 // Plugin/processor type registry (GET /api/v1/plugins)
