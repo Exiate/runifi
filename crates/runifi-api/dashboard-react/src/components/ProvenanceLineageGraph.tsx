@@ -108,8 +108,6 @@ function ProvenanceLineageGraphInner({
     }));
 
     const edgeList: Edge[] = [];
-    const eventById = new Map(sorted.map((e) => [e.event_id, e]));
-
     // Connect consecutive events by timestamp for the same flowfile_id
     for (let i = 1; i < sorted.length; i++) {
       const prev = sorted[i - 1];
@@ -151,9 +149,6 @@ function ProvenanceLineageGraphInner({
         }
       }
     }
-
-    // Suppress unused-variable warning
-    void eventById;
 
     return { nodes: nodeList, edges: edgeList };
   }, [events]);

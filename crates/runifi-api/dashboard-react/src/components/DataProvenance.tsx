@@ -55,8 +55,8 @@ function DataProvenanceInner({ onClose, onToast }: DataProvenanceProps) {
       if (flowfileId) params.set('flowfile_id', flowfileId);
       if (processorName) params.set('processor', processorName);
       if (eventType) params.set('event_type', eventType);
-      if (startTime) params.set('start_time', new Date(startTime).toISOString());
-      if (endTime) params.set('end_time', new Date(endTime).toISOString());
+      if (startTime) params.set('start_time', String(new Date(startTime).getTime()));
+      if (endTime) params.set('end_time', String(new Date(endTime).getTime()));
       params.set('max_results', String(maxResults));
       params.set('offset', String(pageOffset));
 
