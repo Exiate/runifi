@@ -696,7 +696,6 @@ impl EngineHandle {
     /// Update extended processor configuration (properties + settings + scheduling + relationships + comments).
     /// Accepts partial updates — only non-None fields are applied.
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub fn update_processor_config(
         &self,
         name: &str,
