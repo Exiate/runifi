@@ -616,6 +616,7 @@ impl FlowEngine {
                     self.state_provider.clone(),
                 ),
             ))),
+            remote_process_groups: Arc::new(dashmap::DashMap::new()),
         };
 
         // Wire persistence: pass only the data collections it needs for
@@ -629,6 +630,7 @@ impl FlowEngine {
                 self.service_registry.clone(),
                 labels,
                 process_groups,
+                engine_handle.remote_process_groups.clone(),
             );
             let persist_token = self.cancel_token.child_token();
             let persist_clone = persistence.clone();

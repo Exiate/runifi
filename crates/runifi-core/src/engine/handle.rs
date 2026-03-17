@@ -21,6 +21,7 @@ use super::process_group::{PortInfo, PortType, ProcessGroupId, ProcessGroupInfo}
 use super::processor_node::{
     SchedulingStrategy, SharedInputConnections, SharedInputNotifiers, SharedOutputConnections,
 };
+use super::remote_process_group::RemoteProcessGroup;
 /// Mask value used for sensitive properties in API responses.
 ///
 /// When this value is received in a property update, the existing value
@@ -268,6 +269,8 @@ pub struct EngineHandle {
     pub state_provider: Option<SharedLocalStateProvider>,
     /// Reporting task manager for system-level monitoring tasks.
     pub reporting_task_manager: Option<super::reporting_task_manager::SharedReportingTaskManager>,
+    /// Remote Process Groups for Site-to-Site communication.
+    pub remote_process_groups: Arc<DashMap<String, RemoteProcessGroup>>,
 }
 
 impl EngineHandle {
@@ -1352,6 +1355,57 @@ impl EngineHandle {
             })
             .collect();
 
+        use super::persistence::{PersistedRemotePort, PersistedRemoteProcessGroup};
+
+        let remote_process_groups: Vec<PersistedRemoteProcessGroup> = self
+            .remote_process_groups
+            .iter()
+            .map(|entry| {
+                let rpg = entry.value();
+                PersistedRemoteProcessGroup {
+                    id: rpg.id.clone(),
+                    name: rpg.name.clone(),
+                    target_uris: rpg.target_uris.clone(),
+                    transport_protocol: rpg.transport_protocol.clone(),
+                    communications_timeout_ms: rpg.communications_timeout_ms,
+                    yield_duration_ms: rpg.yield_duration_ms,
+                    batch_count: rpg.batch_count,
+                    batch_size_bytes: rpg.batch_size_bytes,
+                    batch_duration_ms: rpg.batch_duration_ms,
+                    proxy_host: rpg.proxy_host.clone(),
+                    proxy_port: rpg.proxy_port,
+                    transmitting: rpg.transmitting,
+                    input_ports: rpg
+                        .input_ports
+                        .iter()
+                        .map(|p| PersistedRemotePort {
+                            id: p.id.clone(),
+                            name: p.name.clone(),
+                            target_id: p.target_id.clone(),
+                            connected: p.connected,
+                            transmitting: p.transmitting,
+                            exists_on_remote: p.exists_on_remote,
+                        })
+                        .collect(),
+                    output_ports: rpg
+                        .output_ports
+                        .iter()
+                        .map(|p| PersistedRemotePort {
+                            id: p.id.clone(),
+                            name: p.name.clone(),
+                            target_id: p.target_id.clone(),
+                            connected: p.connected,
+                            transmitting: p.transmitting,
+                            exists_on_remote: p.exists_on_remote,
+                        })
+                        .collect(),
+                    parent_group_id: rpg.parent_group_id.clone(),
+                    position: rpg.position,
+                    comments: rpg.comments.clone(),
+                }
+            })
+            .collect();
+
         PersistedFlowState {
             version: 1,
             flow_name: self.flow_name.clone(),
@@ -1361,6 +1415,7 @@ impl EngineHandle {
             services,
             labels,
             process_groups,
+            remote_process_groups,
         }
     }
 
@@ -1842,6 +1897,155 @@ impl EngineHandle {
         path.reverse();
         path
     }
+
+    // ── Remote Process Groups ────────────────────────────────────────────
+
+    /// Add a new Remote Process Group. Returns the generated ID.
+    pub fn add_remote_process_group(&self, rpg: RemoteProcessGroup) -> String {
+        let id = rpg.id.clone();
+        self.remote_process_groups.insert(id.clone(), rpg);
+        self.notify_persist();
+        id
+    }
+
+    /// Remove a Remote Process Group by ID.
+    pub fn remove_remote_process_group(&self, id: &str) -> Result<(), String> {
+        self.remote_process_groups
+            .remove(id)
+            .map(|_| {
+                self.notify_persist();
+            })
+            .ok_or_else(|| format!("Remote process group not found: {}", id))
+    }
+
+    /// Get a snapshot of a Remote Process Group by ID.
+    /// Returns cloneable summary data (not the Arc-wrapped original).
+    pub fn get_remote_process_group(
+        &self,
+        id: &str,
+    ) -> Option<super::remote_process_group::RemoteProcessGroupInfo> {
+        self.remote_process_groups
+            .get(id)
+            .map(|entry| rpg_to_info(entry.value()))
+    }
+
+    /// List all Remote Process Groups.
+    pub fn list_remote_process_groups(
+        &self,
+    ) -> Vec<super::remote_process_group::RemoteProcessGroupInfo> {
+        self.remote_process_groups
+            .iter()
+            .map(|entry| rpg_to_info(entry.value()))
+            .collect()
+    }
+
+    /// Update the configuration of a Remote Process Group.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_remote_process_group(
+        &self,
+        id: &str,
+        name: Option<String>,
+        target_uris: Option<Vec<String>>,
+        transport_protocol: Option<String>,
+        communications_timeout_ms: Option<u64>,
+        yield_duration_ms: Option<u64>,
+        batch_count: Option<usize>,
+        batch_size_bytes: Option<u64>,
+        batch_duration_ms: Option<u64>,
+        proxy_host: Option<Option<String>>,
+        proxy_port: Option<Option<u16>>,
+        comments: Option<String>,
+    ) -> Result<(), String> {
+        let mut entry = self
+            .remote_process_groups
+            .get_mut(id)
+            .ok_or_else(|| format!("Remote process group not found: {}", id))?;
+
+        let rpg = entry.value_mut();
+
+        if let Some(n) = name {
+            rpg.name = n;
+        }
+        if let Some(uris) = target_uris {
+            rpg.target_uris = uris;
+        }
+        if let Some(tp) = transport_protocol {
+            rpg.transport_protocol = tp;
+        }
+        if let Some(ct) = communications_timeout_ms {
+            rpg.communications_timeout_ms = ct;
+        }
+        if let Some(yd) = yield_duration_ms {
+            rpg.yield_duration_ms = yd;
+        }
+        if let Some(bc) = batch_count {
+            rpg.batch_count = bc;
+        }
+        if let Some(bs) = batch_size_bytes {
+            rpg.batch_size_bytes = bs;
+        }
+        if let Some(bd) = batch_duration_ms {
+            rpg.batch_duration_ms = bd;
+        }
+        if let Some(ph) = proxy_host {
+            rpg.proxy_host = ph;
+        }
+        if let Some(pp) = proxy_port {
+            rpg.proxy_port = pp;
+        }
+        if let Some(c) = comments {
+            rpg.comments = c;
+        }
+
+        drop(entry);
+        self.notify_persist();
+        Ok(())
+    }
+
+    /// Set the global transmitting flag for an RPG.
+    pub fn set_rpg_transmitting(&self, id: &str, transmitting: bool) -> Result<(), String> {
+        let mut entry = self
+            .remote_process_groups
+            .get_mut(id)
+            .ok_or_else(|| format!("Remote process group not found: {}", id))?;
+        entry.value_mut().transmitting = transmitting;
+        drop(entry);
+        self.notify_persist();
+        Ok(())
+    }
+
+    /// Set the transmitting flag for a specific port within an RPG.
+    pub fn set_rpg_port_transmitting(
+        &self,
+        rpg_id: &str,
+        port_id: &str,
+        transmitting: bool,
+    ) -> Result<(), String> {
+        let mut entry = self
+            .remote_process_groups
+            .get_mut(rpg_id)
+            .ok_or_else(|| format!("Remote process group not found: {}", rpg_id))?;
+
+        let rpg = entry.value_mut();
+
+        for port in rpg
+            .input_ports
+            .iter_mut()
+            .chain(rpg.output_ports.iter_mut())
+        {
+            if port.id == port_id {
+                port.transmitting = transmitting;
+                drop(entry);
+                self.notify_persist();
+                return Ok(());
+            }
+        }
+
+        Err(format!(
+            "Port '{}' not found in remote process group '{}'",
+            port_id, rpg_id
+        ))
+    }
 }
 
 /// Scoped flow topology for a process group.
@@ -1855,4 +2059,46 @@ pub struct GroupFlowInfo {
     pub connections: Vec<ConnectionInfo>,
     /// Child process groups nested in this group.
     pub child_groups: Vec<ProcessGroupInfo>,
+}
+
+/// Convert a `RemoteProcessGroup` to its cloneable info snapshot.
+fn rpg_to_info(rpg: &RemoteProcessGroup) -> super::remote_process_group::RemoteProcessGroupInfo {
+    use super::remote_process_group::{RemotePortInfo, RemoteProcessGroupInfo};
+    use std::sync::atomic::Ordering;
+
+    let port_to_info = |p: &super::remote_process_group::RemotePortStatus| -> RemotePortInfo {
+        RemotePortInfo {
+            id: p.id.clone(),
+            name: p.name.clone(),
+            target_id: p.target_id.clone(),
+            connected: p.connected,
+            transmitting: p.transmitting,
+            exists_on_remote: p.exists_on_remote,
+            bytes_sent: p.bytes_sent.load(Ordering::Relaxed),
+            bytes_received: p.bytes_received.load(Ordering::Relaxed),
+            flow_files_sent: p.flow_files_sent.load(Ordering::Relaxed),
+            flow_files_received: p.flow_files_received.load(Ordering::Relaxed),
+        }
+    };
+
+    RemoteProcessGroupInfo {
+        id: rpg.id.clone(),
+        name: rpg.name.clone(),
+        target_uris: rpg.target_uris.clone(),
+        transport_protocol: rpg.transport_protocol.clone(),
+        communications_timeout_ms: rpg.communications_timeout_ms,
+        yield_duration_ms: rpg.yield_duration_ms,
+        batch_count: rpg.batch_count,
+        batch_size_bytes: rpg.batch_size_bytes,
+        batch_duration_ms: rpg.batch_duration_ms,
+        proxy_host: rpg.proxy_host.clone(),
+        proxy_port: rpg.proxy_port,
+        transmitting: rpg.transmitting,
+        input_ports: rpg.input_ports.iter().map(port_to_info).collect(),
+        output_ports: rpg.output_ports.iter().map(port_to_info).collect(),
+        parent_group_id: rpg.parent_group_id.clone(),
+        position: rpg.position,
+        comments: rpg.comments.clone(),
+        metrics: rpg.metrics(),
+    }
 }
