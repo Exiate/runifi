@@ -4068,3 +4068,288 @@ body {
 .provenance-lineage-container .react-flow__controls button:hover {
   background: var(--surface-hover);
 }
+
+/* ── Cluster Management panel ──────────────────────────────── */
+
+.cluster-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 1rem;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 160px);
+  overflow: hidden;
+  position: fixed;
+  inset: 60px 16px 60px 16px;
+  z-index: 900;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.cluster-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.cluster-panel-title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-dim);
+  margin-right: auto;
+}
+
+.cluster-header-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.cluster-auto-refresh {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+
+.cluster-auto-refresh input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+.cluster-refresh-btn {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-size: 0.73rem;
+  font-family: var(--font);
+  padding: 0.2rem 0.5rem;
+  cursor: pointer;
+  transition: border-color 0.12s, color 0.12s;
+}
+
+.cluster-refresh-btn:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+/* ── Cluster overview bar ──────────────────────────────────── */
+
+.cluster-overview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.cluster-overview-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 80px;
+}
+
+.cluster-overview-label {
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+
+.cluster-overview-value {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.cluster-quorum-ok {
+  color: var(--success);
+}
+
+.cluster-quorum-lost {
+  color: var(--danger);
+}
+
+/* ── Cluster loading/error ─────────────────────────────────── */
+
+.cluster-loading,
+.cluster-error {
+  padding: 1.5rem;
+  text-align: center;
+  font-size: 0.82rem;
+  color: var(--text-dim);
+}
+
+.cluster-error {
+  color: var(--danger);
+}
+
+/* ── Cluster node table ────────────────────────────────────── */
+
+.cluster-table-wrap {
+  flex: 1;
+  overflow: auto;
+}
+
+.cluster-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+
+.cluster-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  padding: 0.5rem 0.6rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.cluster-table tbody td {
+  padding: 0.45rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.cluster-row:hover {
+  background: var(--surface-hover);
+}
+
+.cluster-empty-row {
+  text-align: center;
+  color: var(--text-dim);
+  padding: 2rem !important;
+}
+
+.cluster-cell-addr {
+  font-family: monospace;
+  font-size: 0.78rem;
+}
+
+.cluster-cell-dim {
+  color: var(--text-dim);
+}
+
+/* ── Status badges ─────────────────────────────────────────── */
+
+.cluster-status-badge {
+  display: inline-block;
+  padding: 0.15rem 0.45rem;
+  border-radius: 3px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.cluster-badge-connected {
+  background: rgba(52, 211, 153, 0.15);
+  color: var(--success);
+  border: 1px solid rgba(52, 211, 153, 0.3);
+}
+
+.cluster-badge-connecting {
+  background: rgba(251, 191, 36, 0.15);
+  color: var(--warning);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+}
+
+.cluster-badge-disconnected {
+  background: rgba(248, 113, 113, 0.15);
+  color: var(--danger);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+}
+
+.cluster-badge-decommissioning {
+  background: rgba(251, 191, 36, 0.15);
+  color: var(--warning);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+}
+
+.cluster-badge-removed {
+  background: rgba(139, 144, 160, 0.15);
+  color: var(--text-dim);
+  border: 1px solid rgba(139, 144, 160, 0.3);
+}
+
+/* ── Role badges ───────────────────────────────────────────── */
+
+.cluster-roles {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+
+.cluster-role-badge {
+  display: inline-block;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.cluster-role-primary {
+  background: rgba(79, 143, 247, 0.15);
+  color: var(--accent);
+  border: 1px solid rgba(79, 143, 247, 0.3);
+}
+
+.cluster-role-coordinator {
+  background: rgba(168, 85, 247, 0.15);
+  color: #a855f7;
+  border: 1px solid rgba(168, 85, 247, 0.3);
+}
+
+.cluster-role-node {
+  background: rgba(139, 144, 160, 0.1);
+  color: var(--text-dim);
+  border: 1px solid rgba(139, 144, 160, 0.2);
+}
+
+/* ── Action buttons ────────────────────────────────────────── */
+
+.cluster-actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.cluster-actions .btn-link {
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.cluster-action-danger {
+  color: var(--danger) !important;
+}
+
+.cluster-action-danger:hover {
+  color: #fca5a5 !important;
+}
+
+.cluster-action-warn {
+  color: var(--warning) !important;
+}
+
+.cluster-action-warn:hover {
+  color: #fcd34d !important;
+}

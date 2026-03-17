@@ -376,3 +376,52 @@ export interface ProvenanceStatsResponse {
   oldest_timestamp_ms?: number;
   newest_timestamp_ms?: number;
 }
+
+// ── Cluster management types ──────────────────────────────────
+
+export type NodeState =
+  | 'Connected'
+  | 'Connecting'
+  | 'Disconnected'
+  | 'Decommissioning'
+  | 'Removed';
+
+export type ClusterRole = 'Primary' | 'Coordinator' | 'Node';
+
+export interface NodeMetricsSummary {
+  active_threads: number;
+  queued_flowfiles: number;
+  queued_bytes: number;
+}
+
+export interface ClusterNodeResponse {
+  id: string;
+  address: string;
+  state: NodeState;
+  roles: ClusterRole[];
+  missed_heartbeats: number;
+  flow_version: number;
+  metrics?: NodeMetricsSummary;
+  uptime_secs?: number;
+}
+
+export interface ClusterNodesResponse {
+  nodes: ClusterNodeResponse[];
+  connected_count: number;
+  total_count: number;
+  has_quorum: boolean;
+}
+
+export interface ClusterStatusResponse {
+  enabled: boolean;
+  node_id: string;
+  state: NodeState;
+  roles: ClusterRole[];
+  connected_count: number;
+  total_count: number;
+  flow_version: number;
+  election_term: number;
+  has_quorum: boolean;
+  coordinator_id?: string;
+  primary_id?: string;
+}
