@@ -270,3 +270,58 @@ export interface CreateServiceRequest {
 export interface UpdateServiceConfigRequest {
   properties: Record<string, string>;
 }
+
+// ── Data provenance types ─────────────────────────────────────
+
+export interface ProvenanceAttribute {
+  key: string;
+  value: string;
+}
+
+export interface ProvenanceEvent {
+  event_id: number;
+  flowfile_id: number;
+  event_type: string;
+  processor_name: string;
+  processor_type: string;
+  timestamp_nanos: number;
+  timestamp_ms: number;
+  attributes: ProvenanceAttribute[];
+  content_size: number;
+  lineage_start_id: number;
+  relationship?: string;
+  source_flowfile_id?: number;
+  details: string;
+  parent_flowfile_ids: number[];
+  child_flowfile_ids: number[];
+  transit_uri?: string;
+  content_claim_id?: number;
+  previous_attributes: ProvenanceAttribute[];
+}
+
+export interface ProvenanceSearchResponse {
+  events: ProvenanceEvent[];
+  total_count: number;
+  offset: number;
+  max_results: number;
+}
+
+export interface ProvenanceLineageResponse {
+  flowfile_id: number;
+  lineage_start_id: number;
+  events: ProvenanceEvent[];
+}
+
+export interface ProvenanceReplayResponse {
+  status: string;
+  event_id: number;
+  flowfile_id: number;
+  processor_name: string;
+  message: string;
+}
+
+export interface ProvenanceStatsResponse {
+  event_count: number;
+  oldest_timestamp_ms?: number;
+  newest_timestamp_ms?: number;
+}
