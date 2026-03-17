@@ -109,6 +109,10 @@ impl Processor for UpdateAttribute {
         vec![PROP_DELETE_ATTRIBUTES]
     }
 
+    fn supports_dynamic_properties(&self) -> bool {
+        true
+    }
+
     fn input_requirement(&self) -> InputRequirement {
         InputRequirement::Required
     }

@@ -220,6 +220,8 @@ export interface ProcessorConfigResponse {
   concurrent_tasks: number;
   comments: string;
   auto_terminated_relationships: string[];
+  supports_dynamic_properties: boolean;
+  supports_sensitive_dynamic_properties: boolean;
 }
 
 // ── Queue inspection ───────────────────────────────────────────────

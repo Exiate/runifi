@@ -136,6 +136,9 @@ impl DefaultMutationHandler {
         let trigger_when_empty = processor.trigger_when_empty();
         let side_effect_free = processor.side_effect_free();
         let supports_batching = processor.supports_batching();
+        let supports_dynamic = processor.supports_dynamic_properties();
+        let supports_sensitive_dynamic = processor.supports_sensitive_dynamic_properties();
+        let dynamic_creates_rel = processor.dynamic_property_creates_relationship();
 
         let shared_props = Arc::new(RwLock::new(properties));
         let child_token = self.parent_cancel.child_token();
@@ -198,6 +201,10 @@ impl DefaultMutationHandler {
             trigger_when_empty,
             side_effect_free,
             supports_batching,
+            supports_dynamic_properties: supports_dynamic,
+            supports_sensitive_dynamic_properties: supports_sensitive_dynamic,
+            dynamic_property_creates_relationship: dynamic_creates_rel,
+            dynamic_relationships: Arc::new(RwLock::new(Vec::new())),
         });
 
         tracing::info!(name, type_name, "Hot-added processor");

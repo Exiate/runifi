@@ -353,19 +353,22 @@ impl FlowEngine {
         let mut metrics_by_node: HashMap<NodeId, Arc<ProcessorMetrics>> = HashMap::new();
         let mut shared_props_by_node: HashMap<NodeId, Arc<RwLock<HashMap<String, String>>>> =
             HashMap::new();
-        // Tuple: (property_descriptors, relationships, input_requirement, trigger_when_empty, side_effect_free, supports_batching)
+        // Tuple: (property_descriptors, relationships, input_requirement, trigger_when_empty,
+        //         side_effect_free, supports_batching, supports_dynamic, supports_sensitive_dynamic,
+        //         dynamic_creates_rel)
         #[allow(clippy::type_complexity)]
-        let mut static_meta_by_node: HashMap<
-            NodeId,
-            (
-                Vec<PropertyDescriptorInfo>,
-                Vec<RelationshipInfo>,
-                InputRequirement,
-                bool,
-                bool,
-                bool,
-            ),
-        > = HashMap::new();
+        type StaticMeta = (
+            Vec<PropertyDescriptorInfo>,
+            Vec<RelationshipInfo>,
+            InputRequirement,
+            bool,
+            bool,
+            bool,
+            bool,
+            bool,
+            bool,
+        );
+        let mut static_meta_by_node: HashMap<NodeId, StaticMeta> = HashMap::new();
 
         for node_builder in &self.nodes {
             let metrics = Arc::new(ProcessorMetrics::new());
@@ -373,50 +376,65 @@ impl FlowEngine {
             let shared_props = Arc::new(RwLock::new(node_builder.properties.clone()));
             shared_props_by_node.insert(node_builder.id, shared_props);
 
-            let (prop_descriptors, rels, input_req, trigger_empty, side_effect, batching) =
-                if let Some(ref proc) = node_builder.processor {
-                    let pds = proc
-                        .property_descriptors()
-                        .into_iter()
-                        .map(|pd| PropertyDescriptorInfo {
-                            name: pd.name.to_string(),
-                            description: pd.description.to_string(),
-                            required: pd.required,
-                            default_value: pd.default_value.map(|v| v.to_string()),
-                            sensitive: pd.sensitive,
-                            allowed_values: pd
-                                .allowed_values
-                                .map(|av| av.iter().map(|v| v.to_string()).collect()),
-                            expression_language_supported: pd.expression_language_supported,
-                        })
-                        .collect();
-                    let rs = proc
-                        .relationships()
-                        .into_iter()
-                        .map(|r| RelationshipInfo {
-                            name: r.name.to_string(),
-                            description: r.description.to_string(),
-                            auto_terminated: r.auto_terminated,
-                        })
-                        .collect();
-                    (
-                        pds,
-                        rs,
-                        proc.input_requirement(),
-                        proc.trigger_when_empty(),
-                        proc.side_effect_free(),
-                        proc.supports_batching(),
-                    )
-                } else {
-                    (
-                        Vec::new(),
-                        Vec::new(),
-                        InputRequirement::Allowed,
-                        false,
-                        false,
-                        false,
-                    )
-                };
+            let (
+                prop_descriptors,
+                rels,
+                input_req,
+                trigger_empty,
+                side_effect,
+                batching,
+                supports_dynamic,
+                supports_sensitive_dynamic,
+                dynamic_creates_rel,
+            ) = if let Some(ref proc) = node_builder.processor {
+                let pds = proc
+                    .property_descriptors()
+                    .into_iter()
+                    .map(|pd| PropertyDescriptorInfo {
+                        name: pd.name.to_string(),
+                        description: pd.description.to_string(),
+                        required: pd.required,
+                        default_value: pd.default_value.map(|v| v.to_string()),
+                        sensitive: pd.sensitive,
+                        allowed_values: pd
+                            .allowed_values
+                            .map(|av| av.iter().map(|v| v.to_string()).collect()),
+                        expression_language_supported: pd.expression_language_supported,
+                    })
+                    .collect();
+                let rs = proc
+                    .relationships()
+                    .into_iter()
+                    .map(|r| RelationshipInfo {
+                        name: r.name.to_string(),
+                        description: r.description.to_string(),
+                        auto_terminated: r.auto_terminated,
+                    })
+                    .collect();
+                (
+                    pds,
+                    rs,
+                    proc.input_requirement(),
+                    proc.trigger_when_empty(),
+                    proc.side_effect_free(),
+                    proc.supports_batching(),
+                    proc.supports_dynamic_properties(),
+                    proc.supports_sensitive_dynamic_properties(),
+                    proc.dynamic_property_creates_relationship(),
+                )
+            } else {
+                (
+                    Vec::new(),
+                    Vec::new(),
+                    InputRequirement::Allowed,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                )
+            };
             static_meta_by_node.insert(
                 node_builder.id,
                 (
@@ -426,6 +444,9 @@ impl FlowEngine {
                     trigger_empty,
                     side_effect,
                     batching,
+                    supports_dynamic,
+                    supports_sensitive_dynamic,
+                    dynamic_creates_rel,
                 ),
             );
         }
@@ -508,7 +529,9 @@ impl FlowEngine {
             );
 
             // Set sensitive property names for bulletin redaction.
-            if let Some((descriptors, _, _, _, _, _)) = static_meta_by_node.get(&node_builder.id) {
+            if let Some((descriptors, _, _, _, _, _, _, _, _)) =
+                static_meta_by_node.get(&node_builder.id)
+            {
                 let sensitive_names: Vec<String> = descriptors
                     .iter()
                     .filter(|d| d.sensitive)
@@ -561,14 +584,41 @@ impl FlowEngine {
                 .get(&node_builder.id)
                 .expect("shared_props must exist")
                 .clone();
-            let (prop_descriptors, relationships, input_req, trigger_empty, side_effect, batching) =
-                static_meta_by_node
-                    .remove(&node_builder.id)
-                    .expect("static meta must exist for every node");
+            let (
+                prop_descriptors,
+                relationships,
+                input_req,
+                trigger_empty,
+                side_effect,
+                batching,
+                supports_dynamic,
+                supports_sensitive_dynamic,
+                dynamic_creates_rel,
+            ) = static_meta_by_node
+                .remove(&node_builder.id)
+                .expect("static meta must exist for every node");
             let (input_h, output_h, notifiers_h) = node_conn_handles
                 .get(&node_builder.name)
                 .expect("conn handles must exist for every node")
                 .clone();
+
+            // Compute initial dynamic relationships from properties if applicable.
+            let dynamic_relationships = if dynamic_creates_rel {
+                let descriptor_names: std::collections::HashSet<&str> =
+                    prop_descriptors.iter().map(|d| d.name.as_str()).collect();
+                node_builder
+                    .properties
+                    .keys()
+                    .filter(|k| !descriptor_names.contains(k.as_str()))
+                    .map(|k| RelationshipInfo {
+                        name: k.clone(),
+                        description: format!("Dynamic relationship from property '{}'", k),
+                        auto_terminated: false,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
             processor_infos.push(ProcessorInfo {
                 name: node_builder.name.clone(),
@@ -595,6 +645,10 @@ impl FlowEngine {
                 trigger_when_empty: trigger_empty,
                 side_effect_free: side_effect,
                 supports_batching: batching,
+                supports_dynamic_properties: supports_dynamic,
+                supports_sensitive_dynamic_properties: supports_sensitive_dynamic,
+                dynamic_property_creates_relationship: dynamic_creates_rel,
+                dynamic_relationships: Arc::new(RwLock::new(dynamic_relationships)),
             });
         }
 

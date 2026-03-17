@@ -115,28 +115,32 @@ fn validate_processor_name(name: &str) -> Result<(), ApiError> {
 }
 
 /// Validate properties against the processor type's property descriptors.
-/// Rejects unknown property keys and invalid allowed values.
+/// Rejects unknown property keys (unless dynamic properties are supported)
+/// and invalid allowed values.
 /// Required-property checks are deferred to start time (matching NiFi behavior:
-/// create → configure → start).
+/// create -> configure -> start).
 fn validate_properties(
     properties: &std::collections::HashMap<String, String>,
     descriptors: &[runifi_plugin_api::PropertyDescriptor],
+    supports_dynamic_properties: bool,
 ) -> Result<(), ApiError> {
     // Build a set of known property names.
     let known_names: std::collections::HashSet<&str> = descriptors.iter().map(|d| d.name).collect();
 
-    // Reject unknown property keys.
-    for key in properties.keys() {
-        if !known_names.contains(key.as_str()) {
-            return Err(ApiError::BadRequest(format!(
-                "Unknown property '{}'. Valid properties: {:?}",
-                key,
-                known_names.iter().collect::<Vec<_>>()
-            )));
+    // Reject unknown property keys only if the processor doesn't support dynamic properties.
+    if !supports_dynamic_properties {
+        for key in properties.keys() {
+            if !known_names.contains(key.as_str()) {
+                return Err(ApiError::BadRequest(format!(
+                    "Unknown property '{}'. Valid properties: {:?}",
+                    key,
+                    known_names.iter().collect::<Vec<_>>()
+                )));
+            }
         }
     }
 
-    // Validate allowed values.
+    // Validate allowed values (only for declared properties).
     for (key, value) in properties {
         if let Some(desc) = descriptors.iter().find(|d| d.name == key)
             && let Some(allowed) = desc.allowed_values
@@ -170,16 +174,16 @@ async fn create_processor(
         )));
     }
 
-    // Get property descriptors from an existing processor of the same type,
-    // or validate after creation using the info that comes back.
-    let descriptors: Vec<runifi_plugin_api::PropertyDescriptor> = state
-        .handle
-        .processors
-        .read()
-        .iter()
-        .find(|p| p.type_name == body.type_name)
-        .map(|p| {
-            p.property_descriptors
+    // Get property descriptors and dynamic-property support from an existing
+    // processor of the same type, or validate after creation using the info that comes back.
+    let (descriptors, existing_supports_dynamic): (
+        Vec<runifi_plugin_api::PropertyDescriptor>,
+        Option<bool>,
+    ) = {
+        let procs = state.handle.processors.read();
+        if let Some(p) = procs.iter().find(|p| p.type_name == body.type_name) {
+            let descs = p
+                .property_descriptors
                 .iter()
                 .map(|d| runifi_plugin_api::PropertyDescriptor {
                     name: Box::leak(d.name.clone().into_boxed_str()),
@@ -201,13 +205,20 @@ async fn create_processor(
                     }),
                     expression_language_supported: d.expression_language_supported,
                 })
-                .collect()
-        })
-        .unwrap_or_default();
+                .collect();
+            (descs, Some(p.supports_dynamic_properties))
+        } else {
+            (Vec::new(), None)
+        }
+    };
 
     // If we found descriptors, validate upfront.
     if !descriptors.is_empty() {
-        validate_properties(&body.properties, &descriptors)?;
+        validate_properties(
+            &body.properties,
+            &descriptors,
+            existing_supports_dynamic.unwrap_or(false),
+        )?;
     }
 
     state
@@ -253,7 +264,11 @@ async fn create_processor(
             })
             .collect();
 
-        if let Err(e) = validate_properties(&body.properties, &post_descriptors) {
+        if let Err(e) = validate_properties(
+            &body.properties,
+            &post_descriptors,
+            info.supports_dynamic_properties,
+        ) {
             // Roll back: remove the processor we just created.
             let _ = state.handle.remove_processor(body.name.clone()).await;
             return Err(e);

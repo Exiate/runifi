@@ -132,6 +132,14 @@ pub struct ProcessorInfo {
     pub side_effect_free: bool,
     /// Whether the processor supports batching.
     pub supports_batching: bool,
+    /// Whether this processor supports dynamic (user-defined) properties.
+    pub supports_dynamic_properties: bool,
+    /// Whether dynamic properties can be sensitive.
+    pub supports_sensitive_dynamic_properties: bool,
+    /// Whether dynamic property names generate relationships.
+    pub dynamic_property_creates_relationship: bool,
+    /// Relationships created from dynamic property names at runtime.
+    pub dynamic_relationships: Arc<RwLock<Vec<RelationshipInfo>>>,
 }
 
 /// Information about a connection, visible to the API.
@@ -754,6 +762,14 @@ impl EngineHandle {
         // Validate and apply properties if provided.
         if let Some(ref new_properties) = properties {
             let mut props = info.properties.write();
+
+            // Build set of known descriptor property names.
+            let descriptor_names: std::collections::HashSet<&str> = info
+                .property_descriptors
+                .iter()
+                .map(|d| d.name.as_str())
+                .collect();
+
             for desc in &info.property_descriptors {
                 if desc.required {
                     let has_value = new_properties.contains_key(&desc.name);
@@ -767,6 +783,13 @@ impl EngineHandle {
                 }
             }
             for (key, value) in new_properties {
+                // Reject unknown properties on processors that don't support dynamic properties.
+                if !descriptor_names.contains(key.as_str()) && !info.supports_dynamic_properties {
+                    return Err(ConfigUpdateError::ValidationError(format!(
+                        "Unknown property '{}'. This processor does not support dynamic properties.",
+                        key
+                    )));
+                }
                 if let Some(desc) = info.property_descriptors.iter().find(|d| d.name == *key)
                     && let Some(ref allowed) = desc.allowed_values
                     && !allowed.iter().any(|v| v == value)
@@ -778,6 +801,20 @@ impl EngineHandle {
                 }
             }
             *props = new_properties.clone();
+
+            // Update dynamic relationships if this processor creates relationships from dynamic properties.
+            if info.dynamic_property_creates_relationship {
+                let dynamic_rels: Vec<RelationshipInfo> = new_properties
+                    .keys()
+                    .filter(|k| !descriptor_names.contains(k.as_str()))
+                    .map(|k| RelationshipInfo {
+                        name: k.clone(),
+                        description: format!("Dynamic relationship from property '{}'", k),
+                        auto_terminated: false,
+                    })
+                    .collect();
+                *info.dynamic_relationships.write() = dynamic_rels;
+            }
         }
 
         // Apply penalty duration.
