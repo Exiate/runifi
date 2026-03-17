@@ -780,6 +780,12 @@ body {
   color: var(--danger);
 }
 
+.proc-node-metric-sub {
+  font-size: 0.6rem;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
 /* ── React Flow handle styling ──────────────────────────────── */
 
 .react-flow__handle {

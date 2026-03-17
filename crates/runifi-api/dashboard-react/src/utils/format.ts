@@ -14,6 +14,13 @@ export function formatRate(rate: number, unit: string): string {
   return `${rate.toFixed(1)} ${unit}/s`;
 }
 
+export function formatCount(n: number): string {
+  if (n < 1000) return n.toLocaleString();
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}K`;
+  if (n < 1_000_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  return `${(n / 1_000_000_000).toFixed(1)}B`;
+}
+
 export function formatUptime(secs: number): string {
   const h = Math.floor(secs / 3600);
   const m = Math.floor((secs % 3600) / 60);

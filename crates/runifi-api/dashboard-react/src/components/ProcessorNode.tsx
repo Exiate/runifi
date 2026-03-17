@@ -1,7 +1,7 @@
 import { memo, type CSSProperties } from 'react';
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
 import type { ProcessorNodeData } from '../types/flow';
-import { stateColor } from '../utils/format';
+import { stateColor, formatCount, formatBytes } from '../utils/format';
 
 export type ProcessorNodeType = Node<ProcessorNodeData, 'processorNode'>;
 
@@ -111,23 +111,32 @@ function ProcessorNodeInner({ data }: NodeProps<ProcessorNodeType>) {
       </div>
 
       {metrics && !pending && (
-        <div className="proc-node-metrics">
+        <div
+          className="proc-node-metrics"
+          title={`Cumulative — In: ${metrics.flowfiles_in.toLocaleString()} (${formatBytes(metrics.bytes_in)}) | Out: ${metrics.flowfiles_out.toLocaleString()} (${formatBytes(metrics.bytes_out)}) | Tasks: ${metrics.total_invocations.toLocaleString()} | Failures: ${metrics.total_failures.toLocaleString()}`}
+        >
           <div className="proc-node-metric">
-            <span className="proc-node-metric-label">In</span>
+            <span className="proc-node-metric-label">In / 5 min</span>
             <span className="proc-node-metric-value">
-              {metrics.flowfiles_in.toLocaleString()}
+              {formatCount(metrics.flowfiles_in_5m ?? 0)}
+            </span>
+            <span className="proc-node-metric-sub">
+              {formatBytes(metrics.bytes_in_5m ?? 0)}
             </span>
           </div>
           <div className="proc-node-metric">
-            <span className="proc-node-metric-label">Out</span>
+            <span className="proc-node-metric-label">Out / 5 min</span>
             <span className="proc-node-metric-value">
-              {metrics.flowfiles_out.toLocaleString()}
+              {formatCount(metrics.flowfiles_out_5m ?? 0)}
+            </span>
+            <span className="proc-node-metric-sub">
+              {formatBytes(metrics.bytes_out_5m ?? 0)}
             </span>
           </div>
           <div className="proc-node-metric">
-            <span className="proc-node-metric-label">Invocations</span>
+            <span className="proc-node-metric-label">Tasks / 5 min</span>
             <span className="proc-node-metric-value">
-              {metrics.total_invocations.toLocaleString()}
+              {formatCount(metrics.total_invocations)}
             </span>
           </div>
           <div className="proc-node-metric">
