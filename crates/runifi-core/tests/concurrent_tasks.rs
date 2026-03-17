@@ -120,6 +120,10 @@ async fn concurrent_tasks_clamp_accepts_up_to_64() {
             None,
             None,
             None,
+            None,
+            None,
+            None,
+            None,
         )
         .expect("config update failed");
 
@@ -161,6 +165,10 @@ async fn concurrent_tasks_clamp_enforces_max_64() {
             None,
             None,
             None,
+            None,
+            None,
+            None,
+            None,
         )
         .expect("config update failed");
 
@@ -198,6 +206,10 @@ async fn concurrent_tasks_clamp_enforces_min_1() {
             None,
             None,
             Some(0),
+            None,
+            None,
+            None,
+            None,
             None,
             None,
             None,
@@ -244,6 +256,10 @@ async fn spawn_concurrent_tasks_creates_sibling_tasks() {
             None,
             None,
             Some(4),
+            None,
+            None,
+            None,
+            None,
             None,
             None,
             None,
@@ -408,6 +424,10 @@ async fn event_driven_concurrent_tasks_share_input_connections() {
             None,
             None,
             Some(3),
+            None,
+            None,
+            None,
+            None,
             None,
             None,
             None,

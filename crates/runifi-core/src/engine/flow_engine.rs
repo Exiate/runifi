@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use runifi_plugin_api::{InputRequirement, Processor};
+use runifi_plugin_api::{ExecutionNode, InputRequirement, Processor};
 
 use super::bulletin::BulletinBoard;
 use super::handle::{
@@ -489,6 +489,8 @@ impl FlowEngine {
                 SharedInputNotifiers,
             ),
         > = HashMap::new();
+        type SchedulingArcs = (Arc<RwLock<SchedulingStrategy>>, Arc<RwLock<ExecutionNode>>);
+        let mut scheduling_arcs: HashMap<usize, SchedulingArcs> = HashMap::new();
 
         for node_builder in &mut self.nodes {
             let processor = node_builder
@@ -507,11 +509,16 @@ impl FlowEngine {
                 .expect("shared_props must exist")
                 .clone();
 
+            // Create shared scheduling and execution node arcs that will be
+            // shared between ProcessorNode and ProcessorInfo for runtime updates.
+            let shared_scheduling = Arc::new(RwLock::new(node_builder.scheduling.clone()));
+            let shared_exec_node = Arc::new(RwLock::new(ExecutionNode::All));
+
             let mut pn = ProcessorNode::new(
                 node_builder.name.clone(),
                 format!("node-{}", node_builder.id),
                 processor,
-                node_builder.scheduling.clone(),
+                shared_scheduling.clone(),
                 shared_props,
                 self.content_repo.clone(),
                 self.id_gen.clone(),
@@ -547,8 +554,16 @@ impl FlowEngine {
             if let Some(ref provider) = self.cluster_state_provider {
                 pn.set_cluster_state_provider(provider.clone());
             }
-            pn.set_execution_node(pn.processor_execution_node());
+            // Set execution node from processor annotation, shared with ProcessorInfo.
+            *shared_exec_node.write() = pn.processor_execution_node();
+            pn.set_execution_node_shared(shared_exec_node.clone());
             pn.set_primary_node_flag(self.is_primary_node.clone());
+
+            // Store shared arcs for ProcessorInfo construction later.
+            scheduling_arcs.insert(
+                node_builder.id,
+                (shared_scheduling.clone(), shared_exec_node.clone()),
+            );
 
             for (src, rel, dst, fc) in &flow_connections {
                 if *src == node_builder.id {
@@ -620,11 +635,19 @@ impl FlowEngine {
                 Vec::new()
             };
 
+            let (shared_scheduling, shared_exec_node) = scheduling_arcs
+                .get(&node_builder.id)
+                .expect("scheduling arcs must exist for every node")
+                .clone();
+
             processor_infos.push(ProcessorInfo {
                 name: node_builder.name.clone(),
                 type_name: node_builder.type_name.clone(),
-                scheduling_display: scheduling_display(&node_builder.scheduling),
-                scheduling: node_builder.scheduling.clone(),
+                scheduling_display: Arc::new(RwLock::new(scheduling_display(
+                    &node_builder.scheduling,
+                ))),
+                scheduling: shared_scheduling,
+                execution_node: shared_exec_node,
                 metrics,
                 property_descriptors: prop_descriptors,
                 relationships,

@@ -124,7 +124,7 @@ pub struct ProcessorNode {
     pub id: String,
     /// Processor type name (e.g. "GenerateFlowFile").
     pub type_name: String,
-    pub scheduling: SchedulingStrategy,
+    pub scheduling: Arc<RwLock<SchedulingStrategy>>,
     pub properties: Arc<RwLock<HashMap<String, String>>>,
     supervisor: ProcessorSupervisor,
     /// Shared so the mutation handler can wire hot-added connections to the
@@ -158,7 +158,8 @@ pub struct ProcessorNode {
     /// Cluster-scoped state provider for shared processor state.
     cluster_state_provider: Option<SharedClusterStateProvider>,
     /// Whether this processor should run on all nodes or only the primary.
-    execution_node: ExecutionNode,
+    /// Shared with ProcessorInfo for runtime updates.
+    execution_node: Arc<RwLock<ExecutionNode>>,
     /// Shared flag indicating whether this node is the primary in the cluster.
     is_primary_node: Arc<AtomicBool>,
     /// Run duration in milliseconds for batch processing (0 = disabled).
@@ -175,7 +176,7 @@ impl ProcessorNode {
         name: String,
         id: String,
         processor: Box<dyn Processor>,
-        scheduling: SchedulingStrategy,
+        scheduling: Arc<RwLock<SchedulingStrategy>>,
         properties: Arc<RwLock<HashMap<String, String>>>,
         content_repo: Arc<dyn ContentRepository>,
         id_gen: Arc<IdGenerator>,
@@ -211,7 +212,7 @@ impl ProcessorNode {
             concurrent_tasks: Arc::new(AtomicU64::new(1)),
             timer_notify: None,
             cluster_state_provider: None,
-            execution_node: ExecutionNode::All,
+            execution_node: Arc::new(RwLock::new(ExecutionNode::All)),
             is_primary_node: Arc::new(AtomicBool::new(true)),
             run_duration_ms: 0,
             batch_commit_count: 0,
@@ -264,8 +265,8 @@ impl ProcessorNode {
         self.cluster_state_provider = Some(provider);
     }
 
-    /// Set which nodes should execute this processor.
-    pub fn set_execution_node(&mut self, exec: ExecutionNode) {
+    /// Set which nodes should execute this processor (shared with ProcessorInfo).
+    pub fn set_execution_node_shared(&mut self, exec: Arc<RwLock<ExecutionNode>>) {
         self.execution_node = exec;
     }
 
@@ -526,7 +527,7 @@ impl ProcessorNode {
 
                 // Primary-node-only check: if this processor requires the primary
                 // node and we are not the primary, sleep and re-check.
-                if self.execution_node == ExecutionNode::Primary
+                if *self.execution_node.read() == ExecutionNode::Primary
                     && !self.is_primary_node.load(Ordering::Relaxed)
                 {
                     tokio::select! {
@@ -1197,7 +1198,10 @@ impl ProcessorNode {
     }
 
     async fn wait_for_trigger(&self) {
-        match &self.scheduling {
+        // Snapshot the scheduling strategy under a brief lock to avoid holding
+        // parking_lot across an await point.
+        let strategy = self.scheduling.read().clone();
+        match &strategy {
             SchedulingStrategy::TimerDriven { interval_ms } => {
                 if let Some(ref notify) = self.timer_notify {
                     notify.notified().await;

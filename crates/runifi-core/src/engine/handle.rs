@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 
 use super::bulletin::BulletinBoard;
+use super::flow_engine::scheduling_display;
 use super::metrics::{ProcessorMetrics, RunOnceResult};
 use super::mutation::{MutationCommand, MutationError};
 use super::persistence::{
@@ -28,7 +29,7 @@ use super::remote_process_group::RemoteProcessGroup;
 /// is preserved (the caller did not change it).
 pub const SENSITIVE_VALUE_MASK: &str = "********";
 
-use runifi_plugin_api::InputRequirement;
+use runifi_plugin_api::{ExecutionNode, InputRequirement};
 
 use crate::audit::{AuditAction, AuditEvent, AuditLogger, AuditTarget};
 use crate::connection::back_pressure::BackPressureConfig;
@@ -89,8 +90,12 @@ pub struct ProcessorInfo {
     pub type_name: String,
     /// Human-readable scheduling description, e.g. "timer-driven (1000ms)" or "event-driven".
     /// The concrete `SchedulingStrategy` enum is kept internal to the engine.
-    pub scheduling_display: String,
-    pub scheduling: SchedulingStrategy,
+    /// Wrapped in `Arc<RwLock<>>` so scheduling updates propagate at runtime.
+    pub scheduling_display: Arc<RwLock<String>>,
+    pub scheduling: Arc<RwLock<SchedulingStrategy>>,
+    /// Execution node requirement: "all" or "primary".
+    /// Shared with ProcessorNode for runtime updates.
+    pub execution_node: Arc<RwLock<ExecutionNode>>,
     pub metrics: Arc<ProcessorMetrics>,
     /// Property descriptors (static metadata from the processor type).
     pub property_descriptors: Vec<PropertyDescriptorInfo>,
@@ -737,8 +742,12 @@ impl EngineHandle {
         comments: Option<String>,
         run_duration_ms: Option<u64>,
         batch_commit_count: Option<u64>,
+        scheduling_strategy: Option<String>,
+        scheduling_interval_ms: Option<u64>,
+        execution_node: Option<String>,
+        new_name: Option<String>,
     ) -> Result<(), ConfigUpdateError> {
-        let processors = self.processors.read();
+        let mut processors = self.processors.write();
         let info = processors
             .iter()
             .find(|p| p.name == name)
@@ -871,10 +880,98 @@ impl EngineHandle {
                 .store(bc, std::sync::atomic::Ordering::Relaxed);
         }
 
+        // Apply scheduling strategy and/or interval changes.
+        if scheduling_strategy.is_some() || scheduling_interval_ms.is_some() {
+            let current_sched = info.scheduling.read().clone();
+            let new_sched = match scheduling_strategy.as_deref() {
+                Some("timer") => {
+                    let ms = scheduling_interval_ms.unwrap_or(match &current_sched {
+                        SchedulingStrategy::TimerDriven { interval_ms } => *interval_ms,
+                        _ => 1000,
+                    });
+                    SchedulingStrategy::TimerDriven { interval_ms: ms }
+                }
+                Some("cron") => {
+                    // Preserve existing CRON expression or use a default.
+                    let expr = match &current_sched {
+                        SchedulingStrategy::CronDriven { expression } => expression.clone(),
+                        _ => "0 0/5 * * * ?".to_string(),
+                    };
+                    SchedulingStrategy::CronDriven { expression: expr }
+                }
+                Some("event") => SchedulingStrategy::EventDriven,
+                Some(other) => {
+                    return Err(ConfigUpdateError::ValidationError(format!(
+                        "Invalid scheduling strategy '{}'. Allowed: timer, cron, event",
+                        other
+                    )));
+                }
+                None => {
+                    // Only interval change — must be timer-driven.
+                    if let Some(ms) = scheduling_interval_ms {
+                        match &current_sched {
+                            SchedulingStrategy::TimerDriven { .. } => {
+                                SchedulingStrategy::TimerDriven { interval_ms: ms }
+                            }
+                            _ => {
+                                return Err(ConfigUpdateError::ValidationError(
+                                    "Cannot set interval on non-timer scheduling strategy"
+                                        .to_string(),
+                                ));
+                            }
+                        }
+                    } else {
+                        current_sched.clone()
+                    }
+                }
+            };
+            *info.scheduling.write() = new_sched.clone();
+            *info.scheduling_display.write() = scheduling_display(&new_sched);
+        }
+
+        // Apply execution node.
+        if let Some(ref exec_str) = execution_node {
+            match exec_str.as_str() {
+                "all" => *info.execution_node.write() = ExecutionNode::All,
+                "primary" => *info.execution_node.write() = ExecutionNode::Primary,
+                _ => {
+                    return Err(ConfigUpdateError::ValidationError(format!(
+                        "Invalid execution node '{}'. Allowed: all, primary",
+                        exec_str
+                    )));
+                }
+            }
+        }
+
+        // Apply name change (rename).
+        if let Some(ref new_n) = new_name
+            && !new_n.is_empty()
+            && *new_n != name
+        {
+            // Check for duplicate name.
+            if processors.iter().any(|p| p.name == *new_n) {
+                return Err(ConfigUpdateError::ValidationError(format!(
+                    "A processor with name '{}' already exists",
+                    new_n
+                )));
+            }
+            // Find the mutable info and update its name.
+            // We need to re-find because `info` is an immutable reference.
+            let info_mut = processors
+                .iter_mut()
+                .find(|p| p.name == name)
+                .expect("processor was found earlier");
+            info_mut.name = new_n.clone();
+        }
+
+        let audit_name = new_name
+            .as_deref()
+            .filter(|n| !n.is_empty() && *n != name)
+            .unwrap_or(name);
         drop(processors);
         self.audit_logger.log(&AuditEvent::success(
             AuditAction::ProcessorConfigured,
-            AuditTarget::processor(name),
+            AuditTarget::processor(audit_name),
         ));
         self.notify_persist();
         Ok(())
@@ -1241,7 +1338,7 @@ impl EngineHandle {
                 PersistedProcessor {
                     name: p.name.clone(),
                     type_name: p.type_name.clone(),
-                    scheduling: scheduling_display_to_persisted(&p.scheduling_display),
+                    scheduling: scheduling_display_to_persisted(&p.scheduling_display.read()),
                     properties: p.properties.read().clone(),
                     sensitive_properties,
                     penalty_duration_ms: if penalty != 30_000 {

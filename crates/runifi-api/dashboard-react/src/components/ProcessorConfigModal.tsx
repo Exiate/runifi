@@ -18,11 +18,15 @@ interface ProcessorConfigModalProps {
 /** Form state for all editable fields across all tabs. */
 interface ConfigFormState {
   // Settings
+  name: string;
   penaltyDurationMs: number;
   yieldDurationMs: number;
   bulletinLevel: string;
   // Scheduling
+  schedulingStrategy: string;
+  schedulingIntervalMs: number;
   concurrentTasks: number;
+  executionNode: string;
   // Properties
   properties: Record<string, string>;
   // Relationships
@@ -60,10 +64,14 @@ function initFormState(data: ProcessorConfigResponse): ConfigFormState {
     }
   }
   return {
+    name: data.processor_name,
     penaltyDurationMs: data.penalty_duration_ms,
     yieldDurationMs: data.yield_duration_ms,
     bulletinLevel: data.bulletin_level,
+    schedulingStrategy: data.scheduling.strategy,
+    schedulingIntervalMs: data.scheduling.interval_ms ?? 1000,
     concurrentTasks: data.scheduling.concurrent_tasks,
+    executionNode: data.scheduling.execution_node ?? 'all',
     properties,
     autoTerminatedRelationships: [...data.auto_terminated_relationships],
     comments: data.comments,
@@ -202,7 +210,7 @@ function ProcessorConfigModalInner({
       setSaving(true);
       setSaveStatus(null);
 
-      const payload = {
+      const payload: Record<string, unknown> = {
         properties,
         penalty_duration_ms: form.penaltyDurationMs,
         yield_duration_ms: form.yieldDurationMs,
@@ -210,7 +218,14 @@ function ProcessorConfigModalInner({
         concurrent_tasks: form.concurrentTasks,
         auto_terminated_relationships: form.autoTerminatedRelationships,
         comments: form.comments,
+        scheduling_strategy: form.schedulingStrategy,
+        scheduling_interval_ms: form.schedulingIntervalMs,
+        execution_node: form.executionNode,
       };
+      // Include name only if changed.
+      if (form.name !== processorName) {
+        payload.name = form.name;
+      }
 
       fetch(`/api/v1/processors/${encodeURIComponent(processorName)}/config`, {
         method: 'PUT',
@@ -309,7 +324,13 @@ function ProcessorConfigModalInner({
                   <h4 className="config-section-heading">Processor Details</h4>
                   <div className="config-field">
                     <label className="config-label">Name</label>
-                    <input className="form-input" type="text" value={processorName} disabled readOnly />
+                    <input
+                      className="form-input"
+                      type="text"
+                      value={form.name}
+                      onChange={(e) => handleFormChange('name', e.target.value)}
+                      disabled={!isStopped}
+                    />
                   </div>
                   <div className="config-field">
                     <label className="config-label">Type</label>
@@ -382,29 +403,29 @@ function ProcessorConfigModalInner({
                 <div className="config-field">
                   <label className="config-label">Scheduling Strategy</label>
                   <span className="config-description">How the processor is triggered</span>
-                  <input
-                    className="form-input"
-                    type="text"
-                    value={
-                      config.scheduling.strategy === 'timer' ? 'Timer Driven'
-                        : config.scheduling.strategy === 'cron' ? 'CRON Driven'
-                        : 'Event Driven'
-                    }
-                    disabled
-                    readOnly
-                  />
+                  <select
+                    className="form-select"
+                    value={form.schedulingStrategy}
+                    onChange={(e) => handleFormChange('schedulingStrategy', e.target.value)}
+                    disabled={!isStopped}
+                  >
+                    <option value="timer">Timer Driven</option>
+                    <option value="cron">CRON Driven</option>
+                    <option value="event">Event Driven</option>
+                  </select>
                 </div>
-                {config.scheduling.interval_ms != null && (
+                {form.schedulingStrategy === 'timer' && (
                   <div className="config-field">
                     <label className="config-label">Run Schedule</label>
                     <span className="config-description">Trigger interval in milliseconds</span>
                     <div className="config-input-with-unit">
                       <input
                         className="form-input"
-                        type="text"
-                        value={config.scheduling.interval_ms}
-                        disabled
-                        readOnly
+                        type="number"
+                        min={0}
+                        value={form.schedulingIntervalMs}
+                        onChange={(e) => handleFormChange('schedulingIntervalMs', Number(e.target.value))}
+                        disabled={!isStopped}
                       />
                       <span className="config-unit">ms</span>
                     </div>
@@ -425,6 +446,19 @@ function ProcessorConfigModalInner({
                     onChange={(e) => handleFormChange('concurrentTasks', Number(e.target.value))}
                     disabled={!isStopped}
                   />
+                </div>
+                <div className="config-field">
+                  <label className="config-label">Execution</label>
+                  <span className="config-description">Which nodes run this processor in a cluster</span>
+                  <select
+                    className="form-select"
+                    value={form.executionNode}
+                    onChange={(e) => handleFormChange('executionNode', e.target.value)}
+                    disabled={!isStopped}
+                  >
+                    <option value="all">All Nodes</option>
+                    <option value="primary">Primary Node Only</option>
+                  </select>
                 </div>
               </div>
             )}
@@ -609,6 +643,9 @@ function ProcessorConfigModalInner({
                           <th>Name</th>
                           <th>Description</th>
                           <th>Auto-Terminate</th>
+                          <th>Retry Attempts</th>
+                          <th>Back Off Policy</th>
+                          <th>Max Back Off</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -626,10 +663,16 @@ function ProcessorConfigModalInner({
                                 aria-label={`Auto-terminate ${rel.name}`}
                               />
                             </td>
+                            <td className="config-readonly-cell">0</td>
+                            <td className="config-readonly-cell">Penalize</td>
+                            <td className="config-readonly-cell">10 sec</td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
+                    <span className="config-description" style={{ marginTop: '8px', display: 'block', fontStyle: 'italic' }}>
+                      Retry configuration is read-only. Backend support for retry is planned.
+                    </span>
                   </>
                 )}
               </div>
