@@ -4353,3 +4353,322 @@ body {
 .cluster-action-warn:hover {
   color: #fcd34d !important;
 }
+
+/* ══════════════════════════════════════════════════════════════
+   Users & Groups Panel
+   ══════════════════════════════════════════════════════════════ */
+
+.users-groups-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 1rem;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 160px);
+  overflow: hidden;
+  position: fixed;
+  inset: 60px 16px 60px 16px;
+  z-index: 900;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.users-groups-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.users-groups-panel-title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-dim);
+  margin-right: auto;
+}
+
+/* ── Tabs ──────────────────────────────────────────────────── */
+
+.users-groups-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.users-groups-tab {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  font-family: var(--font);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+}
+
+.users-groups-tab:hover {
+  color: var(--text);
+}
+
+.users-groups-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* ── Toolbar ───────────────────────────────────────────────── */
+
+.users-groups-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+/* ── Table ─────────────────────────────────────────────────── */
+
+.users-groups-table-wrap {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.users-groups-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.users-groups-table th {
+  text-align: left;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  cursor: pointer;
+  user-select: none;
+}
+
+.users-groups-table th:last-child {
+  cursor: default;
+}
+
+.users-groups-table td {
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid rgba(42, 46, 61, 0.4);
+}
+
+.users-groups-table tbody tr:hover {
+  background: var(--surface-hover);
+}
+
+.users-groups-empty-row {
+  text-align: center;
+  color: var(--text-dim);
+  padding: 1.5rem 0.5rem;
+  font-size: 0.82rem;
+}
+
+.users-groups-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+/* ── Status badge ──────────────────────────────────────────── */
+
+.users-groups-status-badge {
+  display: inline-block;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.users-groups-status-badge.enabled {
+  background: rgba(52, 211, 153, 0.15);
+  color: #34d399;
+}
+
+.users-groups-status-badge.disabled {
+  background: rgba(139, 144, 160, 0.15);
+  color: #8b90a0;
+}
+
+/* ── Member count badge ────────────────────────────────────── */
+
+.users-groups-member-count {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.1rem 0.45rem;
+  border-radius: 10px;
+  background: rgba(96, 165, 250, 0.15);
+  color: #60a5fa;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Dialog overlay & box ──────────────────────────────────── */
+
+.users-groups-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 950;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.users-groups-dialog {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  width: 420px;
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.users-groups-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.users-groups-dialog-header h3 {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.users-groups-dialog-body {
+  padding: 0.75rem;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.users-groups-dialog-body p {
+  font-size: 0.82rem;
+  color: var(--text-dim);
+  margin: 0 0 0.5rem;
+  line-height: 1.5;
+}
+
+.users-groups-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+/* ── Form fields ───────────────────────────────────────────── */
+
+.users-groups-form-field {
+  margin-bottom: 0.6rem;
+}
+
+.users-groups-form-label {
+  display: block;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  margin-bottom: 0.2rem;
+}
+
+.users-groups-form-input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 0.78rem;
+  font-family: var(--font);
+  padding: 0.3rem 0.4rem;
+  outline: none;
+  transition: border-color 0.12s;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.users-groups-form-input:focus {
+  border-color: var(--accent);
+}
+
+/* ── Checkbox list (member selection) ──────────────────────── */
+
+.users-groups-checkbox-list {
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  padding: 0.3rem;
+}
+
+.users-groups-checkbox-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.3rem;
+  font-size: 0.78rem;
+  color: var(--text);
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.users-groups-checkbox-item:hover {
+  background: var(--surface-hover);
+}
+
+.users-groups-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: var(--text);
+  cursor: pointer;
+}
+
+/* ── Member tags ───────────────────────────────────────────── */
+
+.users-groups-member-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.users-groups-member-tag {
+  display: inline-block;
+  font-size: 0.72rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  background: rgba(96, 165, 250, 0.15);
+  color: #60a5fa;
+}
+

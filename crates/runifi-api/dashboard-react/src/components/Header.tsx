@@ -11,6 +11,7 @@ interface HeaderProps {
   onOpenDataProvenance?: () => void;
   onOpenSystemDiagnostics?: () => void;
   onOpenCluster?: () => void;
+  onOpenUsersGroups?: () => void;
 }
 
 interface MenuItem {
@@ -30,13 +31,13 @@ const MENU_ITEMS: MenuItem[] = [
   { label: 'Cluster', action: 'cluster', icon: '\uD83D\uDDA5' },
   { label: 'Flow Configuration History', action: 'flow-history', icon: '\uD83D\uDCC4', disabled: true, disabledReason: 'Not yet implemented' },
   { label: 'System Diagnostics', action: 'system-diagnostics', icon: '\uD83D\uDCCA', separator: true },
-  { label: 'Users & Groups', action: 'users', icon: '\uD83D\uDC65', adminOnly: true, disabled: true, disabledReason: 'Not yet implemented', separator: true },
+  { label: 'Users & Groups', action: 'users', icon: '\uD83D\uDC65', adminOnly: true, separator: true },
   { label: 'Help', action: 'help', icon: '?' },
   { label: 'About RuniFi', action: 'about', icon: '\u24D8', separator: true },
   { label: 'Logout', action: 'logout', icon: '\u2192' },
 ];
 
-function HeaderInner({ flowName, uptimeSecs, sseStatus, onOpenControllerServices, onOpenBulletins, onOpenDataProvenance, onOpenSystemDiagnostics, onOpenCluster }: HeaderProps) {
+function HeaderInner({ flowName, uptimeSecs, sseStatus, onOpenControllerServices, onOpenBulletins, onOpenDataProvenance, onOpenSystemDiagnostics, onOpenCluster, onOpenUsersGroups }: HeaderProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -84,6 +85,9 @@ function HeaderInner({ flowName, uptimeSecs, sseStatus, onOpenControllerServices
         break;
       case 'cluster':
         onOpenCluster?.();
+        break;
+      case 'users':
+        onOpenUsersGroups?.();
         break;
       case 'about':
         setAboutOpen(true);
