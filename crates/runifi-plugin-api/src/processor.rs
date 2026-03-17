@@ -72,6 +72,33 @@ pub trait Processor: Send + Sync + 'static {
     fn execution_node(&self) -> ExecutionNode {
         ExecutionNode::All
     }
+
+    /// Whether this processor supports user-defined dynamic properties.
+    ///
+    /// When true, the engine allows arbitrary properties beyond the declared
+    /// `property_descriptors()`. When false (default), unknown properties
+    /// are rejected during validation.
+    fn supports_dynamic_properties(&self) -> bool {
+        false
+    }
+
+    /// Whether dynamic properties on this processor can contain sensitive values.
+    ///
+    /// When true, dynamic property values are masked in API responses.
+    /// Only meaningful when `supports_dynamic_properties()` is also true.
+    fn supports_sensitive_dynamic_properties(&self) -> bool {
+        false
+    }
+
+    /// Whether each dynamic property name creates a corresponding relationship.
+    ///
+    /// When true, the engine automatically registers a relationship for every
+    /// dynamic property whose name does not match a declared property descriptor.
+    /// Used by processors like RouteOnAttribute where dynamic properties define
+    /// routing rules and the property name becomes the relationship name.
+    fn dynamic_property_creates_relationship(&self) -> bool {
+        false
+    }
 }
 
 /// Describes a processor type for plugin registration.

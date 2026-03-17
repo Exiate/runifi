@@ -131,6 +131,10 @@ impl DefaultMutationHandler {
             })
             .collect();
 
+        let supports_dynamic = processor.supports_dynamic_properties();
+        let supports_sensitive_dynamic = processor.supports_sensitive_dynamic_properties();
+        let dynamic_creates_rel = processor.dynamic_property_creates_relationship();
+
         let shared_props = Arc::new(RwLock::new(properties));
         let child_token = self.parent_cancel.child_token();
 
@@ -186,6 +190,10 @@ impl DefaultMutationHandler {
             spawned_task_count: Arc::new(AtomicU64::new(0)),
             comments: Arc::new(RwLock::new(String::new())),
             auto_terminated_relationships: Arc::new(RwLock::new(Vec::new())),
+            supports_dynamic_properties: supports_dynamic,
+            supports_sensitive_dynamic_properties: supports_sensitive_dynamic,
+            dynamic_property_creates_relationship: dynamic_creates_rel,
+            dynamic_relationships: Arc::new(RwLock::new(Vec::new())),
         });
 
         tracing::info!(name, type_name, "Hot-added processor");

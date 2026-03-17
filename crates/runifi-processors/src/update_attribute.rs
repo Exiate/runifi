@@ -108,6 +108,10 @@ impl Processor for UpdateAttribute {
     fn property_descriptors(&self) -> Vec<PropertyDescriptor> {
         vec![PROP_DELETE_ATTRIBUTES]
     }
+
+    fn supports_dynamic_properties(&self) -> bool {
+        true
+    }
 }
 
 inventory::submit! {

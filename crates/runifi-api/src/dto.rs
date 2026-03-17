@@ -357,6 +357,8 @@ pub struct ProcessorConfigResponse {
     pub concurrent_tasks: u64,
     pub comments: String,
     pub auto_terminated_relationships: Vec<String>,
+    pub supports_dynamic_properties: bool,
+    pub supports_sensitive_dynamic_properties: bool,
 }
 
 #[derive(Serialize)]
@@ -433,11 +435,22 @@ impl ProcessorConfigResponse {
             .map(|pd| pd.name.as_str())
             .collect();
 
+        // Build a set of known descriptor names to identify dynamic properties.
+        let descriptor_names: std::collections::HashSet<&str> = info
+            .property_descriptors
+            .iter()
+            .map(|pd| pd.name.as_str())
+            .collect();
+
         // Mask sensitive property values in the response.
+        // Also mask dynamic property values if supports_sensitive_dynamic_properties is true.
         let properties: HashMap<String, String> = raw_properties
             .into_iter()
             .map(|(k, v)| {
-                if sensitive_names.contains(k.as_str()) && !v.is_empty() {
+                let is_sensitive_declared = sensitive_names.contains(k.as_str());
+                let is_sensitive_dynamic = info.supports_sensitive_dynamic_properties
+                    && !descriptor_names.contains(k.as_str());
+                if (is_sensitive_declared || is_sensitive_dynamic) && !v.is_empty() {
                     (k, "********".to_string())
                 } else {
                     (k, v)
@@ -461,7 +474,7 @@ impl ProcessorConfigResponse {
 
         // Merge auto-terminated state: use runtime config as source of truth.
         let auto_term = info.auto_terminated_relationships.read().clone();
-        let relationships = info
+        let mut relationships: Vec<RelationshipResponse> = info
             .relationships
             .iter()
             .map(|r| {
@@ -473,6 +486,17 @@ impl ProcessorConfigResponse {
                 }
             })
             .collect();
+
+        // Append dynamic relationships (from dynamic property names).
+        let dynamic_rels = info.dynamic_relationships.read();
+        for dr in dynamic_rels.iter() {
+            let is_auto_terminated = auto_term.contains(&dr.name);
+            relationships.push(RelationshipResponse {
+                name: dr.name.clone(),
+                description: dr.description.clone(),
+                auto_terminated: is_auto_terminated,
+            });
+        }
 
         Self {
             processor_name: info.name.clone(),
@@ -499,6 +523,8 @@ impl ProcessorConfigResponse {
                 .load(std::sync::atomic::Ordering::Relaxed),
             comments: info.comments.read().clone(),
             auto_terminated_relationships: auto_term,
+            supports_dynamic_properties: info.supports_dynamic_properties,
+            supports_sensitive_dynamic_properties: info.supports_sensitive_dynamic_properties,
         }
     }
 }

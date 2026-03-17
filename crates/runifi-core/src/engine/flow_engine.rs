@@ -336,10 +336,15 @@ impl FlowEngine {
         let mut metrics_by_node: HashMap<NodeId, Arc<ProcessorMetrics>> = HashMap::new();
         let mut shared_props_by_node: HashMap<NodeId, Arc<RwLock<HashMap<String, String>>>> =
             HashMap::new();
-        let mut static_meta_by_node: HashMap<
-            NodeId,
-            (Vec<PropertyDescriptorInfo>, Vec<RelationshipInfo>),
-        > = HashMap::new();
+        // (descriptors, relationships, supports_dynamic, supports_sensitive_dynamic, dynamic_creates_rel)
+        type StaticMeta = (
+            Vec<PropertyDescriptorInfo>,
+            Vec<RelationshipInfo>,
+            bool,
+            bool,
+            bool,
+        );
+        let mut static_meta_by_node: HashMap<NodeId, StaticMeta> = HashMap::new();
 
         for node_builder in &self.nodes {
             let metrics = Arc::new(ProcessorMetrics::new());
@@ -347,7 +352,13 @@ impl FlowEngine {
             let shared_props = Arc::new(RwLock::new(node_builder.properties.clone()));
             shared_props_by_node.insert(node_builder.id, shared_props);
 
-            let (prop_descriptors, rels) = if let Some(ref proc) = node_builder.processor {
+            let (
+                prop_descriptors,
+                rels,
+                supports_dynamic,
+                supports_sensitive_dynamic,
+                dynamic_creates_rel,
+            ) = if let Some(ref proc) = node_builder.processor {
                 let pds = proc
                     .property_descriptors()
                     .into_iter()
@@ -372,11 +383,26 @@ impl FlowEngine {
                         auto_terminated: r.auto_terminated,
                     })
                     .collect();
-                (pds, rs)
+                (
+                    pds,
+                    rs,
+                    proc.supports_dynamic_properties(),
+                    proc.supports_sensitive_dynamic_properties(),
+                    proc.dynamic_property_creates_relationship(),
+                )
             } else {
-                (Vec::new(), Vec::new())
+                (Vec::new(), Vec::new(), false, false, false)
             };
-            static_meta_by_node.insert(node_builder.id, (prop_descriptors, rels));
+            static_meta_by_node.insert(
+                node_builder.id,
+                (
+                    prop_descriptors,
+                    rels,
+                    supports_dynamic,
+                    supports_sensitive_dynamic,
+                    dynamic_creates_rel,
+                ),
+            );
         }
 
         // Build ConnectionInfo for the handle.
@@ -453,7 +479,7 @@ impl FlowEngine {
             pn.set_type_name(node_builder.type_name.clone());
 
             // Set sensitive property names for bulletin redaction.
-            if let Some((descriptors, _)) = static_meta_by_node.get(&node_builder.id) {
+            if let Some((descriptors, _, _, _, _)) = static_meta_by_node.get(&node_builder.id) {
                 let sensitive_names: Vec<String> = descriptors
                     .iter()
                     .filter(|d| d.sensitive)
@@ -506,13 +532,37 @@ impl FlowEngine {
                 .get(&node_builder.id)
                 .expect("shared_props must exist")
                 .clone();
-            let (prop_descriptors, relationships) = static_meta_by_node
+            let (
+                prop_descriptors,
+                relationships,
+                supports_dynamic,
+                supports_sensitive_dynamic,
+                dynamic_creates_rel,
+            ) = static_meta_by_node
                 .remove(&node_builder.id)
                 .expect("static meta must exist for every node");
             let (input_h, output_h, notifiers_h) = node_conn_handles
                 .get(&node_builder.name)
                 .expect("conn handles must exist for every node")
                 .clone();
+
+            // Compute initial dynamic relationships from properties if applicable.
+            let dynamic_relationships = if dynamic_creates_rel {
+                let descriptor_names: std::collections::HashSet<&str> =
+                    prop_descriptors.iter().map(|d| d.name.as_str()).collect();
+                node_builder
+                    .properties
+                    .keys()
+                    .filter(|k| !descriptor_names.contains(k.as_str()))
+                    .map(|k| RelationshipInfo {
+                        name: k.clone(),
+                        description: format!("Dynamic relationship from property '{}'", k),
+                        auto_terminated: false,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
             processor_infos.push(ProcessorInfo {
                 name: node_builder.name.clone(),
@@ -533,6 +583,10 @@ impl FlowEngine {
                 spawned_task_count: Arc::new(AtomicU64::new(0)),
                 comments: Arc::new(RwLock::new(String::new())),
                 auto_terminated_relationships: Arc::new(RwLock::new(Vec::new())),
+                supports_dynamic_properties: supports_dynamic,
+                supports_sensitive_dynamic_properties: supports_sensitive_dynamic,
+                dynamic_property_creates_relationship: dynamic_creates_rel,
+                dynamic_relationships: Arc::new(RwLock::new(dynamic_relationships)),
             });
         }
 

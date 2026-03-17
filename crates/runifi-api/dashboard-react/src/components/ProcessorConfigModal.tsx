@@ -46,8 +46,18 @@ function validateProperties(
 
 function initFormState(data: ProcessorConfigResponse): ConfigFormState {
   const properties: Record<string, string> = {};
+  // Include declared property descriptors.
   for (const desc of data.property_descriptors) {
     properties[desc.name] = data.properties[desc.name] ?? desc.default_value ?? '';
+  }
+  // Include dynamic properties (those not in descriptors).
+  if (data.supports_dynamic_properties) {
+    const declaredNames = new Set(data.property_descriptors.map((d) => d.name));
+    for (const [key, value] of Object.entries(data.properties)) {
+      if (!declaredNames.has(key)) {
+        properties[key] = value;
+      }
+    }
   }
   return {
     penaltyDurationMs: data.penalty_duration_ms,
@@ -74,6 +84,9 @@ function ProcessorConfigModalInner({
   const [saveStatus, setSaveStatus] = useState<{ kind: 'error' | 'success'; message: string } | null>(null);
   // Sensitive property reveal toggle per property name.
   const [revealedSensitive, setRevealedSensitive] = useState<Set<string>>(new Set());
+  // Dynamic property input state.
+  const [newDynPropName, setNewDynPropName] = useState('');
+  const [newDynPropValue, setNewDynPropValue] = useState('');
 
   const isStopped = processorState === 'stopped';
 
@@ -126,6 +139,23 @@ function ProcessorConfigModalInner({
         ? current.filter((r) => r !== relName)
         : [...current, relName];
       return { ...prev, autoTerminatedRelationships: next };
+    });
+    setSaveStatus(null);
+  }, []);
+
+  const addDynamicProperty = useCallback(() => {
+    if (!newDynPropName.trim()) return;
+    setForm((prev) => prev ? { ...prev, properties: { ...prev.properties, [newDynPropName.trim()]: newDynPropValue } } : prev);
+    setNewDynPropName('');
+    setNewDynPropValue('');
+    setSaveStatus(null);
+  }, [newDynPropName, newDynPropValue]);
+
+  const removeDynamicProperty = useCallback((name: string) => {
+    setForm((prev) => {
+      if (!prev) return prev;
+      const { [name]: _, ...rest } = prev.properties;
+      return { ...prev, properties: rest };
     });
     setSaveStatus(null);
   }, []);
@@ -402,77 +432,163 @@ function ProcessorConfigModalInner({
             {/* Properties Tab */}
             {activeTab === 'properties' && (
               <div className="config-tab-content" role="tabpanel">
-                {config.property_descriptors.length === 0 ? (
+                {config.property_descriptors.length === 0 && !config.supports_dynamic_properties ? (
                   <p className="config-empty">This processor has no configurable properties.</p>
                 ) : (
-                  config.property_descriptors.map((desc) => {
-                    const isSensitive = desc.sensitive;
-                    const isRevealed = revealedSensitive.has(desc.name);
-                    const fieldValue = form.properties[desc.name] ?? '';
-                    const isValid = !desc.required || fieldValue !== '' || desc.default_value !== null;
+                  <>
+                    {config.property_descriptors.map((desc) => {
+                      const isSensitive = desc.sensitive;
+                      const isRevealed = revealedSensitive.has(desc.name);
+                      const fieldValue = form.properties[desc.name] ?? '';
+                      const isValid = !desc.required || fieldValue !== '' || desc.default_value !== null;
 
-                    return (
-                      <div key={desc.name} className="config-field">
-                        <label className="config-label" htmlFor={`prop-${desc.name}`}>
-                          {desc.display_name || desc.name}
-                          {desc.required && (
-                            <span className="config-required" title="Required">REQUIRED</span>
-                          )}
-                          {desc.expression_language_supported && (
-                            <span className="config-el-badge" title="Supports Expression Language">EL</span>
-                          )}
-                          {isSensitive && (
-                            <span className="config-sensitive-badge" title="Sensitive property">SENSITIVE</span>
-                          )}
-                        </label>
-                        <span className="config-description">{desc.description}</span>
+                      return (
+                        <div key={desc.name} className="config-field">
+                          <label className="config-label" htmlFor={`prop-${desc.name}`}>
+                            {desc.display_name || desc.name}
+                            {desc.required && (
+                              <span className="config-required" title="Required">REQUIRED</span>
+                            )}
+                            {desc.expression_language_supported && (
+                              <span className="config-el-badge" title="Supports Expression Language">EL</span>
+                            )}
+                            {isSensitive && (
+                              <span className="config-sensitive-badge" title="Sensitive property">SENSITIVE</span>
+                            )}
+                          </label>
+                          <span className="config-description">{desc.description}</span>
 
-                        {desc.allowed_values && desc.allowed_values.length > 0 ? (
-                          <select
-                            id={`prop-${desc.name}`}
-                            className={`form-select${!isValid ? ' form-input-error' : ''}`}
-                            value={fieldValue}
-                            onChange={(e) => handlePropertyChange(desc.name, e.target.value)}
-                            disabled={!isStopped}
-                          >
-                            {!desc.required && <option value="">-- Select --</option>}
-                            {desc.allowed_values.map((av) => (
-                              <option key={av} value={av}>{av}</option>
-                            ))}
-                          </select>
-                        ) : (
-                          <div className="config-input-with-action">
-                            <input
+                          {desc.allowed_values && desc.allowed_values.length > 0 ? (
+                            <select
                               id={`prop-${desc.name}`}
-                              className={`form-input${!isValid ? ' form-input-error' : ''}`}
-                              type={isSensitive && !isRevealed ? 'password' : 'text'}
+                              className={`form-select${!isValid ? ' form-input-error' : ''}`}
                               value={fieldValue}
-                              placeholder={desc.default_value ? `Default: ${desc.default_value}` : ''}
                               onChange={(e) => handlePropertyChange(desc.name, e.target.value)}
                               disabled={!isStopped}
-                              autoComplete="off"
-                              spellCheck={false}
-                            />
-                            {isSensitive && (
+                            >
+                              {!desc.required && <option value="">-- Select --</option>}
+                              {desc.allowed_values.map((av) => (
+                                <option key={av} value={av}>{av}</option>
+                              ))}
+                            </select>
+                          ) : (
+                            <div className="config-input-with-action">
+                              <input
+                                id={`prop-${desc.name}`}
+                                className={`form-input${!isValid ? ' form-input-error' : ''}`}
+                                type={isSensitive && !isRevealed ? 'password' : 'text'}
+                                value={fieldValue}
+                                placeholder={desc.default_value ? `Default: ${desc.default_value}` : ''}
+                                onChange={(e) => handlePropertyChange(desc.name, e.target.value)}
+                                disabled={!isStopped}
+                                autoComplete="off"
+                                spellCheck={false}
+                              />
+                              {isSensitive && (
+                                <button
+                                  type="button"
+                                  className="config-eye-toggle"
+                                  onClick={() => toggleSensitiveReveal(desc.name)}
+                                  title={isRevealed ? 'Hide value' : 'Show value'}
+                                  aria-label={isRevealed ? 'Hide sensitive value' : 'Show sensitive value'}
+                                >
+                                  {isRevealed ? '\u25C9' : '\u25CE'}
+                                </button>
+                              )}
+                            </div>
+                          )}
+
+                          {desc.default_value && (
+                            <span className="config-default">Default: {desc.default_value}</span>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    {/* Dynamic Properties Section */}
+                    {config.supports_dynamic_properties && (() => {
+                      const declaredNames = new Set(config.property_descriptors.map((d) => d.name));
+                      const dynamicEntries = Object.entries(form.properties).filter(
+                        ([key]) => !declaredNames.has(key)
+                      );
+
+                      return (
+                        <div className="config-settings-section" style={{ marginTop: '16px' }}>
+                          <h4 className="config-section-heading">Dynamic Properties</h4>
+                          {dynamicEntries.length === 0 && (
+                            <p className="config-description" style={{ marginBottom: '8px' }}>
+                              No dynamic properties configured.
+                            </p>
+                          )}
+                          {dynamicEntries.map(([key, value]) => (
+                            <div key={key} className="config-field">
+                              <label className="config-label">{key}</label>
+                              <div className="config-input-with-action">
+                                <input
+                                  className="form-input"
+                                  type="text"
+                                  value={value}
+                                  onChange={(e) => handlePropertyChange(key, e.target.value)}
+                                  disabled={!isStopped}
+                                  autoComplete="off"
+                                  spellCheck={false}
+                                />
+                                <button
+                                  type="button"
+                                  className="config-eye-toggle"
+                                  onClick={() => removeDynamicProperty(key)}
+                                  disabled={!isStopped}
+                                  title="Remove property"
+                                  aria-label={`Remove dynamic property ${key}`}
+                                >
+                                  &times;
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                          {isStopped && (
+                            <div className="config-field" style={{ display: 'flex', gap: '8px', alignItems: 'flex-end' }}>
+                              <div style={{ flex: 1 }}>
+                                <label className="config-label" htmlFor="dyn-prop-name">Name</label>
+                                <input
+                                  id="dyn-prop-name"
+                                  className="form-input"
+                                  type="text"
+                                  value={newDynPropName}
+                                  onChange={(e) => setNewDynPropName(e.target.value)}
+                                  placeholder="Property name"
+                                  autoComplete="off"
+                                  spellCheck={false}
+                                />
+                              </div>
+                              <div style={{ flex: 1 }}>
+                                <label className="config-label" htmlFor="dyn-prop-value">Value</label>
+                                <input
+                                  id="dyn-prop-value"
+                                  className="form-input"
+                                  type="text"
+                                  value={newDynPropValue}
+                                  onChange={(e) => setNewDynPropValue(e.target.value)}
+                                  placeholder="Property value"
+                                  autoComplete="off"
+                                  spellCheck={false}
+                                />
+                              </div>
                               <button
                                 type="button"
-                                className="config-eye-toggle"
-                                onClick={() => toggleSensitiveReveal(desc.name)}
-                                title={isRevealed ? 'Hide value' : 'Show value'}
-                                aria-label={isRevealed ? 'Hide sensitive value' : 'Show sensitive value'}
+                                className="btn btn-ghost"
+                                onClick={addDynamicProperty}
+                                disabled={!newDynPropName.trim()}
+                                style={{ whiteSpace: 'nowrap' }}
                               >
-                                {isRevealed ? '\u25C9' : '\u25CE'}
+                                + Add
                               </button>
-                            )}
-                          </div>
-                        )}
-
-                        {desc.default_value && (
-                          <span className="config-default">Default: {desc.default_value}</span>
-                        )}
-                      </div>
-                    );
-                  })
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </>
                 )}
               </div>
             )}
