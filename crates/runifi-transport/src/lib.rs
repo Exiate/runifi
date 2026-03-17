@@ -12,6 +12,7 @@
 pub mod client;
 pub mod error;
 pub mod protocol;
+pub mod s2s;
 pub mod server;
 pub mod tls;
 pub mod transfer;
@@ -20,5 +21,6 @@ pub mod transfer;
 pub use client::{ClientConfig, QuicClient};
 pub use error::{TransportError, TransportResult};
 pub use protocol::WireFlowFile;
+pub use s2s::{RemotePort, RemotePortType, S2sConfig, S2sFrame, TransportProtocol};
 pub use server::{QuicServer, ServerConfig};
 pub use tls::CertKeyPair;
