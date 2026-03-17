@@ -9,6 +9,7 @@ import { ToastNotifier } from './components/ToastNotifier';
 import { ControllerServicesPanel } from './components/ControllerServicesPanel';
 import { BulletinBoard } from './components/BulletinBoard';
 import { DataProvenance } from './components/DataProvenance';
+import { SystemDiagnosticsModal } from './components/SystemDiagnosticsModal';
 import { useFlowTopology } from './hooks/useFlowTopology';
 import { useGroupNavigation } from './hooks/useGroupNavigation';
 import { useSseMetrics } from './hooks/useSseMetrics';
@@ -36,6 +37,7 @@ export function App() {
   const [bulletinOpen, setBulletinOpen] = useState(false);
   const [controllerServicesOpen, setControllerServicesOpen] = useState(false);
   const [provenanceOpen, setProvenanceOpen] = useState(false);
+  const [systemDiagnosticsOpen, setSystemDiagnosticsOpen] = useState(false);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [colorRequestNodeIds, setColorRequestNodeIds] = useState<string[] | null>(null);
 
@@ -91,6 +93,7 @@ export function App() {
         onOpenBulletins={toggleBulletins}
         onOpenControllerServices={() => setControllerServicesOpen(true)}
         onOpenDataProvenance={() => setProvenanceOpen(true)}
+        onOpenSystemDiagnostics={() => setSystemDiagnosticsOpen(true)}
       />
       <ComponentToolbar
         plugins={plugins}
@@ -182,6 +185,12 @@ export function App() {
         <DataProvenance
           onToast={pushToast}
           onClose={() => setProvenanceOpen(false)}
+        />
+      )}
+
+      {systemDiagnosticsOpen && (
+        <SystemDiagnosticsModal
+          onClose={() => setSystemDiagnosticsOpen(false)}
         />
       )}
     </div>

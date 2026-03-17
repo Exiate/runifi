@@ -9,6 +9,7 @@ interface HeaderProps {
   onOpenControllerServices?: () => void;
   onOpenBulletins?: () => void;
   onOpenDataProvenance?: () => void;
+  onOpenSystemDiagnostics?: () => void;
 }
 
 interface MenuItem {
@@ -26,14 +27,14 @@ const MENU_ITEMS: MenuItem[] = [
   { label: 'Controller Services', action: 'controller-services', icon: '\u2699' },
   { label: 'Data Provenance', action: 'data-provenance', icon: '\uD83D\uDD0D', separator: true },
   { label: 'Flow Configuration History', action: 'flow-history', icon: '\uD83D\uDCC4', disabled: true, disabledReason: 'Not yet implemented' },
-  { label: 'System Diagnostics', action: 'system-diagnostics', icon: '\uD83D\uDCCA', disabled: true, disabledReason: 'Not yet implemented', separator: true },
+  { label: 'System Diagnostics', action: 'system-diagnostics', icon: '\uD83D\uDCCA', separator: true },
   { label: 'Users & Groups', action: 'users', icon: '\uD83D\uDC65', adminOnly: true, disabled: true, disabledReason: 'Not yet implemented', separator: true },
   { label: 'Help', action: 'help', icon: '?' },
   { label: 'About RuniFi', action: 'about', icon: '\u24D8', separator: true },
   { label: 'Logout', action: 'logout', icon: '\u2192' },
 ];
 
-function HeaderInner({ flowName, uptimeSecs, sseStatus, onOpenControllerServices, onOpenBulletins, onOpenDataProvenance }: HeaderProps) {
+function HeaderInner({ flowName, uptimeSecs, sseStatus, onOpenControllerServices, onOpenBulletins, onOpenDataProvenance, onOpenSystemDiagnostics }: HeaderProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -75,6 +76,9 @@ function HeaderInner({ flowName, uptimeSecs, sseStatus, onOpenControllerServices
         break;
       case 'data-provenance':
         onOpenDataProvenance?.();
+        break;
+      case 'system-diagnostics':
+        onOpenSystemDiagnostics?.();
         break;
       case 'about':
         setAboutOpen(true);
