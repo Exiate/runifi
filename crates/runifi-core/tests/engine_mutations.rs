@@ -13,8 +13,8 @@ use runifi_core::registry::plugin_registry::PluginRegistry;
 use runifi_core::repository::content_memory::InMemoryContentRepository;
 use runifi_core::repository::flowfile_repo::InMemoryFlowFileRepository;
 use runifi_plugin_api::{
-    ProcessorDescriptor, PropertyDescriptor, Relationship, context::ProcessContext,
-    session::ProcessSession,
+    InputRequirement, ProcessorDescriptor, PropertyDescriptor, Relationship,
+    context::ProcessContext, session::ProcessSession,
 };
 
 // ── Minimal test processors ───────────────────────────────────────────────────
@@ -44,6 +44,10 @@ inventory::submit!(ProcessorDescriptor {
     description: "Does nothing — used in tests.",
     factory: || Box::new(NoOpProcessor),
     tags: &[],
+    input_requirement: InputRequirement::Allowed,
+    trigger_when_empty: false,
+    side_effect_free: false,
+    supports_batching: false,
 });
 
 /// A processor with a required property (no default) for validation tests.
@@ -82,6 +86,10 @@ inventory::submit!(ProcessorDescriptor {
     description: "Processor with required properties — used in validation tests.",
     factory: || Box::new(RequiredPropProcessor),
     tags: &["Testing"],
+    input_requirement: InputRequirement::Allowed,
+    trigger_when_empty: false,
+    side_effect_free: false,
+    supports_batching: false,
 });
 
 // ── Test helpers ──────────────────────────────────────────────────────────────

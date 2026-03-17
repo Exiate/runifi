@@ -1,6 +1,6 @@
 use regex_lite::Regex;
 use runifi_plugin_api::context::ProcessContext;
-use runifi_plugin_api::processor::{Processor, ProcessorDescriptor};
+use runifi_plugin_api::processor::{InputRequirement, Processor, ProcessorDescriptor};
 use runifi_plugin_api::property::PropertyDescriptor;
 use runifi_plugin_api::relationship::Relationship;
 use runifi_plugin_api::result::ProcessResult;
@@ -105,6 +105,14 @@ impl Processor for RouteOnAttribute {
     fn property_descriptors(&self) -> Vec<PropertyDescriptor> {
         vec![PROP_ATTRIBUTE, PROP_VALUE, PROP_MATCHING_STRATEGY]
     }
+
+    fn input_requirement(&self) -> InputRequirement {
+        InputRequirement::Required
+    }
+
+    fn side_effect_free(&self) -> bool {
+        true
+    }
 }
 
 inventory::submit! {
@@ -113,6 +121,10 @@ inventory::submit! {
         description: "Routes FlowFiles based on attribute value matching",
         factory: || Box::new(RouteOnAttribute::new()),
         tags: &["Routing"],
+        input_requirement: InputRequirement::Required,
+        trigger_when_empty: false,
+        side_effect_free: true,
+        supports_batching: false,
     }
 }
 

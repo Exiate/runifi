@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use runifi_plugin_api::context::ProcessContext;
-use runifi_plugin_api::processor::{Processor, ProcessorDescriptor};
+use runifi_plugin_api::processor::{InputRequirement, Processor, ProcessorDescriptor};
 use runifi_plugin_api::property::PropertyDescriptor;
 use runifi_plugin_api::relationship::Relationship;
 use runifi_plugin_api::result::ProcessResult;
@@ -401,6 +401,10 @@ inventory::submit! {
         description: "Parses RFC 3164 and RFC 5424 syslog messages into structured FlowFile attributes",
         factory: || Box::new(ParseSyslog::new()),
         tags: &["Parsing", "Syslog"],
+        input_requirement: InputRequirement::Allowed,
+        trigger_when_empty: false,
+        side_effect_free: false,
+        supports_batching: false,
     }
 }
 

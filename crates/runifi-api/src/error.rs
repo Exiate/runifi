@@ -183,6 +183,7 @@ impl From<MutationError> for ApiError {
             MutationError::InvalidCronExpression(expr, msg) => {
                 ApiError::BadRequest(format!("Invalid CRON expression '{}': {}", expr, msg))
             }
+            MutationError::InvalidConnection(msg) => ApiError::BadRequest(msg),
             MutationError::Internal(msg) => ApiError::ConfigError(msg),
         }
     }

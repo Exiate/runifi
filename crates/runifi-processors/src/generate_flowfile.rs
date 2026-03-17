@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use runifi_plugin_api::context::ProcessContext;
-use runifi_plugin_api::processor::{Processor, ProcessorDescriptor};
+use runifi_plugin_api::processor::{InputRequirement, Processor, ProcessorDescriptor};
 use runifi_plugin_api::property::PropertyDescriptor;
 use runifi_plugin_api::relationship::Relationship;
 use runifi_plugin_api::result::ProcessResult;
@@ -107,6 +107,18 @@ impl Processor for GenerateFlowFile {
     fn property_descriptors(&self) -> Vec<PropertyDescriptor> {
         vec![PROP_FILE_SIZE, PROP_BATCH_SIZE, PROP_DATA_FORMAT]
     }
+
+    fn input_requirement(&self) -> InputRequirement {
+        InputRequirement::Forbidden
+    }
+
+    fn trigger_when_empty(&self) -> bool {
+        true
+    }
+
+    fn supports_batching(&self) -> bool {
+        true
+    }
 }
 
 inventory::submit! {
@@ -115,6 +127,10 @@ inventory::submit! {
         description: "Generates FlowFiles with synthetic content for testing and benchmarking",
         factory: || Box::new(GenerateFlowFile::new()),
         tags: &["Data Generation", "Testing"],
+        input_requirement: InputRequirement::Forbidden,
+        trigger_when_empty: true,
+        side_effect_free: false,
+        supports_batching: true,
     }
 }
 

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use runifi_core::engine::bulletin::Bulletin;
 use runifi_core::engine::handle::{PluginKind, ProcessorInfo};
 use runifi_core::engine::metrics::MetricsSnapshot;
+use runifi_plugin_api::InputRequirement;
 
 #[derive(Serialize)]
 pub struct SystemResponse {
@@ -82,6 +83,10 @@ pub struct ProcessorResponse {
     pub metrics: MetricsResponse,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub validation_errors: Vec<String>,
+    pub input_requirement: String,
+    pub trigger_when_empty: bool,
+    pub side_effect_free: bool,
+    pub supports_batching: bool,
 }
 
 #[derive(Serialize)]
@@ -144,6 +149,15 @@ impl ProcessorResponse {
             state,
             metrics: snapshot.into(),
             validation_errors,
+            input_requirement: match info.input_requirement {
+                InputRequirement::Required => "required",
+                InputRequirement::Allowed => "allowed",
+                InputRequirement::Forbidden => "forbidden",
+            }
+            .to_string(),
+            trigger_when_empty: info.trigger_when_empty,
+            side_effect_free: info.side_effect_free,
+            supports_batching: info.supports_batching,
         }
     }
 }
@@ -262,10 +276,22 @@ pub struct PluginResponse {
     pub kind: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    pub input_requirement: String,
+    pub trigger_when_empty: bool,
+    pub side_effect_free: bool,
+    pub supports_batching: bool,
 }
 
 impl PluginResponse {
-    pub fn from_kind(type_name: &str, kind: PluginKind, tags: Vec<String>) -> Self {
+    pub fn from_kind(
+        type_name: &str,
+        kind: PluginKind,
+        tags: Vec<String>,
+        input_requirement: InputRequirement,
+        trigger_when_empty: bool,
+        side_effect_free: bool,
+        supports_batching: bool,
+    ) -> Self {
         let kind_str = match kind {
             PluginKind::Processor => "processor",
             PluginKind::Source => "source",
@@ -277,6 +303,15 @@ impl PluginResponse {
             type_name: type_name.to_string(),
             kind: kind_str.to_string(),
             tags,
+            input_requirement: match input_requirement {
+                InputRequirement::Required => "required",
+                InputRequirement::Allowed => "allowed",
+                InputRequirement::Forbidden => "forbidden",
+            }
+            .to_string(),
+            trigger_when_empty,
+            side_effect_free,
+            supports_batching,
         }
     }
 }

@@ -52,6 +52,7 @@ use runifi_core::repository::flowfile_wal::{
 use runifi_core::repository::key_provider::KeyProvider;
 use runifi_core::repository::static_key_provider::StaticKeyProvider;
 use runifi_core::versioning::FlowVersionStore;
+use runifi_plugin_api::InputRequirement;
 
 // Ensure processor registrations are linked in.
 extern crate runifi_processors;
@@ -566,10 +567,25 @@ async fn main() -> Result<()> {
     // Set plugin types on the engine handle.
     let mut plugin_types: Vec<PluginTypeInfo> = Vec::new();
     for name in registry.processor_types() {
+        let (input_requirement, trigger_when_empty, side_effect_free, supports_batching) =
+            if let Some(desc) = registry.processor_descriptor(name) {
+                (
+                    desc.input_requirement,
+                    desc.trigger_when_empty,
+                    desc.side_effect_free,
+                    desc.supports_batching,
+                )
+            } else {
+                (InputRequirement::Allowed, false, false, false)
+            };
         plugin_types.push(PluginTypeInfo {
             type_name: name.to_string(),
             kind: PluginKind::Processor,
             tags: registry.processor_tags(name),
+            input_requirement,
+            trigger_when_empty,
+            side_effect_free,
+            supports_batching,
         });
     }
     for name in registry.source_types() {
@@ -577,6 +593,10 @@ async fn main() -> Result<()> {
             type_name: name.to_string(),
             kind: PluginKind::Source,
             tags: registry.source_tags(name),
+            input_requirement: InputRequirement::Forbidden,
+            trigger_when_empty: true,
+            side_effect_free: false,
+            supports_batching: false,
         });
     }
     for name in registry.sink_types() {
@@ -584,6 +604,10 @@ async fn main() -> Result<()> {
             type_name: name.to_string(),
             kind: PluginKind::Sink,
             tags: registry.sink_tags(name),
+            input_requirement: InputRequirement::Required,
+            trigger_when_empty: false,
+            side_effect_free: false,
+            supports_batching: false,
         });
     }
     for name in registry.service_types() {
@@ -591,6 +615,10 @@ async fn main() -> Result<()> {
             type_name: name.to_string(),
             kind: PluginKind::Service,
             tags: registry.service_tags(name),
+            input_requirement: InputRequirement::Allowed,
+            trigger_when_empty: false,
+            side_effect_free: false,
+            supports_batching: false,
         });
     }
     for name in registry.reporting_task_types() {
@@ -598,6 +626,10 @@ async fn main() -> Result<()> {
             type_name: name.to_string(),
             kind: PluginKind::ReportingTask,
             tags: registry.reporting_task_tags(name),
+            input_requirement: InputRequirement::Allowed,
+            trigger_when_empty: false,
+            side_effect_free: false,
+            supports_batching: false,
         });
     }
     engine.set_plugin_types(plugin_types);

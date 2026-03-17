@@ -10,7 +10,7 @@ use runifi_core::registry::plugin_registry::PluginRegistry;
 use runifi_core::repository::content_memory::InMemoryContentRepository;
 use runifi_core::repository::flowfile_repo::InMemoryFlowFileRepository;
 use runifi_plugin_api::context::ProcessContext;
-use runifi_plugin_api::processor::ProcessorDescriptor;
+use runifi_plugin_api::processor::{InputRequirement, ProcessorDescriptor};
 use runifi_plugin_api::relationship::Relationship;
 use runifi_plugin_api::result::ProcessResult;
 use runifi_plugin_api::session::ProcessSession;
@@ -71,6 +71,10 @@ inventory::submit!(ProcessorDescriptor {
     description: "Counts triggers via global atomic — concurrent task test only",
     factory: || Box::new(RegistryConcurrentCounter),
     tags: &[],
+    input_requirement: InputRequirement::Allowed,
+    trigger_when_empty: false,
+    side_effect_free: false,
+    supports_batching: false,
 });
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

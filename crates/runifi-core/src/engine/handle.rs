@@ -27,6 +27,8 @@ use super::processor_node::{
 /// is preserved (the caller did not change it).
 pub const SENSITIVE_VALUE_MASK: &str = "********";
 
+use runifi_plugin_api::InputRequirement;
+
 use crate::audit::{AuditAction, AuditEvent, AuditLogger, AuditTarget};
 use crate::connection::back_pressure::BackPressureConfig;
 use crate::connection::query::ConnectionQuery;
@@ -117,6 +119,14 @@ pub struct ProcessorInfo {
     pub comments: Arc<RwLock<String>>,
     /// Auto-terminated relationship names (configurable at runtime).
     pub auto_terminated_relationships: Arc<RwLock<Vec<String>>>,
+    /// Input requirement annotation.
+    pub input_requirement: InputRequirement,
+    /// Whether the processor runs when input queue is empty.
+    pub trigger_when_empty: bool,
+    /// Whether the processor is side-effect-free.
+    pub side_effect_free: bool,
+    /// Whether the processor supports batching.
+    pub supports_batching: bool,
 }
 
 /// Information about a connection, visible to the API.
@@ -136,6 +146,14 @@ pub struct PluginTypeInfo {
     pub kind: PluginKind,
     /// Category tags for UI grouping (from plugin descriptor).
     pub tags: Vec<String>,
+    /// Input requirement annotation (processors only).
+    pub input_requirement: InputRequirement,
+    /// Whether the processor runs when input queue is empty.
+    pub trigger_when_empty: bool,
+    /// Whether the processor is side-effect-free.
+    pub side_effect_free: bool,
+    /// Whether the processor supports batching.
+    pub supports_batching: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
